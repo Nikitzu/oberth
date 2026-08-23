@@ -101,9 +101,9 @@ call the proxy hostname directly.
 | Tool | Description |
 |------|-------------|
 | `status` | CI status for a SHA or branch, including the failed step |
-| `logs` | One named step's log output for a SHA |
+| `logs` | One named step's log output for a SHA, optionally filtered |
 | `run_get` | One exact durable run and its named step results by run ID |
-| `run_logs` | One exact burn/step log by durable run ID |
+| `run_logs` | One exact burn/step log by durable run ID, optionally filtered |
 | `wait` | Long-poll until a SHA reaches a terminal state |
 | `sync` | Park a WIP branch upstream without a green gate (not completion evidence) |
 | `promote` | Green-gate a SHA, merge with target branch, push without force |
@@ -118,6 +118,40 @@ call the proxy hostname directly.
 | `access_list` | List secret access grants for a repository |
 | `access_allow` | Grant a step access to a secret path (admin-only) |
 | `access_revoke` | Revoke a step's access to a secret path (admin-only) |
+
+### Filtering log output
+
+`logs` and `run_logs` accept five optional parameters. Filtering happens on the
+server, so a narrowed read never sends the whole step over the wire.
+
+| Parameter | Meaning |
+|------|-------------|
+| `pattern` | RE2 expression; only matching lines are returned |
+| `context` | Lines of context on each side of a match (max 50) |
+| `offset` | First line to return, 0-based. Pages over matches when `pattern` is set, over raw lines otherwise |
+| `limit` | Maximum lines returned. Omit for no line cap |
+| `tail` | Take from the end of the step rather than the start |
+
+`pattern` matches against the line with its `[burn/step]` prefix removed, so `^`
+and `$` anchor to the output a step actually produced. The returned bytes keep
+the prefix.
+
+Every response carries counts so a narrowed read is never mistaken for a
+complete one:
+
+| Field | Meaning |
+|------|-------------|
+| `total_lines` | Lines in the step before any filtering |
+| `matched_lines` | Lines matching `pattern`; equals `total_lines` without one |
+| `returned_lines` | Lines actually in this response |
+| `truncated` | Whether a limit or the response ceiling withheld anything |
+| `bytes` | True size of the full step range |
+| `line_numbers` | Original position of each returned line |
+
+A step above the 4 MiB response ceiling returns a truncated result with
+`truncated: true` rather than failing. Prefer a pattern to retrieving a whole
+step: a single step can exceed a model's context window.
+
 | `repo_list` | List registered repositories with upstream and probe state |
 | `run_list` | List recent runs with optional repo/ref filter (bounded page) |
 | `system_status` | System health: database, upstreams, cluster, audit, version |
