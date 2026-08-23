@@ -335,6 +335,10 @@ release workflow that builds, signs, publishes, and reads back every artifact.
 Those workflows hold no upstream-forge mutation credential; Oberth publishes
 the exact annotated tag only after the run is green.
 
+## Web UI
+<img width="1456" height="773" alt="image" src="https://github.com/user-attachments/assets/33684b0e-f2ef-4f77-8754-f17a593179e5" />
+
+
 ## Documentation
 
 - [docs/mcp-setup.md](docs/mcp-setup.md) — connect Claude Code or any MCP client
