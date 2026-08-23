@@ -47,10 +47,6 @@ type Filter struct {
 	Tail    bool
 }
 
-func (filter Filter) empty() bool {
-	return filter.Pattern == "" && filter.Context == 0 && filter.Offset == 0 && filter.Limit == 0 && !filter.Tail
-}
-
 type Meta struct {
 	TotalLines    int   `json:"total_lines"`
 	MatchedLines  int   `json:"matched_lines"`
@@ -135,7 +131,7 @@ func (store *Store) ReadFiltered(runID, burn, step string, filter Filter) ([]byt
 	if len(selected) == 0 {
 		return nil, Meta{}, fmt.Errorf("log slice %s/%s: %w", burn, step, os.ErrNotExist)
 	}
-	if filter.empty() && total > maxReadBytes {
+	if total > maxReadBytes {
 		return nil, Meta{}, ErrLogSliceTooLarge
 	}
 	path, _ := store.logPath(runID)
@@ -176,6 +172,35 @@ func (store *Store) ReadActive(runID, burn, step string) ([]byte, error) {
 		return nil, fmt.Errorf("active log slice %s/%s: %w", burn, step, os.ErrNotExist)
 	}
 	return readRangeTail(file, ranges, maxReadBytes)
+}
+
+func (store *Store) ReadActiveFiltered(runID, burn, step string, filter Filter) ([]byte, Meta, error) {
+	path, err := store.logPath(runID)
+	if err != nil {
+		return nil, Meta{}, err
+	}
+	// logPath validated the run ID and confined this path to the log root.
+	file, err := os.Open(path) //nolint:gosec
+	if err != nil {
+		return nil, Meta{}, fmt.Errorf("open active run log: %w", err)
+	}
+	defer func() { _ = file.Close() }()
+	index, err := indexReader(runID, file)
+	if err != nil {
+		return nil, Meta{}, fmt.Errorf("index active run log: %w", err)
+	}
+	ranges := make([]Range, 0)
+	var total int64
+	for _, candidate := range index.Ranges {
+		if candidate.Burn == burn && candidate.Step == step {
+			ranges = append(ranges, candidate)
+			total += candidate.End - candidate.Start
+		}
+	}
+	if len(ranges) == 0 {
+		return nil, Meta{}, fmt.Errorf("active log slice %s/%s: %w", burn, step, os.ErrNotExist)
+	}
+	return filterRanges(file, ranges, total, filter)
 }
 
 func readRangeTail(file *os.File, ranges []Range, maximum int64) ([]byte, error) {
@@ -688,11 +713,7 @@ func stepContent(line string) string {
 
 func filterRanges(file *os.File, ranges []Range, total int64, filter Filter) ([]byte, Meta, error) {
 	meta := Meta{Bytes: total}
-	limit := filter.Limit
-	if limit <= 0 {
-		limit = defaultLineLimit
-	}
-	window := newLineWindow(filter.Offset, limit, filter.Tail)
+	window := newLineWindow(filter.Offset, filter.Limit, filter.Tail)
 	for _, wanted := range ranges {
 		if _, err := file.Seek(wanted.Start, io.SeekStart); err != nil {
 			return nil, Meta{}, err
@@ -721,20 +742,25 @@ func filterRanges(file *os.File, ranges []Range, total int64, filter Filter) ([]
 }
 
 type lineWindow struct {
-	offset int
-	limit  int
-	tail   bool
-	seen   int
-	lines  []string
+	offset   int
+	limit    int
+	tail     bool
+	uncapped bool
+	seen     int
+	lines    []string
 }
 
 func newLineWindow(offset, limit int, tail bool) *lineWindow {
-	return &lineWindow{offset: offset, limit: limit, tail: tail}
+	return &lineWindow{offset: offset, limit: limit, tail: tail, uncapped: limit <= 0}
 }
 
 func (window *lineWindow) offer(line string) {
 	window.seen++
 	if window.seen <= window.offset {
+		return
+	}
+	if window.uncapped {
+		window.lines = append(window.lines, line)
 		return
 	}
 	if window.tail {

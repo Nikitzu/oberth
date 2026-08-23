@@ -246,6 +246,7 @@ type LogStore interface {
 	Read(string, string, string) ([]byte, error)
 	ReadFiltered(string, string, string, runlog.Filter) ([]byte, runlog.Meta, error)
 	ReadActive(string, string, string) ([]byte, error)
+	ReadActiveFiltered(string, string, string, runlog.Filter) ([]byte, runlog.Meta, error)
 	Tail(string, int64) ([]byte, error)
 	// ReadFrom serves the dashboard's live view of a run in progress: bytes
 	// from offset (negative means tail), the next poll offset, and the
@@ -385,10 +386,11 @@ type LogResponse struct {
 	Burn          string `json:"burn"`
 	Step          string `json:"step,omitempty"`
 	Output        string `json:"output"`
-	TotalLines    int    `json:"total_lines,omitempty"`
-	MatchedLines  int    `json:"matched_lines,omitempty"`
-	ReturnedLines int    `json:"returned_lines,omitempty"`
-	Truncated     bool   `json:"truncated,omitempty"`
+	TotalLines    int    `json:"total_lines"`
+	MatchedLines  int    `json:"matched_lines"`
+	ReturnedLines int    `json:"returned_lines"`
+	Truncated     bool   `json:"truncated"`
+	Bytes         int64  `json:"bytes"`
 }
 
 // LiveLogResponse is one polled slice of a running Job's redacted log stream.

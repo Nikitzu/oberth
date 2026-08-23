@@ -149,3 +149,22 @@ func TestFilterSpansEveryRangeOfAMultiBurnStep(t *testing.T) {
 		t.Fatalf("meta.TotalLines = %d, want 2 across both ranges", meta.TotalLines)
 	}
 }
+
+func TestEmptyFilterDoesNotTruncateAStepWithManyShortLines(t *testing.T) {
+	lines := make([]string, 0, defaultLineLimit+500)
+	for i := 0; i < defaultLineLimit+500; i++ {
+		lines = append(lines, "[t/u] x")
+	}
+	store := seedRun(t, "r-short", lines)
+
+	_, meta, err := store.ReadFiltered("r-short", "t", "u", Filter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if meta.Truncated {
+		t.Fatalf("an unfiltered read truncated at the default line limit; meta = %#v", meta)
+	}
+	if meta.ReturnedLines != meta.TotalLines {
+		t.Fatalf("returned %d of %d lines with no filter applied", meta.ReturnedLines, meta.TotalLines)
+	}
+}

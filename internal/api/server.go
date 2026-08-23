@@ -228,7 +228,11 @@ func (server *Server) handleRunLog(writer http.ResponseWriter, request *http.Req
 
 func logFilterFrom(query url.Values) (runlog.Filter, error) {
 	filter := runlog.Filter{Pattern: query.Get("pattern"), Tail: query.Get("tail") == "true"}
-	for name, target := range map[string]*int{"context": &filter.Context, "offset": &filter.Offset, "limit": &filter.Limit} {
+	for _, field := range []struct {
+		name   string
+		target *int
+	}{{"context", &filter.Context}, {"limit", &filter.Limit}, {"offset", &filter.Offset}} {
+		name, target := field.name, field.target
 		raw := query.Get(name)
 		if raw == "" {
 			continue
