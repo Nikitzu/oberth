@@ -12,7 +12,6 @@ const livePollMs = 2000;
 const state = {
   repos: [], runs: [], status: null,
   timer: null, routeSeq: 0,
-  filter: localStorage.getItem("oberth-filter") || "all",
   repo: localStorage.getItem("oberth-repo") || "all",
   step: "", stepRunID: "",
   logCache: new Map(),
@@ -20,10 +19,13 @@ const state = {
   issueKind: "", issueState: "open", issueRepo: "", issueCursor: 0, issueCursorHistory: [],
   issuePage: null, issueOpener: null,
   lastList: "/runs",
+  stream: localStorage.getItem("oberth-stream") || "needs",
+  query: "",
+  openBranches: new Set(),
+  me: "",
   authGen: 0, // incremented on sign-out and token replacement
   pendingController: null, // AbortController for in-flight API requests
 };
-const runFilters = ["all", "running", "queued", "passed", "failed", "interrupted", "release"];
 
 /* ---------- tiny utilities (unchanged from the old dashboard) ---------- */
 function esc(v) { return String(v ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])); }
@@ -90,7 +92,7 @@ function renderMarkdown(raw) {
       flush(); closeList();
       const block = [];
       for (i++; i < lines.length && !/^```/.test(lines[i]); i++) block.push(lines[i]);
-      out.push(`<pre class="md-code">${esc(block.join("\n"))}</pre>`);
+      out.push(`<pre class="md">${esc(block.join("\n"))}</pre>`);
       continue;
     }
     if (!line.trim()) { flush(); closeList(); continue; }
@@ -151,11 +153,11 @@ function bigIcon(status) {
 function runStatusCell(run) {
   return `${statusIcon(run.Status)}${pill(statusLabel(run.Status), statusKind(run.Status))}`;
 }
-function releaseBadge(run) { return run.Release ? '<span class="v4b release">⏏ RELEASE</span>' : ""; }
-function credentialedBadge(run) { return !run.Release && run.Credentialed ? '<span class="v4b release" title="credentialed CI run with secret-store access">⚿ CREDENTIALED</span>' : ""; }
+function releaseBadge(run) { return run.Release ? '<span class="pill">⏏ RELEASE</span>' : ""; }
+function credentialedBadge(run) { return !run.Release && run.Credentialed ? '<span class="pill" title="credentialed CI run with secret-store access">⚿ CREDENTIALED</span>' : ""; }
 function supersededBadge(run) {
   if (!run.SupersededBy) return "";
-  return `<span class="v4b superseded" title="superseded by ${esc(run.SupersededBy)}">superseded</span>`;
+  return `<span class="pill" title="superseded by ${esc(run.SupersededBy)}">superseded</span>`;
 }
 function runDuration(run) {
   return spanSeconds(run.StartedAt, run.FinishedAt, run.Status === "running");
@@ -175,10 +177,6 @@ function repoName(repoID) {
 
 /* ---------- chrome ---------- */
 function setChrome(tab, sub) {
-  for (const name of ["Runs", "Repos", "Issues", "Status"]) {
-    const el = document.getElementById("tab" + name);
-    if (el) el.classList.toggle("on", tab === name.toLowerCase());
-  }
   const brand = document.getElementById("brandSub");
   if (brand) brand.textContent = sub || "/ dashboard";
 }
@@ -211,7 +209,7 @@ function setToken(t) { if (t) localStorage.setItem("oberth-token", t.trim()); el
 function authHeaders() { const token = localStorage.getItem("oberth-token"); return token ? { "Authorization": "Bearer " + token } : {}; }
 function showTokenPrompt(message) {
   clearInterval(state.timer);
-  replaceApp(`<section class="screen"><div class="table token-panel"><h1>Authentication required</h1><p class="meta">Enter the Oberth uplink bearer token. It is stored in this browser's localStorage so navigation and reloads never re-prompt.</p>${message ? `<p class="meta chain-bad">${esc(message)}</p>` : ""}<input id="tokenInput" type="password" placeholder="Bearer token" autocomplete="off"><div class="token-actions"><button class="chip on" data-action="submit-token">Connect</button></div></div></section>`);
+  replaceApp(`<section class="screen"><div class="tokwrap"><h1>Authentication required</h1><p class="meta">Enter the Oberth uplink bearer token. It is stored in this browser's localStorage so navigation and reloads never re-prompt.</p>${message ? `<p class="meta chain-bad">${esc(message)}</p>` : ""}<input id="tokenInput" type="password" placeholder="Bearer token" autocomplete="off"><div class="bacts"><button class="btn" data-action="submit-token">Connect</button></div></div></section>`);
   document.getElementById("tokenInput")?.focus();
 }
 function submitToken() {
@@ -280,53 +278,116 @@ async function loadStatus() {
 }
 
 /* ---------- runs list ---------- */
-function runMatches(run) {
-  if (state.repo !== "all" && repoName(run.RepoID) !== state.repo) return false;
-  if (state.filter === "release") return !!run.Release;
-  if (state.filter !== "all") return String(run.Status) === state.filter;
+function branchKey(run) { return repoName(run.RepoID) + " " + run.Ref; }
+
+function branchBlocks(runs) {
+  const blocks = new Map();
+  for (const run of runs) {
+    const key = branchKey(run);
+    let block = blocks.get(key);
+    if (!block) {
+      block = { key, repo: repoName(run.RepoID), ref: run.Ref, refKind: run.RefKind, runs: [] };
+      blocks.set(key, block);
+    }
+    block.runs.push(run);
+  }
+  for (const block of blocks.values()) {
+    block.runs.sort((a, b) => new Date(runWhen(b) || 0) - new Date(runWhen(a) || 0));
+    block.head = block.runs[0];
+  }
+  return [...blocks.values()].sort((a, b) => new Date(runWhen(b.head) || 0) - new Date(runWhen(a.head) || 0));
+}
+
+function branchSentence(block) {
+  const run = block.head, kind = statusKind(run.Status);
+  const took = esc(fmtDur(runDuration(run)));
+  const failures = block.runs.filter(entry => statusKind(entry.Status) === "fail").length;
+  if (kind === "run") {
+    const step = run.FailedStep || run.JobName || "";
+    return step ? `Running ${esc(step)}, ${took} in.` : `Running, ${took} in.`;
+  }
+  if (kind === "fail") {
+    const where = run.FailedStep ? ` at <b>${esc(run.FailedStep)}</b>` : "";
+    const again = failures > 1 ? ` That is ${failures} failures in a row on this branch.` : "";
+    return `Failed${where} after ${took}.${again}`;
+  }
+  if (kind === "pass") return `Green in ${took}.`;
+  if (run.Status === "queued") return "Queued, waiting for a runner.";
+  return `${esc(statusLabel(run.Status))}.`;
+}
+
+function branchBlock(block) {
+  const run = block.head, kind = statusKind(run.Status);
+  const open = state.openBranches.has(block.key);
+  const history = block.runs.slice(1, 6);
+  return `<article class="bblk ${esc(kind)} ${open ? "open" : ""}">
+    <button class="bhead" data-branch-toggle="${esc(block.key)}" aria-expanded="${open}">
+      <span class="brow">
+        <span class="bdot ${esc(kind)}"></span>
+        <span class="bref">${esc(block.refKind === "tag" ? "tag " : "")}${esc(block.ref)}</span>
+        <span class="brepo">${esc(block.repo)}</span>
+        <span class="bmeta">
+          <span class="bwhen" title="${esc(fmtTime(runWhen(run)))}">${esc(ago(runWhen(run)))}</span>
+          <span class="bcv" aria-hidden="true">${open ? "&#9652;" : "&#9662;"}</span>
+        </span>
+      </span>
+      <span class="bsay">${branchSentence(block)}</span>
+    </button>
+    ${open ? `<div class="bbody">
+      <div class="bacts">
+        <button class="bbtn pri" data-run-id="${esc(run.ID)}">Open run<span class="kb">&#8629;</span></button>
+        ${(() => { const url = compareURL(run); return url ? `<button class="bbtn" data-action="publish-pr" data-run="${esc(run.ID)}" data-compare="${esc(url)}">Open PR<span class="kb">p</span></button>` : ""; })()}
+        <span class="bnote">${esc(run.Actor || "unknown actor")} &middot; ${esc(shortSha(run.SHA))} &middot; ${esc(fmtDur(runDuration(run)))}</span>
+      </div>
+      ${history.length ? `<div class="bhist">
+        <div class="bhl">EARLIER ON THIS BRANCH</div>
+        ${history.map(entry => `<button class="bhr" data-run-id="${esc(entry.ID)}">
+          <span class="bdot ${esc(statusKind(entry.Status))}"></span>
+          <span class="bsha">${esc(shortSha(entry.SHA))}</span>
+          <span class="bmsg">${esc(runMessage(entry))}</span>
+          <span class="bdur">${esc(fmtDur(runDuration(entry)))}</span>
+        </button>`).join("")}
+      </div>` : ""}
+    </div>` : ""}
+  </article>`;
+}
+
+function branchMatches(block) {
+  if (state.repo !== "all" && block.repo !== state.repo) return false;
+  if (state.query && !(block.ref + " " + block.repo).toLowerCase().includes(state.query)) return false;
+  const kind = statusKind(block.head.Status);
+  if (state.stream === "mine") return block.head.Actor === state.me;
+  if (state.stream === "needs") return kind === "fail" || kind === "run" || kind === "pass";
   return true;
 }
-function repoCounts(runs) {
-  const counts = new Map([["all", runs.length]]);
-  for (const run of runs) {
-    const name = repoName(run.RepoID);
-    counts.set(name, (counts.get(name) || 0) + 1);
-  }
-  return counts;
+
+function streamStats(blocks) {
+  const done = blocks.filter(block => ["pass", "fail"].includes(statusKind(block.head.Status)));
+  const green = done.filter(block => statusKind(block.head.Status) === "pass").length;
+  const durations = done.map(block => runDuration(block.head)).filter(Boolean).sort((a, b) => a - b);
+  const median = durations.length ? durations[Math.floor(durations.length / 2)] : 0;
+  return { green, done: done.length, median };
 }
-function runsTable(runs) {
-  return `<div class="table runs-table"><div class="trow head"><div>status</div><div>run</div><div>sha</div><div>actor</div><div>when</div><div>message</div></div>${runs.map(run => `<div class="trow" data-run-id="${esc(run.ID)}"><div class="status-cell run-status">${runStatusCell(run)}</div><div class="primary"><div class="repo-name">${esc(repoName(run.RepoID))} ${releaseBadge(run)}${credentialedBadge(run)} ${supersededBadge(run)}</div><div class="branch">${esc(run.RefKind === "tag" ? "tag " : "")}${esc(run.Ref)}</div></div><div class="sha">${esc(shortSha(run.SHA))}</div><div class="clip" title="${esc(run.Actor)}">${esc(run.Actor || "--")}</div><div class="nowrap" title="${esc(fmtTime(runWhen(run)))}">${esc(ago(runWhen(run)))}<br><span class="meta">${esc(fmtDur(runDuration(run)))}</span></div><div class="clip" title="${esc(runMessage(run))}">${esc(runMessage(run))}</div></div>`).join("")}</div>`;
-}
+
 async function renderRuns(seq) {
   setChrome("runs", "/ runs");
   await Promise.all([loadRepos(), loadRuns()]);
   if (!currentRoute(seq)) return;
-  localStorage.setItem("oberth-filter", state.filter);
-  localStorage.setItem("oberth-repo", state.repo);
-  const runs = state.runs, visible = runs.filter(runMatches), counts = repoCounts(runs);
-  const running = runs.filter(run => run.Status === "running").length;
-  const queued = runs.filter(run => run.Status === "queued").length;
-  const failed = runs.filter(run => run.Status === "failed").length;
-  const releases = runs.filter(run => run.Release).length;
+  localStorage.setItem("oberth-stream", state.stream);
+  const blocks = branchBlocks(state.runs);
+  if (!state.me && state.runs.length) state.me = state.runs[0].Actor || "";
+  const visible = blocks.filter(branchMatches);
+  const stats = streamStats(blocks);
   replaceApp(`
   <section class="screen">
-    <div class="bar">
-      <h1>Runs</h1>
-      <div class="stats"><span><b>${runs.length}</b> retained</span><span><b>${running}</b> running</span><span><b>${queued}</b> queued</span><span><b>${failed}</b> failed</span><span><b>${releases}</b> release</span></div>
+    <div class="sfil">
+      <button class="schip ${state.stream === "needs" ? "on" : ""}" data-stream="needs">Needs me</button>
+      <button class="schip ${state.stream === "mine" ? "on" : ""}" data-stream="mine">Mine</button>
+      <button class="schip ${state.stream === "all" ? "on" : ""}" data-stream="all">Everyone</button>
+      ${state.repo !== "all" ? `<button class="schip repo on" data-repo-runs="all">${esc(state.repo)} &times;</button>` : ""}
+      <span class="sstat">${visible.length} branch${visible.length === 1 ? "" : "es"}${stats.done ? ` &middot; <b>${stats.green}/${stats.done}</b> green &middot; median <b>${esc(fmtDur(stats.median))}</b>` : ""}</span>
     </div>
-    <div class="runs-layout">
-      <aside class="repo-side">
-        <div class="repo-filter-row"><button class="repo-filter ${state.repo === "all" ? "on" : ""}" data-repo-filter="all"><span class="name">All repos</span><span class="count">${esc(counts.get("all") || 0)}</span></button></div>
-        ${state.repos.map(repo => `<div class="repo-filter-row"><button class="repo-filter ${state.repo === repo.Name ? "on" : ""}" data-repo-filter="${esc(repo.Name)}"><span class="name">${esc(repo.Name)}</span><span class="count">${esc(counts.get(repo.Name) || 0)}</span></button></div>`).join("")}
-      </aside>
-      <section>
-        <div class="toolbar">
-          ${runFilters.map(f => `<button class="chip ${state.filter === f ? "on" : ""}" data-status-filter="${esc(f)}">${esc(f)}</button>`).join("")}
-          <span class="count">${visible.length} shown</span>
-        </div>
-        ${visible.length ? runsTable(visible) : `<div class="empty">No runs match the current filters.</div>`}
-      </section>
-    </div>
+    ${visible.length ? visible.map(branchBlock).join("") : `<div class="empty">Nothing here. Push a branch and it will appear.</div>`}
   </section>`);
   setAuto(listPollMs);
 }
@@ -591,39 +652,47 @@ async function renderRunDetailView(detail, seq) {
   const previousStepScroll = previousStepList ? previousStepList.scrollTop : 0;
   setChrome("runs", `/ ${repository}`);
   replaceApp(`
-  <section class="screen wide">
-    <div class="rh">
-      <div class="rh1">
-        ${bigIcon(run.Status)}
-        <span class="rh-name"><span class="rp">${esc(repository)} /</span> ${esc(run.Ref)}</span>
-        <span class="v4b ${kind === "pass" ? "pass" : kind === "fail" ? "fail" : kind === "run" ? "run" : "dim"}">${esc(phaseLabel)}</span>
-        ${releaseBadge(run)}${credentialedBadge(run)}
-        ${run.SupersededBy ? '<span class="v4b superseded">SUPERSEDED</span>' : ""}
-        <div class="time">${(() => { const u = compareURL(run); return u ? `<button type="button" class="v4pr" data-action="publish-pr" data-run="${esc(run.ID)}" data-compare="${esc(u)}" title="Push this branch to the forge, then open the pull request form">push &amp; open PR ↗</button>` : ""; })()}<span><b>${esc(fmtDur(seconds))}</b></span><span>${esc(ago(runWhen(run)))}</span><button class="v4back" data-action-back>‹ back</button></div>
-      </div>
-      <div class="rh2">
-        <span>actor <span class="ag" title="${esc(run.Actor)}">${esc(run.Actor || "--")}</span></span>
-        <span>sha <span class="sha cpy" data-copy-text="${esc(run.SHA)}" title="${esc(run.SHA)} — click to copy">${esc(shortSha(run.SHA))}</span></span>
-        <span class="cpy" data-copy-text="${esc(run.ID)}" title="${esc(run.ID)} — click to copy">run ${esc(shortId(run.ID))} ⧉</span>
-        <span>trigger ${esc(run.Trigger || "--")}</span>
-        <span>${esc(run.RefKind === "tag" ? "tag" : "branch")}</span>
-        <span>queued ${esc(fmtTime(run.QueuedAt))}</span>
-        ${run.FinishedAt ? `<span>finished ${esc(fmtTime(run.FinishedAt))}</span>` : ""}
+  <section class="screen">
+    <button class="rback" data-action-back>&lsaquo; back</button>
+    <div class="rhead">
+      <span class="dot ${esc(kind)}"></span>
+      <h1>${esc(repository)}</h1>
+      <span class="pill ${esc(kind)}">${esc(statusLabel(run.Status))}</span>
+      ${run.Release ? '<span class="pill">release</span>' : run.Credentialed ? '<span class="pill">credentialed</span>' : ""}
+      ${run.SupersededBy ? '<span class="pill">superseded</span>' : ""}
+      <div class="racts">
+        ${(() => { const url = compareURL(run); return url ? `<button type="button" class="btn pri" data-action="publish-pr" data-run="${esc(run.ID)}" data-compare="${esc(url)}">Open PR<span class="kb">p</span></button>` : ""; })()}
       </div>
     </div>
-    ${kind === "fail" ? `<div class="fbanner"><b>✗ ${esc(run.FailedStep ? (run.FailedBurn ? run.FailedBurn + " / " : "") + run.FailedStep : "run failed")}</b><span class="err" title="${esc(run.Error)}">${esc(run.Error || "")}</span></div>` : ""}
-    ${run.SupersededBy ? `<div class="sbanner"><b>superseded</b><span class="err">a newer push replaced this run</span><button class="chip" data-run-id="${esc(run.SupersededBy)}">view successor ${esc(shortId(run.SupersededBy))}</button></div>` : ""}
-    <div class="v4-body">
-      <div class="slist" id="stepList">
-        <div class="sl-h"><span>STEPS · ${stepCount}${run.Release ? " · RELEASE" : run.Credentialed ? " · CREDENTIALED" : ""}</span></div>
-        <button class="v4row summary${selected ? "" : " sel"}" data-select-step=""><span class="ic ${kind === "pass" ? "g" : kind === "fail" ? "r" : kind === "run" ? "o" : "d"}">≡</span><span class="nm">Run summary</span><span class="dur">${esc(fmtDur(seconds))}</span></button>
-        <div class="sl-sep"></div>
-        ${burns.map(burn => { const solo = burn.steps.length === 1 && burn.steps[0].Step.toLowerCase() === burn.name.toLowerCase(); const header = solo ? "" : `<div class="burn-h">${statusIcon(burn.kind === "pass" ? "passed" : burn.kind === "fail" ? "failed" : burn.kind === "run" ? "running" : burn.kind === "pending" ? "queued" : "skipped")}<span>${esc(burn.name)}</span><span class="dur">${esc(fmtDur(burn.seconds))}</span></div>`; return header + burn.steps.map(step => { const key = stepKey(step), sk = statusKind(step.Status); return `<button class="v4row${key === selectedKey && selected ? " sel" : ""}${sk === "pending" ? " pend" : ""}" data-select-step="${esc(key)}"><span class="ic ${sk === "pass" ? "g" : sk === "fail" ? "r" : sk === "run" ? "o" : "d"}">${sk === "pass" ? "✓" : sk === "fail" ? "✗" : sk === "run" ? "◠" : sk === "cancel" ? "⊘" : "◌"}</span><span class="nm">${esc(step.Step)}</span><span class="dur">${sk === "cancel" ? "skipped" : sk === "pending" ? esc(statusLabel(step.Status)) : esc(fmtDur(spanSeconds(step.StartedAt, step.FinishedAt, sk === "run")))}</span></button>`; }).join(""); }).join("") || '<div class="empty">No step results recorded yet.</div>'}
+    <div class="rmeta">
+      <span>branch<b>${esc(run.Ref)}</b></span>
+      <span>commit<b class="copy-btn" data-copy-text="${esc(run.SHA)}" title="${esc(run.SHA)}">${esc(shortSha(run.SHA))}</b></span>
+      <span>actor<b>${esc(run.Actor || "--")}</b></span>
+      <span>took<b>${esc(fmtDur(seconds))}</b></span>
+      <span>${esc(ago(runWhen(run)))}</span>
+    </div>
+    ${kind === "fail" && (run.FailedStep || run.Error) ? `<div class="sbanner"><b>${esc(run.FailedStep ? (run.FailedBurn ? run.FailedBurn + " / " : "") + run.FailedStep : "run failed")}</b><span title="${esc(run.Error)}">${esc(run.Error || "")}</span></div>` : ""}
+    ${run.SupersededBy ? `<div class="sbanner"><b>superseded</b><span>a newer push replaced this run</span><button class="btn" data-run-id="${esc(run.SupersededBy)}">view successor</button></div>` : ""}
+    <div class="rbody">
+    <div class="burns" id="stepList">
+      <div class="steps"><button class="step${selected ? "" : " sel"}" data-select-step=""><span class="dot ${esc(kind)}"></span>summary<span class="du">${esc(fmtDur(seconds))}</span></button></div>
+      ${burns.map(burn => {
+        const solo = burn.steps.length === 1 && burn.steps[0].Step.toLowerCase() === burn.name.toLowerCase();
+        const header = solo ? "" : `<div class="burn-h"><span class="dot ${esc(statusKind(burn.kind === "pass" ? "passed" : burn.kind === "fail" ? "failed" : burn.kind === "run" ? "running" : burn.kind === "pending" ? "queued" : "skipped"))}"></span>${esc(burn.name)}<span class="du">${esc(fmtDur(burn.seconds))}</span></div>`;
+        return `<div class="burn">${header}<div class="steps">${burn.steps.map(step => {
+          const key = stepKey(step), sk = statusKind(step.Status);
+          return `<button class="step ${esc(sk)}${key === selectedKey && selected ? " sel" : ""}" data-select-step="${esc(key)}"><span class="dot ${esc(sk)}"></span>${esc(step.Step)}<span class="du">${sk === "cancel" ? "skipped" : sk === "pending" ? esc(statusLabel(step.Status)) : esc(fmtDur(spanSeconds(step.StartedAt, step.FinishedAt, sk === "run")))}</span></button>`;
+        }).join("")}</div></div>`;
+      }).join("") || '<div class="empty">No step results recorded yet.</div>'}
+    </div>
+    <div class="logp">
+      <div class="log-h">
+        ${live ? '<span class="live"><span class="dot run"></span>live</span>' : ""}
+        <span>${selected ? esc(stepKey(selected)) : "run summary"}</span>
+        <div class="rt"><button class="copy-btn" data-copy-text="${esc(run.ID)}">copy run id</button></div>
       </div>
-      <div class="logp">
-        <div class="log-h" id="logHead">${selected ? `${statusIcon(selected.Status)}<span class="nm">${esc(stepKey(selected))}</span><span class="v4b ${statusKind(selected.Status) === "pass" ? "pass" : statusKind(selected.Status) === "fail" ? "fail" : statusKind(selected.Status) === "run" ? "run" : "dim"}">${esc(statusLabel(selected.Status).toUpperCase())}</span>` : `<span class="ic ${kind === "pass" ? "g" : kind === "fail" ? "r" : kind === "run" ? "o" : "d"}">≡</span><span class="nm">Run summary</span><span class="v4b ${kind === "pass" ? "pass" : kind === "fail" ? "fail" : kind === "run" ? "run" : "dim"}">${esc(phaseLabel)} · ${esc(fmtDur(seconds))}</span>`}</div>
-        <div class="terminal"><div class="term-bar"><span class="lamp red"></span><span class="lamp yellow"></span><span class="lamp green"></span><span class="term-title">${esc(repository)} / ${esc(run.Ref)} — ${live ? "live output" : selected ? esc(stepKey(selected)) : "summary"}</span>${live ? '<span class="term-live"><span class="dot live"></span>LIVE</span>' : ""}</div><div id="termBody" class="term-body">${terminal}</div></div>
-      </div>
+      <div id="termBody" class="logbody">${terminal}</div>
+    </div>
     </div>
   </section>`);
   const termBody = document.getElementById("termBody");
@@ -704,7 +773,7 @@ function upstreamName(upstreamID) {
   return info ? info.name : (upstreamID ? "#" + upstreamID : "--");
 }
 function historyStrip(runs) {
-  return `<div class="history" aria-label="recent runs, oldest to newest">${runs.slice(0, 12).reverse().map(run => `<i class="${statusKind(run.Status)}" title="${esc(`${run.Ref} · ${statusLabel(run.Status)} · ${fmtTime(runWhen(run))}`)}"></i>`).join("") || '<span class="meta">--</span>'}</div>`;
+  return `<div class="strip" aria-label="recent runs, oldest to newest">${runs.slice(0, 12).reverse().map(run => `<i class="${statusKind(run.Status)}" style="height:${Math.max(5, Math.min(16, Math.round((runDuration(run) || 0) / 25)))}px" title="${esc(`${run.Ref} · ${statusLabel(run.Status)} · ${fmtTime(runWhen(run))}`)}"></i>`).join("") || '<span class="meta">--</span>'}</div>`;
 }
 async function renderRepos(seq) {
   setChrome("repos", "/ repos");
@@ -716,11 +785,15 @@ async function renderRepos(seq) {
   });
   replaceApp(`
   <section class="screen">
-    <div class="bar"><h1>Repositories</h1><span class="meta">${rows.length} configured</span></div>
-    <div class="table repo-table">
-      <div class="trow head"><div>repository</div><div>status</div><div>default branch</div><div>latest run</div><div>history</div><div>upstream</div></div>
-      ${rows.map(({ repo, runs, latest }) => `<div class="trow" data-repo-runs="${esc(repo.Name)}"><div class="primary"><div class="repo-name">${esc(repo.Name)}</div></div><div>${latest ? pill(statusLabel(latest.Status), statusKind(latest.Status)) : '<span class="meta">no runs</span>'}</div><div class="branch">${esc(repo.DefaultBranch || "--")}</div><div>${latest ? `<div class="branch">${esc(latest.Ref)}</div><span class="meta">${esc(ago(runWhen(latest)))}</span>` : '<span class="meta">--</span>'}</div><div>${historyStrip(runs)}</div><div class="clip">${esc(upstreamName(repo.UpstreamID))}</div></div>`).join("") || '<div class="empty static">No repositories registered. Register an upstream and repository in-pod with oberth admin.</div>'}
-    </div>
+    <div class="bar"><h1>Repositories</h1><span class="meta">${rows.length} gated by this Oberth</span></div>
+    ${rows.length ? `<div class="cards">${rows.map(({ repo, runs, latest }) => `
+      <button class="card" data-repo-runs="${esc(repo.Name)}">
+        <div class="ct"><span class="dot ${latest ? esc(statusKind(latest.Status)) : "pending"}"></span><span class="cn">${esc(repo.Name)}</span></div>
+        <div class="cs">${latest ? `${esc(latest.Ref)} &middot; ${esc(ago(runWhen(latest)))}` : "no runs yet"}</div>
+        ${historyStrip(runs)}
+        <div class="cs" style="margin-top:9px">${esc(repo.DefaultBranch || "--")} &middot; ${esc(upstreamName(repo.UpstreamID))}</div>
+      </button>`).join("")}</div>`
+      : '<div class="empty">No repositories registered. Register an upstream and repository in-pod with oberth admin.</div>'}
   </section>`);
   setAuto(slowPollMs);
 }
@@ -745,7 +818,7 @@ async function renderIssues(seq) {
     page = await api(issueListURL());
   } catch (err) {
     if (!currentRoute(seq)) return;
-    replaceApp(`<section class="screen"><h1>Issues</h1><div class="error">${esc(err.message || err)}<br><button type="button" class="retry" data-action="issue-retry">Retry</button></div></section>`);
+    replaceApp(`<section class="screen"><h1>Issues</h1><div class="error">${esc(err.message || err)}<br><button type="button" class="btn" data-action="issue-retry">Retry</button></div></section>`);
     return;
   }
   if (!currentRoute(seq)) return;
@@ -756,18 +829,18 @@ async function renderIssues(seq) {
   replaceApp(`
   <section class="screen">
     <div class="bar"><h1>Issues</h1><span class="meta">Oberth internal ledger — CI failures and agent-filed work items</span></div>
-    <div class="toolbar">
-      ${kinds.map(([value, label]) => `<button class="chip ${state.issueKind === value ? "on" : ""}" data-issue-kind="${esc(value)}">${esc(label)}</button>`).join("")}
+    <div class="sfil">
+      ${kinds.map(([value, label]) => `<button class="schip ${state.issueKind === value ? "on" : ""}" data-issue-kind="${esc(value)}">${esc(label)}</button>`).join("")}
       <span class="status-divider"></span>
-      ${states.map(([value, label]) => `<button class="chip ${state.issueState === value ? "on" : ""}" data-issue-state="${esc(value)}">${esc(label)}</button>`).join("")}
+      ${states.map(([value, label]) => `<button class="schip ${state.issueState === value ? "on" : ""}" data-issue-state="${esc(value)}">${esc(label)}</button>`).join("")}
       <label>repo <select data-action="issue-repo"><option value="">all</option>${state.repos.map(repo => `<option value="${esc(repo.Name)}" ${state.issueRepo === repo.Name ? "selected" : ""}>${esc(repo.Name)}</option>`).join("")}</select></label>
-      <span class="count">${issues.length} shown${state.issueCursorHistory.length ? ` · page ${state.issueCursorHistory.length + 1}` : ""}</span>
+      <span class="sstat">${issues.length} shown${state.issueCursorHistory.length ? ` · page ${state.issueCursorHistory.length + 1}` : ""}</span>
     </div>
-    ${issues.length ? `<div class="table issues-table"><div class="issue-row head static"><span>id</span><span>kind</span><span>state</span><span>repo</span><span>branch</span><span>title</span><span>seen</span><span>updated</span></div>${issues.map(issueRow).join("")}</div>` : '<div class="empty">No internal issues match these filters.</div>'}
+    ${issues.length ? `<div class="panel">${issues.map(issueRow).join("")}
     <div class="issue-pager">
-      <button type="button" data-action="issue-newer" ${state.issueCursorHistory.length ? "" : "disabled"}>‹ newer</button>
-      <button type="button" data-action="issue-older" ${page.NextBefore ? "" : "disabled"}>older ›</button>
-    </div>
+      <button type="button" class="btn" data-action="issue-newer" ${state.issueCursorHistory.length ? "" : "disabled"}>&lsaquo; newer</button>
+      <button type="button" class="btn" data-action="issue-older" ${page.NextBefore ? "" : "disabled"}>older &rsaquo;</button>
+    </div></div>` : '<div class="empty">No internal issues match these filters.</div>'}
   </section>`);
   setAuto(slowPollMs);
 }
@@ -787,7 +860,7 @@ function openIssue(id, opener) {
   document.getElementById("issueDialogContent").innerHTML = `
     <h3>${esc(issue.Title || "Untitled issue")}</h3>
     <p class="meta">${esc(issue.RepoID ? repoName(issue.RepoID) : "workspace-global")} ${issue.Branch ? "/ " + esc(issue.Branch) : ""} · Oberth internal ledger</p>
-    <dl class="kv-grid">
+    <dl class="rmeta">
       <dt>kind</dt><dd>${esc(issue.Kind)}</dd>
       <dt>state</dt><dd>${esc(issue.State)}</dd>
       <dt>occurrences</dt><dd>${esc(issue.Occurrences || 1)}</dd>
@@ -815,7 +888,7 @@ function closeIssue() {
 function ledFor(value) { return value === "ready" ? "ok" : "err"; }
 function svcCard(name, value, sub, mood) {
   const cls = mood || (value === "ready" ? "ok" : "bad");
-  return `<div class="svc ${cls}"><div class="svc-name"><span class="led ${cls === "ok" ? "ok" : cls === "warn" ? "" : "bad"}"></span>${esc(name)}</div><div class="svc-val">${esc(value)}</div>${sub ? `<div class="svc-sub">${sub}</div>` : ""}</div>`;
+  return `<div class="card ${cls === "ok" ? "" : cls === "warn" ? "warn" : "bad"}"><div class="ct"><span class="led ${cls === "ok" ? "ok" : cls === "warn" ? "na" : "err"}"></span><span class="cn">${esc(name)}</span></div><div class="cv">${esc(value)}</div>${sub ? `<div class="cs">${sub}</div>` : ""}</div>`;
 }
 async function renderStatus(seq) {
   setChrome("status", "/ status");
@@ -829,7 +902,7 @@ async function renderStatus(seq) {
   replaceApp(`
   <section class="screen">
     <div class="bar"><h1>Status</h1><span class="meta">FAB control plane health</span></div>
-    <div class="svc-grid">
+    <div class="cards">
       ${svcCard("database", s.database || "unavailable", `${esc(s.upstreams ?? 0)} upstream${s.upstreams === 1 ? "" : "s"} · ${esc(s.repositories ?? 0)} repos`)}
       ${svcCard("upstream vcs", s.vcs || "unavailable", "")}
       ${svcCard("kubernetes", s.cluster || "unavailable", "")}
@@ -837,23 +910,23 @@ async function renderStatus(seq) {
       ${svcCard("secret store", storeValue, store && store.address ? esc(store.address) : "OpenBao release secrets disabled", storeMood)}
       ${svcCard("server", s.version || document.body.dataset.version || "dev", "", "ok")}
     </div>
-    <div class="vcs-panel">
-      <div class="vcs-head">Upstreams</div>
-      ${(s.upstream_info || []).map(upstream => `<div class="vcs-entry"><span class="vcs-led ${upstream.probe === "ready" ? "ok" : "err"}"></span><span class="vcs-host">${esc(upstream.name)}</span><span class="meta">${esc(upstream.kind)}</span><span class="mono-detail">${esc(upstream.base_url)}</span><span class="mono-detail">${esc(upstream.probe === "ready" ? "reachable" : upstream.probe || "unprobed")}</span></div>`).join("") || '<div class="vcs-entry"><span class="vcs-led na"></span><span class="meta">No upstream registered — run oberth admin upstream register in-pod.</span></div>'}
-      ${s.ssh_identity ? `<div class="vcs-entry"><span class="vcs-led ok"></span><span class="vcs-host">SSH identity</span><span class="meta">upstream auth</span><span class="mono-detail">${esc(s.ssh_identity)}</span><span><button class="copy-btn" data-copy-text="${esc(s.ssh_identity)}">Copy</button></span></div>` : ""}
+    <div class="panel">
+      <div class="ph">Upstreams</div>
+      ${(s.upstream_info || []).map(upstream => `<div class="prow"><span class="led ${upstream.probe === "ready" ? "ok" : "err"}"></span><span class="pk">${esc(upstream.name)}</span><span class="meta">${esc(upstream.kind)}</span><span class="mono-detail">${esc(upstream.base_url)}</span><span class="mono-detail">${esc(upstream.probe === "ready" ? "reachable" : upstream.probe || "unprobed")}</span></div>`).join("") || '<div class="prow"><span class="led na"></span><span class="meta">No upstream registered — run oberth admin upstream register in-pod.</span></div>'}
+      ${s.ssh_identity ? `<div class="prow"><span class="led ok"></span><span class="pk">SSH identity</span><span class="meta">upstream auth</span><span class="mono-detail">${esc(s.ssh_identity)}</span><span><button class="copy-btn" data-copy-text="${esc(s.ssh_identity)}">Copy</button></span></div>` : ""}
     </div>
-    <div class="vcs-panel">
-      <div class="vcs-head">Audit chain</div>
+    <div class="panel">
+      <div class="ph">Audit chain</div>
       ${chain ? `
-      <div class="vcs-entry"><span class="vcs-led ${ledFor(s.audit)}"></span><span class="vcs-host">head</span><span class="meta">#${esc(chain.head_id ?? 0)}</span><span class="mono-detail">${esc((chain.head_sha256 || "").slice(0, 16))}${chain.head_sha256 ? "…" : ""}</span><span class="mono-detail">hash-chained actions</span></div>
-      <div class="vcs-entry"><span class="vcs-led ${chain.anchor_id ? "ok" : "na"}"></span><span class="vcs-host">checkpoint</span><span class="meta">${chain.anchor_id ? "#" + esc(chain.anchor_id) : "none"}</span><span class="mono-detail">${esc(chain.tsa_url || "--")}</span><span class="mono-detail">${chain.anchored_at ? "anchored " + esc(ago(chain.anchored_at)) : chain.anchored === false ? "local mode — external anchoring disabled" : "not yet anchored"}</span></div>
-      ${chain.detail ? `<div class="vcs-entry"><span class="vcs-led err"></span><span class="vcs-host chain-bad">attention</span><span class="mono-detail chain-bad" title="${esc(chain.detail)}">${esc(chain.detail)}</span><span></span><span></span></div>` : ""}` : `<div class="vcs-entry"><span class="vcs-led na"></span><span class="meta">Audit chain detail is unavailable.</span></div>`}
+      <div class="prow"><span class="led ${ledFor(s.audit)}"></span><span class="pk">head</span><span class="meta">#${esc(chain.head_id ?? 0)}</span><span class="mono-detail">${esc((chain.head_sha256 || "").slice(0, 16))}${chain.head_sha256 ? "…" : ""}</span><span class="mono-detail">hash-chained actions</span></div>
+      <div class="prow"><span class="led ${chain.anchor_id ? "ok" : "na"}"></span><span class="pk">checkpoint</span><span class="meta">${chain.anchor_id ? "#" + esc(chain.anchor_id) : "none"}</span><span class="mono-detail">${esc(chain.tsa_url || "--")}</span><span class="mono-detail">${chain.anchored_at ? "anchored " + esc(ago(chain.anchored_at)) : chain.anchored === false ? "local mode — external anchoring disabled" : "not yet anchored"}</span></div>
+      ${chain.detail ? `<div class="prow"><span class="led err"></span><span class="pk chain-bad">attention</span><span class="mono-detail chain-bad" title="${esc(chain.detail)}">${esc(chain.detail)}</span><span></span><span></span></div>` : ""}` : `<div class="prow"><span class="led na"></span><span class="meta">Audit chain detail is unavailable.</span></div>`}
     </div>
     ${store && store.configured ? `
-    <div class="vcs-panel">
-      <div class="vcs-head">Secret store (OpenBao)</div>
-      <div class="vcs-entry"><span class="vcs-led ${store.transport === "insecure-http" ? "err" : "ok"}"></span><span class="vcs-host">address</span><span class="meta">${esc(store.transport)}</span><span class="mono-detail">${esc(store.address)}</span><span class="mono-detail">auth ${esc(store.auth_mount)} · role ${esc(store.role)}</span></div>
-      <div class="vcs-entry"><span class="vcs-led ${store.probe === "ready" ? "ok" : store.probe ? "err" : "na"}"></span><span class="vcs-host">verify</span><span class="meta">${store.probe === "ready" ? "login OK" : store.probe ? "login failed" : "no probe"}</span><span class="mono-detail">${store.probe && store.probe !== "ready" ? esc(store.probe) : "SA token \u2192 K8s-auth login \u2192 TokenReview \u2192 logout"}</span><span class="mono-detail">proves reachability, TLS/CA, unsealed, auth mount, role binding</span></div>
+    <div class="panel">
+      <div class="ph">Secret store (OpenBao)</div>
+      <div class="prow"><span class="led ${store.transport === "insecure-http" ? "err" : "ok"}"></span><span class="pk">address</span><span class="meta">${esc(store.transport)}</span><span class="mono-detail">${esc(store.address)}</span><span class="mono-detail">auth ${esc(store.auth_mount)} · role ${esc(store.role)}</span></div>
+      <div class="prow"><span class="led ${store.probe === "ready" ? "ok" : store.probe ? "err" : "na"}"></span><span class="pk">verify</span><span class="meta">${store.probe === "ready" ? "login OK" : store.probe ? "login failed" : "no probe"}</span><span class="mono-detail">${store.probe && store.probe !== "ready" ? esc(store.probe) : "SA token \u2192 K8s-auth login \u2192 TokenReview \u2192 logout"}</span><span class="mono-detail">proves reachability, TLS/CA, unsealed, auth mount, role binding</span></div>
     </div>` : ""}
   </section>`);
   setAuto(slowPollMs);
@@ -924,8 +997,13 @@ app.addEventListener("click", event => {
   if ((target = event.target.closest("[data-open-issue]"))) { openIssue(target.dataset.openIssue, target); return; }
   if ((target = event.target.closest("[data-run-id]"))) { go(`/runs/${enc(target.dataset.runId)}`); return; }
   if ((target = event.target.closest("[data-repo-runs]"))) { state.repo = target.dataset.repoRuns; go("/runs"); return; }
-  if ((target = event.target.closest("[data-repo-filter]"))) { state.repo = target.dataset.repoFilter; route(); return; }
-  if ((target = event.target.closest("[data-status-filter]"))) { state.filter = target.dataset.statusFilter; route(); return; }
+  if ((target = event.target.closest("[data-branch-toggle]"))) {
+    const key = target.dataset.branchToggle;
+    if (state.openBranches.has(key)) state.openBranches.delete(key); else state.openBranches.add(key);
+    route(true);
+    return;
+  }
+  if ((target = event.target.closest("[data-stream]"))) { state.stream = target.dataset.stream; route(); return; }
   if ((target = event.target.closest("[data-issue-kind]"))) { changeIssueFilter({ issueKind: target.dataset.issueKind }); return; }
   if ((target = event.target.closest("[data-issue-state]"))) { changeIssueFilter({ issueState: target.dataset.issueState }); return; }
   if ((target = event.target.closest("[data-select-step]")) && target.dataset.selectStep !== undefined) {
@@ -943,6 +1021,7 @@ document.addEventListener("keydown", event => {
   if (event.target && ["INPUT", "SELECT", "TEXTAREA"].includes(event.target.tagName)) return;
   if (event.key === "r" || event.key === "R") route();
   if (event.key === "t" || event.key === "T") toggleTheme();
+  if (event.key === "/") { const jump = document.getElementById("jump"); if (jump) { event.preventDefault(); jump.focus(); } return; }
   if (event.key === "1") go("/runs");
   if (event.key === "2") go("/repos");
   if (event.key === "3") go("/issues");
@@ -955,6 +1034,20 @@ document.addEventListener("keydown", event => {
     const next = event.key === "j" ? Math.min(current + 1, rows.length - 1) : Math.max(current - 1, 0);
     if (next !== current) { state.step = rows[next].dataset.selectStep; route(true); }
   }
+});
+const jumpRoutes = { runs: "/runs", repos: "/repos", issues: "/issues", status: "/status" };
+document.addEventListener("input", event => {
+  if (!(event.target instanceof HTMLInputElement) || event.target.id !== "jump") return;
+  state.query = event.target.value.trim().toLowerCase();
+  if (location.pathname === "/" || location.pathname === "/runs") route(true);
+});
+document.addEventListener("keydown", event => {
+  const input = event.target;
+  if (!(input instanceof HTMLInputElement) || input.id !== "jump") return;
+  if (event.key === "Escape") { input.value = ""; state.query = ""; input.blur(); route(true); return; }
+  if (event.key !== "Enter") return;
+  const destination = jumpRoutes[input.value.trim().toLowerCase()];
+  if (destination) { input.value = ""; state.query = ""; go(destination); }
 });
 window.addEventListener("popstate", () => route());
 const issueDialog = document.getElementById("issueDialog");
