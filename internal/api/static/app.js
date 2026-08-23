@@ -14,6 +14,7 @@ const state = {
   timer: null, routeSeq: 0,
   repo: localStorage.getItem("oberth-repo") || "all",
   step: "", stepRunID: "",
+  logPattern: "", logMeta: null,
   logCache: new Map(),
   live: null, // assigned per-run by liveLogContent
   issueKind: "", issueState: "open", issueRepo: "", issueCursor: 0, issueCursorHistory: [],
@@ -488,6 +489,15 @@ const LOG_ERR_FIELD_ALL = new RegExp(LOG_RULES.errField, "gi");
 const LOG_NIL_VALUES = new Set(["", "\"\"", "''", "<nil>", "nil", "null", "none", "<none>", "-"]);
 const LOG_LEVEL_BAD = new Set(["error", "err", "fatal", "crit", "critical", "panic", "emerg", "alert"]);
 const LOG_LEVEL_WARN = new Set(["warn", "warning"]);
+function logMetaLabel() {
+  const meta = state.logMeta;
+  if (!state.logPattern || !meta || meta.total_lines === undefined) return "";
+  const shown = meta.returned_lines ?? 0, matched = meta.matched_lines ?? 0, total = meta.total_lines ?? 0;
+  const text = shown < matched
+    ? `showing ${shown} of ${matched} matching lines, ${total} in the step`
+    : `${matched} matching of ${total} lines`;
+  return `<span class="logmeta">${esc(text)}</span>`;
+}
 function logLineClass(line) {
   /* Classification-only prefix strip: anchored rules must work in the
      combined live view, where lines still carry [burn/step]. Display
@@ -542,7 +552,7 @@ function stripStepPrefix(lines, burn, step) {
   return lines.map(line => line.startsWith(prefix) ? line.slice(prefix.length) : line);
 }
 const maxRenderedLogLines = 5000;
-function renderLogLines(lines) {
+function renderLogLines(lines, numbers) {
   const total = lines.length;
   const truncated = total > maxRenderedLogLines;
   const start = truncated ? total - maxRenderedLogLines : 0;
@@ -551,7 +561,8 @@ function renderLogLines(lines) {
     out += `<div class="log-line"><span class="log-no">--</span><span class="log-txt warn">[truncated] showing last ${maxRenderedLogLines} of ${total} lines</span></div>`;
   }
   for (let i = start; i < total; i++) {
-    out += `<div class="log-line"><span class="log-no">${i + 1}</span><span class="log-txt ${logLineClass(lines[i])}">${esc(lines[i]) || "&nbsp;"}</span></div>`;
+    const number = numbers && numbers[i] ? numbers[i] : i + 1;
+    out += `<div class="log-line"><span class="log-no">${esc(number)}</span><span class="log-txt ${logLineClass(lines[i])}">${esc(lines[i]) || "&nbsp;"}</span></div>`;
   }
   return out;
 }
@@ -589,13 +600,18 @@ async function stepLogContent(runID, step, active) {
   if (step.Status === "pending") return renderLogLines([`step: ${stepKey(step)} · pending`, "", "step is declared by the pipeline and has not been reached yet"]);
   if (statusKind(step.Status) === "pending") return renderLogLines([`step: ${stepKey(step)} · queued`, "", "step is waiting for its turn"]);
   if (statusKind(step.Status) === "run") return renderLogLines([`step: ${stepKey(step)} · running`, "", "step is running — the retained log appears when the step completes"]);
-  const cacheKey = `${runID}|${step.Burn}|${step.Step}|${step.FinishedAt || ""}`;
+  const cacheKey = `${runID}|${step.Burn}|${step.Step}|${step.FinishedAt || ""}|${state.logPattern}`;
   if (state.logCache.has(cacheKey)) return state.logCache.get(cacheKey);
   let html;
   try {
-    const payload = await api(`/api/runs/${enc(runID)}/logs?burn=${enc(step.Burn)}&step=${enc(step.Step)}`);
+    const query = `/api/runs/${enc(runID)}/logs?burn=${enc(step.Burn)}&step=${enc(step.Step)}` +
+      (state.logPattern ? `&pattern=${enc(state.logPattern)}&context=2` : "");
+    const payload = await api(query);
+    state.logMeta = payload;
     const lines = stripStepPrefix(splitLogText(payload.output), step.Burn, step.Step);
-    html = renderLogLines([`step: ${stepKey(step)} · ${statusLabel(step.Status)}${step.ExitCode ? ` · exit ${step.ExitCode}` : ""}`, ""].concat(lines.length ? lines : ["no retained step output"]));
+    const head = `step: ${stepKey(step)} · ${statusLabel(step.Status)}${step.ExitCode ? ` · exit ${step.ExitCode}` : ""}`;
+    const numbers = payload.line_numbers && payload.line_numbers.length ? [null, null].concat(payload.line_numbers) : null;
+    html = renderLogLines([head, ""].concat(lines.length ? lines : [state.logPattern ? "no lines match this filter" : "no retained step output"]), numbers);
   } catch (err) {
     html = renderLogLines([`step: ${stepKey(step)} · ${statusLabel(step.Status)}`, "", `step log unavailable: ${err.message || err}`]);
   }
@@ -674,6 +690,9 @@ async function renderRunDetailView(detail, seq) {
   const previousTerm = document.getElementById("termBody");
   const stick = !previousTerm || previousTerm.scrollHeight - previousTerm.scrollTop - previousTerm.clientHeight < 40;
   const previousScroll = previousTerm ? previousTerm.scrollTop : 0;
+  const previousFilter = document.getElementById("logFilter");
+  const filterWasFocused = previousFilter === document.activeElement;
+  const filterCaret = previousFilter ? previousFilter.selectionStart : 0;
   const previousStepList = document.getElementById("stepList");
   const previousStepScroll = previousStepList ? previousStepList.scrollTop : 0;
   setChrome("runs");
@@ -715,6 +734,8 @@ async function renderRunDetailView(detail, seq) {
       <div class="log-h">
         ${live ? '<span class="live"><span class="dot run"></span>live</span>' : ""}
         <span>${selected ? esc(stepKey(selected)) : "run summary"}</span>
+        ${selected ? `<label class="logfilter"><input id="logFilter" type="search" autocomplete="off" placeholder="filter lines" value="${esc(state.logPattern)}"></label>` : ""}
+        ${logMetaLabel()}
         <div class="rt"><button class="copy-btn" data-copy-text="${esc(run.ID)}">copy run id</button></div>
       </div>
       <div id="termBody" class="logbody">${terminal}</div>
@@ -723,6 +744,13 @@ async function renderRunDetailView(detail, seq) {
   </section>`);
   const termBody = document.getElementById("termBody");
   if (termBody && (live || selected)) termBody.scrollTop = stick ? termBody.scrollHeight : previousScroll;
+  if (filterWasFocused) {
+    const filterInput = document.getElementById("logFilter");
+    if (filterInput) {
+      filterInput.focus();
+      filterInput.setSelectionRange(filterCaret, filterCaret);
+    }
+  }
   const stepList = document.getElementById("stepList");
   if (stepList) stepList.scrollTop = previousStepScroll;
   if (run.Status === "running") setAuto(livePollMs);
@@ -1033,6 +1061,7 @@ app.addEventListener("click", event => {
   if ((target = event.target.closest("[data-issue-kind]"))) { changeIssueFilter({ issueKind: target.dataset.issueKind }); return; }
   if ((target = event.target.closest("[data-issue-state]"))) { changeIssueFilter({ issueState: target.dataset.issueState }); return; }
   if ((target = event.target.closest("[data-select-step]")) && target.dataset.selectStep !== undefined) {
+    state.logMeta = null;
     state.step = target.dataset.selectStep;
     route(true);
     return;
@@ -1062,7 +1091,19 @@ document.addEventListener("keydown", event => {
   }
 });
 const jumpRoutes = { runs: "/runs", repos: "/repos", issues: "/issues", status: "/status" };
+let logFilterTimer = null;
 document.addEventListener("input", event => {
+  if (event.target instanceof HTMLInputElement && event.target.id === "logFilter") {
+    const value = event.target.value.trim();
+    clearTimeout(logFilterTimer);
+    logFilterTimer = setTimeout(() => {
+      if (value === state.logPattern) return;
+      state.logPattern = value;
+      state.logCache.clear();
+      route(true);
+    }, 250);
+    return;
+  }
   if (!(event.target instanceof HTMLInputElement) || event.target.id !== "jump") return;
   state.query = event.target.value.trim().toLowerCase();
   if (location.pathname === "/" || location.pathname === "/runs") route(true);

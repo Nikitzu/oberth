@@ -139,10 +139,20 @@ a{color:inherit}
 .btn.pri,.bbtn.pri{background:var(--acc);border-color:var(--acc);color:var(--acc-ink);font-weight:600}
 .btn.pri:hover,.bbtn.pri:hover{filter:brightness(.92)}
 .bbtn.pri .kb,.btn.pri .kb{background:#00000024;border-color:transparent;color:inherit}
+select{height:27px;padding:0 26px 0 10px;border-radius:var(--rs);border:1px solid var(--line2);
+  background:var(--panel2);color:var(--fg);font-size:11.5px;font-family:var(--mono);
+  -webkit-appearance:none;appearance:none;cursor:pointer;
+  background-image:linear-gradient(45deg,transparent 50%,currentColor 50%),linear-gradient(135deg,currentColor 50%,transparent 50%);
+  background-position:calc(100% - 14px) 12px,calc(100% - 9px) 12px;
+  background-size:5px 5px,5px 5px;background-repeat:no-repeat}
+select:hover{border-color:var(--acc-line)}
+select:focus{outline:none;border-color:var(--acc)}
+option{background:var(--panel);color:var(--fg)}
+.sfil label{display:flex;align-items:center;gap:7px;font-size:11.5px;color:var(--dim)}
 .copy-btn{padding:3px 9px;border-radius:var(--rs);border:1px solid var(--line2);font-size:10.5px;color:var(--muted)}
 .copy-btn:hover{color:var(--fg);border-color:var(--acc-line)}
 
-.cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:11px}
+.cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:11px;margin-bottom:12px}
 .card{border:1px solid var(--line);border-radius:var(--r);background:var(--panel);
   padding:14px 16px;box-shadow:var(--shadow);width:100%}
 .card:hover{border-color:var(--line2)}
@@ -283,3 +293,11 @@ pre.md-code{background:var(--tbg);padding:11px;border-radius:var(--rs);overflow-
 }
 .bsha,.bdur{font-family:var(--mono);color:var(--dim)}
 .log-line.na .log-txt{color:var(--tdim)}
+.logfilter{display:flex;align-items:center}
+.logfilter input{height:23px;min-width:150px;padding:0 9px;border-radius:var(--rs);
+  border:1px solid var(--line2);background:var(--bg);color:var(--fg);
+  font-family:var(--mono);font-size:11px}
+.logfilter input:focus{outline:none;border-color:var(--acc-line)}
+.logfilter input::placeholder{color:var(--dim)}
+.logfilter input::-webkit-search-cancel-button{-webkit-appearance:none}
+.logmeta{color:var(--dim);font-size:10.5px}
