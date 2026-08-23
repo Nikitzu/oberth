@@ -111,8 +111,14 @@ func (store *Store) BuildIndex(runID string) (Index, error) {
 }
 
 func (store *Store) Read(runID, burn, step string) ([]byte, error) {
-	body, _, err := store.ReadFiltered(runID, burn, step, Filter{})
-	return body, err
+	body, meta, err := store.ReadFiltered(runID, burn, step, Filter{})
+	if err != nil {
+		return nil, err
+	}
+	if meta.Truncated {
+		return nil, ErrLogSliceTooLarge
+	}
+	return body, nil
 }
 
 func (store *Store) ReadFiltered(runID, burn, step string, filter Filter) ([]byte, Meta, error) {
@@ -135,9 +141,6 @@ func (store *Store) ReadFiltered(runID, burn, step string, filter Filter) ([]byt
 	}
 	if len(selected) == 0 {
 		return nil, Meta{}, fmt.Errorf("log slice %s/%s: %w", burn, step, os.ErrNotExist)
-	}
-	if total > maxReadBytes {
-		return nil, Meta{}, ErrLogSliceTooLarge
 	}
 	path, _ := store.logPath(runID)
 	// logPath validated the owner ID and confined this path to the log root.
@@ -914,18 +917,41 @@ func (c *collector) withheld() bool {
 }
 
 func (c *collector) bytes(budget int64) ([]byte, []int, bool) {
+	flat := make([]numberedLine, 0)
+	for _, group := range c.groups {
+		flat = append(flat, group...)
+	}
+	if c.tail {
+		return takeFromEnd(flat, budget)
+	}
+	return takeFromStart(flat, budget)
+}
+
+func takeFromStart(lines []numberedLine, budget int64) ([]byte, []int, bool) {
 	var out []byte
 	var numbers []int
 	var used int64
-	for _, group := range c.groups {
-		for _, line := range group {
-			if used+int64(len(line.text)) > budget {
-				return out, numbers, true
-			}
-			used += int64(len(line.text))
-			out = append(out, line.text...)
-			numbers = append(numbers, line.number)
+	for _, line := range lines {
+		if used+int64(len(line.text)) > budget {
+			return out, numbers, true
 		}
+		used += int64(len(line.text))
+		out = append(out, line.text...)
+		numbers = append(numbers, line.number)
 	}
 	return out, numbers, false
+}
+
+func takeFromEnd(lines []numberedLine, budget int64) ([]byte, []int, bool) {
+	var used int64
+	first := len(lines)
+	for index := len(lines) - 1; index >= 0; index-- {
+		if used+int64(len(lines[index].text)) > budget {
+			break
+		}
+		used += int64(len(lines[index].text))
+		first = index
+	}
+	out, numbers, _ := takeFromStart(lines[first:], budget)
+	return out, numbers, first > 0
 }

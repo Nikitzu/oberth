@@ -243,9 +243,7 @@ type EnqueueObserver interface {
 type LogStore interface {
 	Create(string) (*os.File, error)
 	BuildIndex(string) (runlog.Index, error)
-	Read(string, string, string) ([]byte, error)
 	ReadFiltered(string, string, string, runlog.Filter) ([]byte, runlog.Meta, error)
-	ReadActive(string, string, string) ([]byte, error)
 	ReadActiveFiltered(string, string, string, runlog.Filter) ([]byte, runlog.Meta, error)
 	Tail(string, int64) ([]byte, error)
 	// ReadFrom serves the dashboard's live view of a run in progress: bytes

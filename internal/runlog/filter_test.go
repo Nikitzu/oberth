@@ -1,6 +1,7 @@
 package runlog
 
 import (
+	"bufio"
 	"errors"
 	"regexp"
 	"strconv"
@@ -385,5 +386,101 @@ func TestAPathologicalPatternOverALargeStepStaysBounded(t *testing.T) {
 	}
 	if meta.MatchedLines != 0 {
 		t.Fatalf("meta = %#v, want no matches", meta)
+	}
+}
+
+func seedOversized(t *testing.T, runID string) *Store {
+	t.Helper()
+	store, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	file, err := store.Create(runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writer := bufio.NewWriter(file)
+	line := "[t/u] " + strings.Repeat("z", 200) + "\n"
+	for written := 0; written < maxReadBytes+(1<<16); written += len(line) {
+		if _, err := writer.WriteString(line); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := writer.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.BuildIndex(runID); err != nil {
+		t.Fatal(err)
+	}
+	return store
+}
+
+func TestAnOversizedStepIsReadableInsteadOfFailing(t *testing.T) {
+	store := seedOversized(t, "r-big")
+
+	body, meta, err := store.ReadFiltered("r-big", "t", "u", Filter{})
+	if err != nil {
+		t.Fatalf("an oversized step is still unreadable: %v", err)
+	}
+	if len(body) == 0 {
+		t.Fatal("returned no bytes for an oversized step")
+	}
+	if !meta.Truncated {
+		t.Fatalf("meta = %#v, want Truncated so the caller knows bytes were withheld", meta)
+	}
+	if meta.Bytes <= maxReadBytes {
+		t.Fatalf("meta.Bytes = %d, want the true step size above the ceiling", meta.Bytes)
+	}
+	if int64(len(body)) > maxReadBytes {
+		t.Fatalf("returned %d bytes, above the %d ceiling", len(body), maxReadBytes)
+	}
+}
+
+func TestTailOfAnOversizedStepReturnsTheEndNotTheStart(t *testing.T) {
+	store, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	file, err := store.Create("r-bigtail")
+	if err != nil {
+		t.Fatal(err)
+	}
+	writer := bufio.NewWriter(file)
+	filler := "[t/u] " + strings.Repeat("z", 200) + "\n"
+	for written := 0; written < maxReadBytes+(1<<16); written += len(filler) {
+		if _, err := writer.WriteString(filler); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := writer.WriteString("[t/u] THE-VERY-LAST-LINE\n"); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.BuildIndex("r-bigtail"); err != nil {
+		t.Fatal(err)
+	}
+
+	body, meta, err := store.ReadFiltered("r-bigtail", "t", "u", Filter{Tail: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(body), "THE-VERY-LAST-LINE") {
+		t.Fatalf("tail of an oversized step returned the head; meta = %#v", meta)
+	}
+}
+
+func TestUnfilteredReadKeepsRefusingAnOversizedStep(t *testing.T) {
+	store := seedOversized(t, "r-legacy")
+
+	if _, err := store.Read("r-legacy", "t", "u"); !errors.Is(err, ErrLogSliceTooLarge) {
+		t.Fatalf("Read error = %v, want ErrLogSliceTooLarge; a caller that cannot see Meta must not receive a silently short log", err)
 	}
 }

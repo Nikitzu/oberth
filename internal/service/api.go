@@ -893,17 +893,6 @@ func (service *API) readStepLogFiltered(run model.Run, burn, step string, filter
 	return service.logs.ReadFiltered(run.ID, burn, step, filter)
 }
 
-func (service *API) readStepLog(run model.Run, burn, step string) ([]byte, error) {
-	if run.Status.Active() {
-		body, err := service.logs.ReadActive(run.ID, burn, step)
-		if errors.Is(err, os.ErrNotExist) {
-			return []byte{}, nil
-		}
-		return body, err
-	}
-	return service.logs.Read(run.ID, burn, step)
-}
-
 func selectLogRange(results []model.StepResult, wanted string) (string, string, error) {
 	selectedBurn := ""
 	for _, result := range results {
