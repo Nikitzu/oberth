@@ -84,6 +84,7 @@ type serveOptions struct {
 	namespace               string
 	runnerImagePrefixes     string
 	maxConcurrent           int
+	publishOnGreen          bool
 	ciCacheRoot             string
 	releaseCacheRoot        string
 	secretStoreAddress      string
@@ -159,6 +160,10 @@ func parseServeOptions(arguments []string, output io.Writer) (serveOptions, erro
 	flags.StringVar(&options.namespace, "namespace", "oberth", "Kubernetes namespace")
 	flags.StringVar(&options.runnerImagePrefixes, "runner-image-prefixes", strings.Join(periapsis.DefaultRunnerImagePrefixes, ","), "comma-separated allowlist of permitted runner image prefixes")
 	flags.IntVar(&options.maxConcurrent, "max-concurrent-jobs", 3, "maximum concurrent Jobs")
+	flags.BoolVar(&options.publishOnGreen, "publish-on-green", true,
+		"force-sync an ordinary green branch run to the upstream forge. Set false to keep the gate advisory: "+
+			"the run still goes green and is recorded, but nothing reaches the forge until it is published on request. "+
+			"Promotion runs publish regardless.")
 	flags.StringVar(&options.ciCacheRoot, "ci-cache-root", "/var/cache/oberth/ci", "CI host cache root")
 	flags.StringVar(&options.releaseCacheRoot, "release-cache-root", "/var/cache/oberth/release", "release host cache root")
 	flags.StringVar(&options.secretStoreAddress, "secretstore-address", "", "OpenBao API base URL for store-sourced release secrets (HTTPS)")
@@ -554,7 +559,7 @@ func serve(ctx context.Context, options serveOptions, logger *log.Logger) (resul
 	scheduler, err := service.NewScheduler(service.SchedulerConfig{
 		Store: database, Git: git, Logs: logs, Jobs: argoJobs, ReleaseJobs: argoJobs, Auditor: database,
 		Signals: signals, WorkspaceRoot: filepath.Join(options.dataRoot, "work"), MaxConcurrent: options.maxConcurrent,
-		MutationGate: anchors.AllowMutation,
+		MutationGate: anchors.AllowMutation, SuppressGreenPublication: !options.publishOnGreen,
 	})
 	if err != nil {
 		return err
@@ -689,8 +694,15 @@ func serve(ctx context.Context, options serveOptions, logger *log.Logger) (resul
 	// the initial ConfigMap read succeeds. Without this, a transient startup
 	// failure would leave stale grants active in sqlite for admission to consume.
 	argoJobs.SetReconcilerHealth(accessReconciler)
+	// Only wired when the server is not publishing automatically: otherwise a
+	// green run has already been pushed and there is nothing to ask for.
+	var publisher func(context.Context, string) error
+	if !options.publishOnGreen {
+		publisher = scheduler.PublishRun
+	}
 	controlAPI, err := service.NewAPI(service.APIConfig{
-		Runs: database, History: database, Repositories: database, Issues: database,
+		Publisher: publisher,
+		Runs:      database, History: database, Repositories: database, Issues: database,
 		Promotions: database, PromotionRuns: database, Enqueues: scheduler, Git: git,
 		Refs: git, Logs: logs, Auditor: database, Health: health, Signals: signals,
 		MutationGate:           anchors.AllowMutation,
