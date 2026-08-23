@@ -1,0 +1,120 @@
+{{- $namespace := required "argo.namespace is required" .Values.argo.namespace }}
+{{- $pipeline := .Values.argo.pipelineServiceAccount | default .Values.argo.ciServiceAccount | default "oberth-argo-pipeline" }}
+{{- $credentialed := .Values.argo.credentialedServiceAccount | default .Values.argo.ciSecretsServiceAccount | default "oberth-argo-credentialed" }}
+{{- $executor := .Values.argo.executorServiceAccount }}
+{{- $allSAs := list $pipeline $credentialed $executor }}
+{{- range $i, $a := $allSAs }}
+{{- range $j, $b := $allSAs }}
+{{- if and (ne $i $j) (eq $a $b) }}
+{{- fail "argo.pipelineServiceAccount, argo.credentialedServiceAccount, and argo.executorServiceAccount must all differ: a shared identity defeats the secret access boundary" }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- if eq $namespace .Release.Namespace }}
+{{- fail "argo.namespace must differ from the release namespace: Vault Kubernetes-auth roles bind (namespace, ServiceAccount) pairs, so pipeline identities must not sit beside server ones" }}
+{{- end }}
+# The three Kubernetes identities the Argo execution engine binds:
+# pipeline (no secrets), credentialed (approved secrets), executor (Argo
+# bookkeeping). The approval table in the Oberth database controls which
+# templates receive the credentialed identity.
+#
+# Bind the credentialed role from an administrator's own bao session:
+#
+#   bao write auth/kubernetes/role/{{ .Values.argo.vault.credentialedRole | default .Values.argo.vault.ciSecretsRole | default "oberth-argo-credentialed" }} \
+#       bound_service_account_names={{ $credentialed }} \
+#       bound_service_account_namespaces={{ $namespace }} \
+#       policies=oberth-argo-credentialed ttl=20m
+#
+# The bound fields must be exact. A "*" on either lets the pipeline identity
+# assume the credentialed role, defeating the approval gate.
+---
+# Pipeline templates without approved secrets. No Kubernetes permissions, no
+# Vault role, and automountServiceAccountToken false so step containers hold
+# no token at all.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $pipeline }}
+  namespace: {{ $namespace }}
+  labels:
+    {{- include "oberth.labels" . | nindent 4 }}
+automountServiceAccountToken: false
+---
+# Templates with approved secrets. The bound Vault role's policy is derived
+# from the approval table via `oberth access allow`.
+#
+# automountServiceAccountToken is false here too, deliberately. envconsul does
+# NOT depend on the automount: the server injects a projected, ten-minute
+# ServiceAccount token volume at the default path on exactly the templates
+# whose command is envconsul (internal/argojob/spec.go, releaseTokenVolume).
+# With the automount enabled, every OTHER step container of a credentialed
+# Workflow — setup, test, build, package — also carried a live token for this
+# identity while executing repository-controlled code, letting a compromised
+# test or build dependency log in to OpenBao and read every granted secret.
+# The ambient identity also leaked into tooling: helm resolves its default
+# namespace from the mounted serviceaccount files, which is what turned the
+# release-tier `go test` chart renders red (release run 4c60dcfacf81,
+# v0.12.24). Step containers hold no token unless the server explicitly
+# mounted one.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $credentialed }}
+  namespace: {{ $namespace }}
+  labels:
+    {{- include "oberth.labels" . | nindent 4 }}
+automountServiceAccountToken: false
+---
+# Argo's own init and wait containers. This is the only one of the three with
+# any Kubernetes access, which is exactly why it must not be an identity a
+# pipeline step ever runs as.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $executor }}
+  namespace: {{ $namespace }}
+  labels:
+    {{- include "oberth.labels" . | nindent 4 }}
+automountServiceAccountToken: false
+---
+# Argo resolves the executor identity through a long-lived token Secret rather
+# than a projected volume, and Kubernetes 1.24+ no longer creates one
+# automatically.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ $executor }}.service-account-token
+  namespace: {{ $namespace }}
+  annotations:
+    kubernetes.io/service-account.name: {{ $executor }}
+  labels:
+    {{- include "oberth.labels" . | nindent 4 }}
+type: kubernetes.io/service-account-token
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ $executor }}
+  namespace: {{ $namespace }}
+  labels:
+    {{- include "oberth.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["argoproj.io"]
+    resources: ["workflowtaskresults"]
+    verbs: ["create", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ $executor }}
+  namespace: {{ $namespace }}
+  labels:
+    {{- include "oberth.labels" . | nindent 4 }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ $executor }}
+    namespace: {{ $namespace }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ $executor }}

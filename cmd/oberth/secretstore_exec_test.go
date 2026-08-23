@@ -1,0 +1,489 @@
+package main
+
+import (
+	"bytes"
+	"io"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+// --- parseExecArgs tests ---
+
+func TestParseExecArgsValid(t *testing.T) {
+	dir, paths, cmd, err := parseExecArgs([]string{
+		"--dir=/run/secrets",
+		"--path=oberth/data/release/r2-upload-token",
+		"--path=oberth/data/release/cosign-secret",
+		"--", "release.sh", "publish",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dir != "/run/secrets" {
+		t.Fatalf("dir = %q, want /run/secrets", dir)
+	}
+	if len(paths) != 2 {
+		t.Fatalf("paths = %d, want 2", len(paths))
+	}
+	if len(cmd) != 2 || cmd[0] != "release.sh" {
+		t.Fatalf("cmd = %v", cmd)
+	}
+}
+
+func TestParseExecArgsSpaceForm(t *testing.T) {
+	dir, paths, cmd, err := parseExecArgs([]string{
+		"-dir", "/run/secrets",
+		"-path", "oberth/data/release/r2",
+		"--", "true",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dir != "/run/secrets" {
+		t.Fatalf("dir = %q", dir)
+	}
+	if len(paths) != 1 || paths[0] != "oberth/data/release/r2" {
+		t.Fatalf("paths = %v", paths)
+	}
+	if len(cmd) != 1 {
+		t.Fatalf("cmd = %v", cmd)
+	}
+}
+
+func TestParseExecArgsMissingDir(t *testing.T) {
+	_, _, _, err := parseExecArgs([]string{
+		"--path=oberth/data/release/r2", "--", "true",
+	})
+	if err == nil || !strings.Contains(err.Error(), "--dir") {
+		t.Fatalf("expected --dir error, got: %v", err)
+	}
+}
+
+func TestParseExecArgsMissingPaths(t *testing.T) {
+	_, _, _, err := parseExecArgs([]string{
+		"--dir=/run/secrets", "--", "true",
+	})
+	if err == nil || !strings.Contains(err.Error(), "--path") {
+		t.Fatalf("expected --path error, got: %v", err)
+	}
+}
+
+func TestParseExecArgsMissingCommand(t *testing.T) {
+	_, _, _, err := parseExecArgs([]string{
+		"--dir=/run/secrets", "--path=oberth/data/x",
+	})
+	if err == nil || !strings.Contains(err.Error(), "command") {
+		t.Fatalf("expected missing command error, got: %v", err)
+	}
+}
+
+func TestParseExecArgsDuplicateLocalNames(t *testing.T) {
+	_, _, _, err := parseExecArgs([]string{
+		"--dir=/run/secrets",
+		"--path=oberth/data/release/r2",
+		"--path=other/data/release/r2",
+		"--", "true",
+	})
+	if err == nil || !strings.Contains(err.Error(), "duplicate") {
+		t.Fatalf("expected duplicate local name error, got: %v", err)
+	}
+}
+
+func TestParseExecArgsTooManyPaths(t *testing.T) {
+	args := []string{"--dir=/run/secrets"}
+	for i := 0; i < maxExecPaths+1; i++ {
+		args = append(args, "--path=oberth/data/release/secret-"+string(rune('a'+i%26)))
+	}
+	args = append(args, "--", "true")
+	_, _, _, err := parseExecArgs(args)
+	if err == nil || !strings.Contains(err.Error(), "too many") {
+		t.Fatalf("expected too-many-paths error, got: %v", err)
+	}
+}
+
+// --- writeSecretTree tests ---
+
+func TestWriteSecretTreeCreatesFiles(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "secrets")
+	if err := os.MkdirAll(dir, secretExecDirMode); err != nil {
+		t.Fatal(err)
+	}
+	values := map[string][]byte{
+		"token":    []byte("secret-token-value"),
+		"password": []byte("secret-password"),
+	}
+	if err := writeSecretTree(dir, "r2-upload", values); err != nil {
+		t.Fatal(err)
+	}
+	for key, want := range values {
+		content, err := os.ReadFile(filepath.Join(dir, "r2-upload", key))
+		if err != nil {
+			t.Fatalf("%s: %v", key, err)
+		}
+		if string(content) != string(want) {
+			t.Errorf("%s = %q, want %q", key, content, want)
+		}
+		info, err := os.Stat(filepath.Join(dir, "r2-upload", key))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if perm := info.Mode().Perm(); perm != secretExecFileMode {
+			t.Errorf("%s mode = %o, want %o", key, perm, secretExecFileMode)
+		}
+	}
+}
+
+func TestWriteSecretTreeRefusesDuplicateFile(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "secrets")
+	if err := os.MkdirAll(dir, secretExecDirMode); err != nil {
+		t.Fatal(err)
+	}
+	values := map[string][]byte{"token": []byte("value")}
+	if err := writeSecretTree(dir, "r2", values); err != nil {
+		t.Fatal(err)
+	}
+	// Second write to same path should fail via O_EXCL.
+	if err := writeSecretTree(dir, "r2", values); err == nil {
+		t.Fatal("expected O_EXCL failure on duplicate write")
+	}
+}
+
+// --- writeSecretTree path traversal tests ---
+
+func TestWriteSecretTreeRejectsTraversalInKey(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "secrets")
+	if err := os.MkdirAll(dir, secretExecDirMode); err != nil {
+		t.Fatal(err)
+	}
+	for _, badKey := range []string{"../escape", "sub/dir", ".", "..", "a\\b"} {
+		values := map[string][]byte{badKey: []byte("payload")}
+		if err := writeSecretTree(dir, "legit", values); err == nil {
+			t.Errorf("key %q was accepted; expected rejection", badKey)
+		}
+	}
+	// Verify nothing was written outside the directory.
+	escaped := filepath.Join(dir, "..", "escape")
+	if _, err := os.Stat(escaped); !os.IsNotExist(err) {
+		t.Fatal("a file was written outside the secret directory via key traversal")
+	}
+}
+
+func TestWriteSecretTreeRejectsTraversalInName(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "secrets")
+	if err := os.MkdirAll(dir, secretExecDirMode); err != nil {
+		t.Fatal(err)
+	}
+	for _, badName := range []string{"..", ".", "a/b", "a\\b"} {
+		values := map[string][]byte{"token": []byte("payload")}
+		if err := writeSecretTree(dir, badName, values); err == nil {
+			t.Errorf("name %q was accepted; expected rejection", badName)
+		}
+	}
+}
+
+// --- isExecStoreCredential tests ---
+
+func TestIsExecStoreCredentialStripsAllPrefixes(t *testing.T) {
+	for _, name := range []string{
+		"VAULT_ADDR", "VAULT_TOKEN", "VAULT_CACERT",
+		"BAO_ADDR", "BAO_TOKEN",
+		"CONSUL_HTTP_ADDR",
+		"OBERTH_VAULT_ROLE",
+	} {
+		if !isExecStoreCredential(name) {
+			t.Errorf("%s should be stripped", name)
+		}
+	}
+	for _, name := range []string{
+		"PATH", "HOME", "OBERTH_REPO", "GOPATH",
+		"OBERTH_SECRETSTORE_DIR",
+	} {
+		if isExecStoreCredential(name) {
+			t.Errorf("%s should not be stripped", name)
+		}
+	}
+}
+
+// --- tmpfs check test ---
+
+func TestExecRefusesNonTmpfs(t *testing.T) {
+	// Patch the statfs function to return ext4 magic.
+	original := secretExecStatfs
+	secretExecStatfs = func(_ string) (int64, error) {
+		return 0xEF53, nil // ext4 magic
+	}
+	defer func() { secretExecStatfs = original }()
+
+	dir := t.TempDir()
+	t.Setenv("VAULT_ADDR", "https://vault.example:8200")
+	t.Setenv("OBERTH_VAULT_ROLE", "test-role")
+
+	err := runSecretStoreExec(t.Context(), []string{
+		"--dir=" + dir,
+		"--path=oberth/data/release/test",
+		"--", "true",
+	}, io.Discard, io.Discard)
+	if err == nil || !strings.Contains(err.Error(), "tmpfs") {
+		t.Fatalf("expected tmpfs refusal, got: %v", err)
+	}
+}
+
+// --- materialize subcommand tests (ported from cmd/oberth-secret-materialize) ---
+
+func TestMaterializeWritesEachValue(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "secrets")
+	t.Setenv("COSIGN_KEY", "KEY-MATERIAL")
+	t.Setenv("COSIGN_PASSWORD", "PASSPHRASE")
+
+	err := runSecretStoreMaterialize(t.Context(), []string{
+		"-dir", dir,
+		"COSIGN_KEY=cosign-secret/cosign.key",
+		"COSIGN_PASSWORD=cosign-secret/cosign.password",
+		"--", "true",
+	}, io.Discard, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for path, want := range map[string]string{
+		"cosign-secret/cosign.key":      "KEY-MATERIAL",
+		"cosign-secret/cosign.password": "PASSPHRASE",
+	} {
+		content, readErr := os.ReadFile(filepath.Join(dir, path))
+		if readErr != nil {
+			t.Fatalf("%s: %v", path, readErr)
+		}
+		if string(content) != want {
+			t.Errorf("%s = %q, want %q", path, content, want)
+		}
+	}
+}
+
+func TestMaterializeSecretFilesAreOwnerReadableOnly(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "secrets")
+	t.Setenv("R2_UPLOAD_TOKEN", "token-value")
+
+	if err := runSecretStoreMaterialize(t.Context(), []string{
+		"-dir", dir, "R2_UPLOAD_TOKEN=r2-upload-token/token", "--", "true",
+	}, io.Discard, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(filepath.Join(dir, "r2-upload-token/token"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if perm := info.Mode().Perm(); perm != secretExecFileMode {
+		t.Fatalf("mode = %o, want %o", perm, secretExecFileMode)
+	}
+}
+
+func TestMaterializeStripsVariablesFromChildEnv(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "secrets")
+	output := filepath.Join(t.TempDir(), "env.txt")
+	t.Setenv("COSIGN_PASSWORD", "PASSPHRASE")
+	t.Setenv("KEEP_ME", "visible")
+
+	script := filepath.Join(t.TempDir(), "probe.sh")
+	if err := os.WriteFile(script, []byte(
+		"#!/bin/sh\n{ echo \"pw=[${COSIGN_PASSWORD:-}]\"; echo \"keep=[${KEEP_ME:-}]\"; "+
+			"echo \"dir=[${OBERTH_SECRETSTORE_DIR:-}]\"; } > \""+output+"\"\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := runSecretStoreMaterialize(t.Context(), []string{
+		"-dir", dir, "COSIGN_PASSWORD=cosign-secret/cosign.password", "--", script,
+	}, io.Discard, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	seen, err := os.ReadFile(output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(seen)
+	if !strings.Contains(text, "pw=[]") {
+		t.Errorf("the credential survived in the child environment:\n%s", text)
+	}
+	if !strings.Contains(text, "keep=[visible]") {
+		t.Errorf("an unrelated variable was stripped:\n%s", text)
+	}
+	if !strings.Contains(text, "dir=["+dir+"]") {
+		t.Errorf("OBERTH_SECRETSTORE_DIR was not set for the child:\n%s", text)
+	}
+}
+
+func TestMaterializeMissingVariableFailsNamingIt(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "secrets")
+	err := runSecretStoreMaterialize(t.Context(), []string{
+		"-dir", dir, "COSIGN_KEY=cosign-secret/cosign.key", "--", "true",
+	}, io.Discard, io.Discard)
+	if err == nil {
+		t.Fatal("expected a failure when the variable is absent")
+	}
+	if !strings.Contains(err.Error(), "COSIGN_KEY") {
+		t.Fatalf("error should name the variable, got: %v", err)
+	}
+}
+
+func TestMaterializeEmptyValueWritesEmptyFile(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "secrets")
+	t.Setenv("COSIGN_PASSWORD", "")
+	err := runSecretStoreMaterialize(t.Context(), []string{
+		"-dir", dir, "COSIGN_PASSWORD=cosign-secret/cosign.password", "--", "true",
+	}, io.Discard, io.Discard)
+	if err != nil {
+		t.Fatalf("empty value should be accepted, got: %v", err)
+	}
+	content, readErr := os.ReadFile(filepath.Join(dir, "cosign-secret/cosign.password"))
+	if readErr != nil {
+		t.Fatalf("file not created: %v", readErr)
+	}
+	if len(content) != 0 {
+		t.Fatalf("expected zero-length file, got %d bytes", len(content))
+	}
+	info, statErr := os.Stat(filepath.Join(dir, "cosign-secret/cosign.password"))
+	if statErr != nil {
+		t.Fatal(statErr)
+	}
+	if perm := info.Mode().Perm(); perm != secretExecFileMode {
+		t.Errorf("mode = %o, want %o", perm, secretExecFileMode)
+	}
+}
+
+func TestMaterializeDestinationCannotEscapeDirectory(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "secrets")
+	t.Setenv("SNEAKY", "value")
+
+	for _, destination := range []string{
+		"../escaped/file",
+		"/etc/cron.d/payload",
+		"a/../../b/c",
+		"only-one-segment",
+		"three/segments/deep",
+	} {
+		err := runSecretStoreMaterialize(t.Context(), []string{
+			"-dir", dir, "SNEAKY=" + destination, "--", "true",
+		}, io.Discard, io.Discard)
+		if err == nil {
+			t.Errorf("destination %q was accepted", destination)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(root, "escaped")); !os.IsNotExist(err) {
+		t.Fatal("a file was written outside the secret directory")
+	}
+}
+
+func TestMaterializeDuplicateDestinationIsRefused(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "secrets")
+	t.Setenv("FIRST", "one")
+	t.Setenv("SECOND", "two")
+	err := runSecretStoreMaterialize(t.Context(), []string{
+		"-dir", dir,
+		"FIRST=cosign-secret/cosign.key",
+		"SECOND=cosign-secret/cosign.key",
+		"--", "true",
+	}, io.Discard, io.Discard)
+	if err == nil {
+		t.Fatal("expected a refusal when two mappings claim one path")
+	}
+}
+
+func TestMaterializeRequiresSeparatorAndCommand(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "secrets")
+	t.Setenv("A", "v")
+	if err := runSecretStoreMaterialize(t.Context(), []string{"-dir", dir, "A=n/k"}, io.Discard, io.Discard); err == nil {
+		t.Error("expected a failure when no command follows --")
+	}
+	if err := runSecretStoreMaterialize(t.Context(), []string{"A=n/k", "--", "true"}, io.Discard, io.Discard); err == nil {
+		t.Error("expected a failure when -dir is absent")
+	}
+	if err := runSecretStoreMaterialize(t.Context(), []string{"-dir", dir, "--", "true"}, io.Discard, io.Discard); err == nil {
+		t.Error("expected a failure when no mappings are given")
+	}
+}
+
+func TestMaterializeChildStdoutIsRedacted(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "secrets")
+	t.Setenv("SECRET_TOKEN", "super-secret-credential-value")
+	t.Setenv("VISIBLE_VAR", "hello-world")
+
+	script := filepath.Join(t.TempDir(), "echo-stdout.sh")
+	if err := os.WriteFile(script, []byte(
+		"#!/bin/sh\necho \"token=super-secret-credential-value visible=hello-world\"\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout bytes.Buffer
+	if err := runSecretStoreMaterialize(t.Context(), []string{
+		"-dir", dir,
+		"SECRET_TOKEN=secret-token/value",
+		"VISIBLE_VAR=visible-var/value",
+		"--", script,
+	}, &stdout, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+
+	output := stdout.String()
+	if strings.Contains(output, "super-secret-credential-value") {
+		t.Fatalf("secret value leaked to stdout: %q", output)
+	}
+	if !strings.Contains(output, "***") {
+		t.Fatalf("expected redaction marker in stdout, got: %q", output)
+	}
+}
+
+func TestMaterializeChildStderrIsRedacted(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "secrets")
+	t.Setenv("SECRET_TOKEN", "another-secret-value")
+
+	script := filepath.Join(t.TempDir(), "echo-stderr.sh")
+	if err := os.WriteFile(script, []byte(
+		"#!/bin/sh\necho \"leaked: another-secret-value\" >&2\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	var stderr bytes.Buffer
+	if err := runSecretStoreMaterialize(t.Context(), []string{
+		"-dir", dir,
+		"SECRET_TOKEN=secret-token/value",
+		"--", script,
+	}, io.Discard, &stderr); err != nil {
+		t.Fatal(err)
+	}
+
+	output := stderr.String()
+	if strings.Contains(output, "another-secret-value") {
+		t.Fatalf("secret value leaked to stderr: %q", output)
+	}
+	if !strings.Contains(output, "***") {
+		t.Fatalf("expected redaction marker in stderr, got: %q", output)
+	}
+}
+
+func TestMaterializeNonSecretOutputPassesThrough(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "secrets")
+	t.Setenv("TOKEN", "redact-me-please")
+
+	script := filepath.Join(t.TempDir(), "echo-safe.sh")
+	if err := os.WriteFile(script, []byte(
+		"#!/bin/sh\necho \"this is ordinary build output\"\necho \"nothing secret here\" >&2\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	if err := runSecretStoreMaterialize(t.Context(), []string{
+		"-dir", dir,
+		"TOKEN=token/value",
+		"--", script,
+	}, &stdout, &stderr); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := strings.TrimSpace(stdout.String()); got != "this is ordinary build output" {
+		t.Errorf("stdout = %q, want %q", got, "this is ordinary build output")
+	}
+	if got := strings.TrimSpace(stderr.String()); got != "nothing secret here" {
+		t.Errorf("stderr = %q, want %q", got, "nothing secret here")
+	}
+}

@@ -1,0 +1,184 @@
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  name: qs-secretstore
+  namespace: quickstart-test
+spec:
+  runStrategy: Always
+  dataVolumeTemplates:
+  - metadata:
+      name: qs-secretstore-disk
+    spec:
+      source:
+        http:
+          url: https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img
+      storage:
+        accessModes: [ReadWriteOnce]
+        resources:
+          requests:
+            storage: 5Gi
+        storageClassName: local-path
+  template:
+    metadata:
+      labels:
+        kubevirt.io/domain: qs-secretstore
+    spec:
+      terminationGracePeriodSeconds: 5
+      domain:
+        machine:
+          type: q35
+        cpu:
+          cores: 1
+        resources:
+          requests:
+            memory: 1Gi
+          limits:
+            memory: 1Gi
+        devices:
+          disks:
+            - name: rootdisk
+              disk:
+                bus: virtio
+            - name: cloudinitdisk
+              disk:
+                bus: virtio
+          interfaces:
+            - name: default
+              masquerade: {}
+              ports:
+              - port: 22
+              - port: 8200
+      networks:
+        - name: default
+          pod: {}
+      volumes:
+        - name: rootdisk
+          dataVolume:
+            name: qs-secretstore-disk
+        - name: cloudinitdisk
+          cloudInitNoCloud:
+            secretRef:
+              name: cloud-init-secretstore
+---
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  name: qs-beacon
+  namespace: quickstart-test
+spec:
+  runStrategy: Always
+  dataVolumeTemplates:
+  - metadata:
+      name: qs-beacon-disk
+    spec:
+      source:
+        http:
+          url: https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img
+      storage:
+        accessModes: [ReadWriteOnce]
+        resources:
+          requests:
+            storage: 4Gi
+        storageClassName: local-path
+  template:
+    metadata:
+      labels:
+        kubevirt.io/domain: qs-beacon
+    spec:
+      terminationGracePeriodSeconds: 5
+      domain:
+        machine:
+          type: q35
+        cpu:
+          cores: 1
+        resources:
+          requests:
+            memory: 512Mi
+          limits:
+            memory: 512Mi
+        devices:
+          disks:
+            - name: rootdisk
+              disk:
+                bus: virtio
+            - name: cloudinitdisk
+              disk:
+                bus: virtio
+          interfaces:
+            - name: default
+              masquerade: {}
+              ports:
+              - port: 22
+              - port: 443
+      networks:
+        - name: default
+          pod: {}
+      volumes:
+        - name: rootdisk
+          dataVolume:
+            name: qs-beacon-disk
+        - name: cloudinitdisk
+          cloudInitNoCloud:
+            secretRef:
+              name: cloud-init-beacon
+---
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  name: qs-target
+  namespace: quickstart-test
+spec:
+  runStrategy: Always
+  dataVolumeTemplates:
+  - metadata:
+      name: qs-target-disk
+    spec:
+      source:
+        http:
+          url: https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img
+      storage:
+        accessModes: [ReadWriteOnce]
+        resources:
+          requests:
+            storage: 8Gi
+        storageClassName: local-path
+  template:
+    metadata:
+      labels:
+        kubevirt.io/domain: qs-target
+    spec:
+      terminationGracePeriodSeconds: 5
+      domain:
+        machine:
+          type: q35
+        cpu:
+          cores: 2
+        resources:
+          requests:
+            memory: 2Gi
+          limits:
+            memory: 2Gi
+        devices:
+          disks:
+            - name: rootdisk
+              disk:
+                bus: virtio
+            - name: cloudinitdisk
+              disk:
+                bus: virtio
+          interfaces:
+            - name: default
+              masquerade: {}
+              ports:
+              - port: 22
+      networks:
+        - name: default
+          pod: {}
+      volumes:
+        - name: rootdisk
+          dataVolume:
+            name: qs-target-disk
+        - name: cloudinitdisk
+          cloudInitNoCloud:
+            secretRef:
+              name: cloud-init-target

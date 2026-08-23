@@ -1,0 +1,26 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: qs-beacon-svc
+  namespace: quickstart-test
+spec:
+  type: NodePort
+  selector:
+    kubevirt.io/domain: qs-beacon
+  ports:
+    - port: 443
+      targetPort: 443
+      nodePort: 30444  # Avoids collision with Oberth HTTPS (30443)
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: qs-secretstore-svc
+  namespace: quickstart-test
+spec:
+  type: ClusterIP
+  selector:
+    kubevirt.io/domain: qs-secretstore
+  ports:
+    - port: 8200
+      targetPort: 8200

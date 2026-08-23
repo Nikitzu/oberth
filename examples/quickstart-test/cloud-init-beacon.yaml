@@ -1,0 +1,42 @@
+apiVersion: v1
+kind: Secret
+metadata:
+  name: cloud-init-beacon
+  namespace: quickstart-test
+type: Opaque
+stringData:
+  userdata: |
+    #cloud-config
+    hostname: qs-beacon
+    users:
+      - name: dev
+        sudo: ALL=(ALL) NOPASSWD:ALL
+        shell: /bin/bash
+        ssh_authorized_keys:
+          - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIC9SUkgI2oA5piOqM6ukdTo+pt84kY0qOhTD70nwW71V yellowmegaman@tuxbox
+    runcmd:
+      # Ubuntu noble cloud image has curl and openssl pre-installed; no apt-get needed.
+      - curl -fsSL --max-time 300 -o /usr/local/bin/cloudtaser-beacon https://releases.cloudtaser.io/beacon/v0.5.18/cloudtaser-beacon-linux-amd64
+      - chmod +x /usr/local/bin/cloudtaser-beacon
+      # Generate placeholder TLS cert (Phase 6.5 regenerates with correct IP SAN after pod IP is known)
+      - openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -keyout /etc/beacon-tls.key -out /etc/beacon-tls.crt -days 365 -nodes -subj '/CN=qs-beacon-placeholder'
+      - chmod 600 /etc/beacon-tls.key
+      - |
+        cat > /etc/systemd/system/cloudtaser-beacon.service <<'EOF'
+        [Unit]
+        Description=CloudTaser Beacon Relay
+        After=network-online.target
+        Wants=network-online.target
+
+        [Service]
+        ExecStart=/usr/local/bin/cloudtaser-beacon --addr 0.0.0.0:443 --dev --allow-unauthenticated-registration --tls-cert /etc/beacon-tls.crt --tls-key /etc/beacon-tls.key
+        AmbientCapabilities=CAP_NET_BIND_SERVICE
+        Restart=on-failure
+        RestartSec=5
+
+        [Install]
+        WantedBy=multi-user.target
+        EOF
+      - systemctl daemon-reload
+      - systemctl enable --now cloudtaser-beacon.service
+      - touch /tmp/setup-done

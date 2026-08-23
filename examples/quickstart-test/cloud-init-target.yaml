@@ -1,0 +1,37 @@
+apiVersion: v1
+kind: Secret
+metadata:
+  name: cloud-init-target
+  namespace: quickstart-test
+type: Opaque
+stringData:
+  userdata: |
+    #cloud-config
+    hostname: qs-target
+    users:
+      - name: dev
+        sudo: ALL=(ALL) NOPASSWD:ALL
+        shell: /bin/bash
+        ssh_authorized_keys:
+          - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIC9SUkgI2oA5piOqM6ukdTo+pt84kY0qOhTD70nwW71V yellowmegaman@tuxbox
+    packages:
+      - curl
+      - jq
+      - git
+      - socat
+      - conntrack
+      - nftables
+      - ca-certificates
+    runcmd:
+      - curl -sfL https://get.k3s.io | INSTALL_K3S_EXEC="--disable traefik --disable servicelb --cluster-cidr 10.52.0.0/16 --service-cidr 10.53.0.0/16" sh -
+      - until kubectl get nodes; do sleep 2; done
+      - mkdir -p /home/dev/.kube
+      - cp /etc/rancher/k3s/k3s.yaml /home/dev/.kube/config
+      - chown -R dev:dev /home/dev/.kube
+      - chmod 600 /home/dev/.kube/config
+      - curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+      - until kubectl get nodes | grep -q ' Ready'; do sleep 2; done
+      - su -c "helm repo add cloudtaser https://charts.cloudtaser.io && helm repo update" dev
+      - curl -fsSL -o /usr/local/bin/cloudtaser-cli https://releases.cloudtaser.io/cli/v0.18.55/cloudtaser-cli-linux-amd64
+      - chmod +x /usr/local/bin/cloudtaser-cli
+      - touch /tmp/setup-done
