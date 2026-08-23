@@ -278,6 +278,12 @@ networkPolicy:
   # Argo's emissary executor (POST workflowtaskresult CRs to the API server).
   # The installer detects k3s and pins false automatically.
   enabled: true
+  # Extra in-namespace egress for sidecar services the pipeline needs on
+  # non-standard ports, such as a Docker API shim backing Testcontainers.
+  # Both are scoped to the pipeline namespace and grant nothing outside it.
+  # inNamespaceAllPorts wins when both are set.
+  inNamespacePorts: []
+  inNamespaceAllPorts: false
   # Secret store egress destination. Consistent with argo.vault.address and
   # secretstore.address. Default: in-cluster openbao namespace, port 8200.
   # For an external store, set externalCIDRs instead of namespace.

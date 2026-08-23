@@ -372,6 +372,19 @@
               }
             }
           }
+        },
+        "inNamespacePorts": {
+          "type": "array",
+          "description": "TCP ports on which pipeline pods may reach other pods in the same namespace (e.g. a Docker API shim for Testcontainers). Ignored when inNamespaceAllPorts is true.",
+          "items": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 65535
+          }
+        },
+        "inNamespaceAllPorts": {
+          "type": "boolean",
+          "description": "Allow pipeline pods to reach any pod in the same namespace on any port. Broader than inNamespacePorts; intended for local development clusters."
         }
       }
     },

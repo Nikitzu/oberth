@@ -49,6 +49,22 @@ spec:
           protocol: TCP
         - port: 6443
           protocol: TCP
+    # In-namespace egress for sidecar services the pipeline needs on
+    # non-standard ports (for example a Docker API shim backing Testcontainers).
+    # Scoped to the pipeline namespace itself via an empty podSelector, so it
+    # grants nothing outside it.
+    {{- if .Values.networkPolicy.inNamespaceAllPorts }}
+    - to:
+        - podSelector: {}
+    {{- else if .Values.networkPolicy.inNamespacePorts }}
+    - to:
+        - podSelector: {}
+      ports:
+        {{- range .Values.networkPolicy.inNamespacePorts }}
+        - port: {{ . }}
+          protocol: TCP
+        {{- end }}
+    {{- end }}
     # Secret store (OpenBao/Vault) for release credentials. Branch-tier pods
     # have no Vault token so the network path is harmless; Kubernetes
     # NetworkPolicy cannot scope egress by ServiceAccount — only by pod
