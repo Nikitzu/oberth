@@ -568,6 +568,9 @@
           "role"
         ]
       }
+    },
+    "publishOnGreen": {
+      "type": "boolean"
     }
   },
   "definitions": {
