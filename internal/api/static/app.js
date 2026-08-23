@@ -22,6 +22,7 @@ const state = {
   stream: localStorage.getItem("oberth-stream") || "needs",
   query: "",
   openBranches: new Set(),
+  branchDetail: new Map(),
   me: "",
   authGen: 0, // incremented on sign-out and token replacement
   pendingController: null, // AbortController for in-flight API requests
@@ -176,14 +177,17 @@ function repoName(repoID) {
 }
 
 /* ---------- chrome ---------- */
-function setChrome(tab, sub) {
-  const brand = document.getElementById("brandSub");
-  if (brand) brand.textContent = sub || "/ dashboard";
+function setChrome(tab) {
+  for (const link of document.querySelectorAll(".nav2 a")) {
+    link.classList.toggle("on", link.dataset.route === "/" + tab);
+  }
 }
 function setConn(ok, msg) {
   const led = document.getElementById("connLed");
   const seg = document.querySelector(".backend");
-  if (led) led.className = "led " + (ok ? "ok" : "bad");
+  const text = document.getElementById("connText");
+  if (text) text.textContent = ok ? "connected" : "offline";
+  if (led) led.className = "led " + (ok ? "ok" : "err");
   if (seg) { seg.title = String(msg || ""); seg.setAttribute("aria-label", String(msg || "")); }
 }
 function setVersion(ok, version) {
@@ -316,6 +320,25 @@ function branchSentence(block) {
   return `${esc(statusLabel(run.Status))}.`;
 }
 
+function branchSteps(run) {
+  const detail = state.branchDetail.get(run.ID);
+  if (!detail) return "";
+  const steps = detail.Steps || [];
+  if (!steps.length) return "";
+  return `<div class="bstp">${steps.map(step => {
+    const sk = statusKind(step.Status);
+    return `<button class="bs ${esc(sk)}" data-run-id="${esc(run.ID)}"><span class="dot ${esc(sk)}"></span>${esc(step.Step)}<span class="du">${sk === "cancel" ? "skipped" : sk === "pending" ? esc(statusLabel(step.Status)) : esc(fmtDur(spanSeconds(step.StartedAt, step.FinishedAt, sk === "run")))}</span></button>`;
+  }).join("")}</div>`;
+}
+
+async function loadBranchDetail(runID) {
+  if (!runID || state.branchDetail.has(runID)) return;
+  try {
+    const detail = await api(`/api/runs/${enc(runID)}`);
+    if (detail) state.branchDetail.set(runID, detail);
+  } catch { /* the block still renders without steps */ }
+}
+
 function branchBlock(block) {
   const run = block.head, kind = statusKind(run.Status);
   const open = state.openBranches.has(block.key);
@@ -323,7 +346,7 @@ function branchBlock(block) {
   return `<article class="bblk ${esc(kind)} ${open ? "open" : ""}">
     <button class="bhead" data-branch-toggle="${esc(block.key)}" aria-expanded="${open}">
       <span class="brow">
-        <span class="bdot ${esc(kind)}"></span>
+        <span class="dot ${esc(kind)}"></span>
         <span class="bref">${esc(block.refKind === "tag" ? "tag " : "")}${esc(block.ref)}</span>
         <span class="brepo">${esc(block.repo)}</span>
         <span class="bmeta">
@@ -334,6 +357,7 @@ function branchBlock(block) {
       <span class="bsay">${branchSentence(block)}</span>
     </button>
     ${open ? `<div class="bbody">
+      ${branchSteps(run)}
       <div class="bacts">
         <button class="bbtn pri" data-run-id="${esc(run.ID)}">Open run<span class="kb">&#8629;</span></button>
         ${(() => { const url = compareURL(run); return url ? `<button class="bbtn" data-action="publish-pr" data-run="${esc(run.ID)}" data-compare="${esc(url)}">Open PR<span class="kb">p</span></button>` : ""; })()}
@@ -342,7 +366,7 @@ function branchBlock(block) {
       ${history.length ? `<div class="bhist">
         <div class="bhl">EARLIER ON THIS BRANCH</div>
         ${history.map(entry => `<button class="bhr" data-run-id="${esc(entry.ID)}">
-          <span class="bdot ${esc(statusKind(entry.Status))}"></span>
+          <span class="dot ${esc(statusKind(entry.Status))}"></span>
           <span class="bsha">${esc(shortSha(entry.SHA))}</span>
           <span class="bmsg">${esc(runMessage(entry))}</span>
           <span class="bdur">${esc(fmtDur(runDuration(entry)))}</span>
@@ -370,13 +394,15 @@ function streamStats(blocks) {
 }
 
 async function renderRuns(seq) {
-  setChrome("runs", "/ runs");
+  setChrome("runs");
   await Promise.all([loadRepos(), loadRuns()]);
   if (!currentRoute(seq)) return;
   localStorage.setItem("oberth-stream", state.stream);
   const blocks = branchBlocks(state.runs);
   if (!state.me && state.runs.length) state.me = state.runs[0].Actor || "";
   const visible = blocks.filter(branchMatches);
+  await Promise.all(visible.filter(block => state.openBranches.has(block.key)).map(block => loadBranchDetail(block.head.ID)));
+  if (!currentRoute(seq)) return;
   const stats = streamStats(blocks);
   replaceApp(`
   <section class="screen">
@@ -607,7 +633,7 @@ async function liveLogContent(run, activeBurn, activeStep) {
     lines.length ? lines : ["waiting for runner output…"]));
 }
 async function renderRunDetail(runID, seq, background) {
-  if (!background) setChrome("runs", "/ run");
+  if (!background) setChrome("runs");
   if (!state.repos.length) { try { await loadRepos(); } catch { /* repo names fall back to IDs */ } }
   // The compare link needs the upstream base URL, which only /api/status
   // carries. Without this the button appears only after the reader has happened
@@ -650,7 +676,7 @@ async function renderRunDetailView(detail, seq) {
   const previousScroll = previousTerm ? previousTerm.scrollTop : 0;
   const previousStepList = document.getElementById("stepList");
   const previousStepScroll = previousStepList ? previousStepList.scrollTop : 0;
-  setChrome("runs", `/ ${repository}`);
+  setChrome("runs");
   replaceApp(`
   <section class="screen">
     <button class="rback" data-action-back>&lsaquo; back</button>
@@ -776,7 +802,7 @@ function historyStrip(runs) {
   return `<div class="strip" aria-label="recent runs, oldest to newest">${runs.slice(0, 12).reverse().map(run => `<i class="${statusKind(run.Status)}" style="height:${Math.max(5, Math.min(16, Math.round((runDuration(run) || 0) / 25)))}px" title="${esc(`${run.Ref} · ${statusLabel(run.Status)} · ${fmtTime(runWhen(run))}`)}"></i>`).join("") || '<span class="meta">--</span>'}</div>`;
 }
 async function renderRepos(seq) {
-  setChrome("repos", "/ repos");
+  setChrome("repos");
   await Promise.all([loadRepos(), loadRuns(), loadStatus().catch(() => { })]);
   if (!currentRoute(seq)) return;
   const rows = state.repos.map(repo => {
@@ -811,7 +837,7 @@ function issueRow(issue) {
   return `<button type="button" class="issue-row" data-open-issue="${esc(issue.ID)}" aria-label="Open internal issue ${esc(issue.ID)}: ${esc(issue.Title)}"><span class="sha">#${esc(issue.ID)}</span><span>${pill(issue.Kind, issue.Kind === "ci" ? "run" : "pending")}</span><span>${pill(issue.State, issue.State === "open" ? "fail" : "pass")}</span><span class="clip">${esc(issue.RepoID ? repoName(issue.RepoID) : "workspace")}</span><span class="branch clip">${esc(issue.Branch || "--")}</span><span class="issue-title" title="${esc(issue.Title)}">${esc(issue.Title)}</span><span title="occurrences">×${esc(issue.Occurrences || 1)}</span><span title="updated ${esc(fmtTime(issue.UpdatedAt))}">${esc(ago(issue.UpdatedAt))}</span></button>`;
 }
 async function renderIssues(seq) {
-  setChrome("issues", "/ issues");
+  setChrome("issues");
   if (!state.repos.length) { try { await loadRepos(); } catch { /* names fall back */ } }
   let page;
   try {
@@ -891,7 +917,7 @@ function svcCard(name, value, sub, mood) {
   return `<div class="card ${cls === "ok" ? "" : cls === "warn" ? "warn" : "bad"}"><div class="ct"><span class="led ${cls === "ok" ? "ok" : cls === "warn" ? "na" : "err"}"></span><span class="cn">${esc(name)}</span></div><div class="cv">${esc(value)}</div>${sub ? `<div class="cs">${sub}</div>` : ""}</div>`;
 }
 async function renderStatus(seq) {
-  setChrome("status", "/ status");
+  setChrome("status");
   await Promise.all([loadStatus(), loadRepos().catch(() => { })]);
   if (!currentRoute(seq)) return;
   const s = state.status || {};

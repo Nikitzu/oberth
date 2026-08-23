@@ -18,7 +18,7 @@ func TestRunDetailRefreshKeepsResolvedBreadcrumb(t *testing.T) {
 		t.Fatal("app.js is missing the run-detail renderers")
 	}
 	refresh := source[start:view]
-	if !strings.Contains(refresh, `if (!background) setChrome("runs", "/ run");`) {
+	if !strings.Contains(refresh, `if (!background) setChrome("runs");`) {
 		t.Fatal("run-detail chrome is not limited to foreground navigation")
 	}
 	if strings.Count(refresh, "setChrome(") != 1 {
@@ -40,8 +40,8 @@ func TestRunDetailRefreshKeepsResolvedBreadcrumb(t *testing.T) {
 	if viewEnd < 0 {
 		t.Fatal("app.js is missing the renderer after run detail")
 	}
-	if !strings.Contains(source[view:view+viewEnd], "setChrome(\"runs\", `/ ${repository}`);") {
-		t.Fatal("run-detail view no longer sets the repository breadcrumb")
+	if !strings.Contains(source[view:view+viewEnd], `setChrome("runs");`) {
+		t.Fatal("run-detail view no longer marks runs as the active section")
 	}
 }
 
