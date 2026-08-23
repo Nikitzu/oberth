@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"sort"
 	"strings"
@@ -21,10 +22,13 @@ const (
 	maxMarkerBytes   = 64 << 10
 	maxReadBytes     = 4 << 20
 	maxProgressBytes = 1 << 20
-	defaultLineLimit = 100000
+	maxPatternBytes  = 512
+	maxContextLines  = 50
 )
 
 var ErrLogSliceTooLarge = errors.New("run log slice exceeds response limit")
+
+var ErrInvalidPattern = errors.New("invalid log pattern")
 
 type Range struct {
 	Burn  string `json:"burn"`
@@ -53,6 +57,7 @@ type Meta struct {
 	ReturnedLines int   `json:"returned_lines"`
 	Truncated     bool  `json:"truncated"`
 	Bytes         int64 `json:"bytes"`
+	LineNumbers   []int `json:"line_numbers,omitempty"`
 }
 
 type Store struct {
@@ -711,81 +716,216 @@ func stepContent(line string) string {
 	return line[close+2:]
 }
 
+func compilePattern(pattern string) (*regexp.Regexp, error) {
+	if pattern == "" {
+		return nil, nil
+	}
+	if len(pattern) > maxPatternBytes {
+		return nil, fmt.Errorf("%w: exceeds %d bytes", ErrInvalidPattern, maxPatternBytes)
+	}
+	compiled, err := regexp.Compile(pattern)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %s", ErrInvalidPattern, err)
+	}
+	return compiled, nil
+}
+
+type numberedLine struct {
+	number int
+	text   string
+}
+
 func filterRanges(file *os.File, ranges []Range, total int64, filter Filter) ([]byte, Meta, error) {
 	meta := Meta{Bytes: total}
-	window := newLineWindow(filter.Offset, filter.Limit, filter.Tail)
+	if filter.Context < 0 || filter.Context > maxContextLines {
+		return nil, Meta{}, fmt.Errorf("%w: context must be between 0 and %d", ErrInvalidPattern, maxContextLines)
+	}
+	pattern, err := compilePattern(filter.Pattern)
+	if err != nil {
+		return nil, Meta{}, err
+	}
+	collector := newCollector(pattern, filter)
+	number := 0
 	for _, wanted := range ranges {
 		if _, err := file.Seek(wanted.Start, io.SeekStart); err != nil {
 			return nil, Meta{}, err
 		}
 		reader := bufio.NewReader(io.LimitReader(file, wanted.End-wanted.Start))
 		for {
-			line, err := reader.ReadString('\n')
+			line, readErr := reader.ReadString('\n')
 			if line != "" {
+				number++
 				meta.TotalLines++
-				meta.MatchedLines++
-				window.offer(line)
+				collector.offer(numberedLine{number: number, text: line})
 			}
-			if err != nil {
+			if readErr != nil {
 				break
 			}
 		}
 	}
-	out, returned, truncatedByBytes := window.bytes(maxReadBytes)
-	meta.ReturnedLines = returned
-	available := meta.MatchedLines - filter.Offset
-	if available < 0 {
-		available = 0
+	collector.close()
+	meta.MatchedLines = collector.matched
+	if pattern == nil {
+		meta.MatchedLines = meta.TotalLines
 	}
-	meta.Truncated = truncatedByBytes || meta.ReturnedLines < available
+	out, numbers, truncatedByBytes := collector.bytes(maxReadBytes)
+	meta.ReturnedLines = len(numbers)
+	meta.LineNumbers = numbers
+	meta.Truncated = truncatedByBytes || collector.withheld()
 	return out, meta, nil
 }
 
-type lineWindow struct {
+type collector struct {
+	pattern  *regexp.Regexp
+	context  int
 	offset   int
 	limit    int
 	tail     bool
-	uncapped bool
-	seen     int
-	lines    []string
+	ring     []numberedLine
+	groups   [][]numberedLine
+	open     []numberedLine
+	trail    int
+	matched  int
+	taken    int
+	lastKept int
+	dropped  bool
 }
 
-func newLineWindow(offset, limit int, tail bool) *lineWindow {
-	return &lineWindow{offset: offset, limit: limit, tail: tail, uncapped: limit <= 0}
+func newCollector(pattern *regexp.Regexp, filter Filter) *collector {
+	return &collector{
+		pattern: pattern, context: filter.Context, offset: filter.Offset,
+		limit: filter.Limit, tail: filter.Tail,
+	}
 }
 
-func (window *lineWindow) offer(line string) {
-	window.seen++
-	if window.seen <= window.offset {
+func (c *collector) offer(line numberedLine) {
+	if c.pattern == nil {
+		c.offerPlain(line)
 		return
 	}
-	if window.uncapped {
-		window.lines = append(window.lines, line)
+	matches := c.pattern.MatchString(stepContent(line.text))
+	if matches {
+		c.matched++
+		if c.selects() {
+			c.startOrExtend(line)
+			c.appendLine(line)
+			c.trail = c.context
+			c.taken++
+			c.push(line)
+			return
+		}
+		c.dropped = true
+		c.closeOpen()
+		c.push(line)
 		return
 	}
-	if window.tail {
-		window.lines = append(window.lines, line)
-		if len(window.lines) > window.limit {
-			window.lines = window.lines[len(window.lines)-window.limit:]
+	if len(c.open) > 0 && c.trail > 0 {
+		c.appendLine(line)
+		c.trail--
+		c.push(line)
+		return
+	}
+	c.closeOpen()
+	c.push(line)
+}
+
+func (c *collector) selects() bool {
+	if c.matched <= c.offset {
+		return false
+	}
+	if c.tail {
+		return true
+	}
+	return c.limit <= 0 || c.taken < c.limit
+}
+
+func (c *collector) startOrExtend(line numberedLine) {
+	if len(c.open) == 0 {
+		for _, candidate := range c.ring {
+			if candidate.number > c.lastKept {
+				c.appendLine(candidate)
+			}
+		}
+	}
+}
+
+func (c *collector) appendLine(line numberedLine) {
+	if line.number <= c.lastKept {
+		return
+	}
+	c.open = append(c.open, line)
+	c.lastKept = line.number
+}
+
+func (c *collector) push(line numberedLine) {
+	if c.context == 0 {
+		return
+	}
+	c.ring = append(c.ring, line)
+	if len(c.ring) > c.context {
+		c.ring = c.ring[len(c.ring)-c.context:]
+	}
+}
+
+func (c *collector) closeOpen() {
+	if len(c.open) == 0 {
+		return
+	}
+	c.groups = append(c.groups, c.open)
+	c.open = nil
+	if c.tail && c.limit > 0 && len(c.groups) > c.limit {
+		c.groups = c.groups[len(c.groups)-c.limit:]
+		c.dropped = true
+	}
+}
+
+func (c *collector) close() {
+	c.closeOpen()
+}
+
+func (c *collector) offerPlain(line numberedLine) {
+	limit := c.limit
+	if limit <= 0 {
+		if line.number > c.offset {
+			c.open = append(c.open, line)
 		}
 		return
 	}
-	if len(window.lines) < window.limit {
-		window.lines = append(window.lines, line)
+	if line.number <= c.offset {
+		return
 	}
+	if c.tail {
+		c.open = append(c.open, line)
+		if len(c.open) > limit {
+			c.open = c.open[len(c.open)-limit:]
+			c.dropped = true
+		}
+		return
+	}
+	if len(c.open) < limit {
+		c.open = append(c.open, line)
+		return
+	}
+	c.dropped = true
 }
 
-func (window *lineWindow) bytes(budget int64) ([]byte, int, bool) {
+func (c *collector) withheld() bool {
+	return c.dropped
+}
+
+func (c *collector) bytes(budget int64) ([]byte, []int, bool) {
 	var out []byte
+	var numbers []int
 	var used int64
-	returned := 0
-	for _, line := range window.lines {
-		if used+int64(len(line)) > budget {
-			return out, returned, true
+	for _, group := range c.groups {
+		for _, line := range group {
+			if used+int64(len(line.text)) > budget {
+				return out, numbers, true
+			}
+			used += int64(len(line.text))
+			out = append(out, line.text...)
+			numbers = append(numbers, line.number)
 		}
-		used += int64(len(line))
-		out = append(out, line...)
-		returned++
 	}
-	return out, returned, false
+	return out, numbers, false
 }
