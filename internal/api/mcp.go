@@ -136,7 +136,7 @@ func (server *Server) handleMCP(writer http.ResponseWriter, request *http.Reques
 			"protocolVersion": mcpProtocolVersion,
 			"capabilities":    map[string]any{"tools": map[string]any{}},
 			"serverInfo":      map[string]string{"name": "oberth", "version": server.version},
-			"instructions":    "Use status/wait/logs for SHA-oriented CI, run_get/run_logs for exact promotion run IDs, sync only to park the selected exact WIP branch upstream without a green gate, and promote to merge, test, and push a target branch. Sync is not completion evidence. Authenticated JSON dashboard state is available at /api/runs, /api/repos, /api/issues, and /api/status.",
+			"instructions":    "Use status/wait/logs for SHA-oriented CI, run_get/run_logs for exact promotion run IDs, sync only to park the selected exact WIP branch upstream without a green gate, and promote to merge, test, and push a target branch. Sync is not completion evidence. Filter logs with pattern/context/offset/limit/tail rather than retrieving a whole step; a step can exceed a context window and the response reports what it withheld. Authenticated JSON dashboard state is available at /api/runs, /api/repos, /api/issues, and /api/status.",
 		}
 	case "ping":
 		response.Result = map[string]any{}
@@ -235,6 +235,14 @@ func toolDefinitions() []map[string]any {
 	integerProperty := func(description string) map[string]any {
 		return map[string]any{"type": "integer", "description": description}
 	}
+	logFilterProperties := func(properties map[string]any) map[string]any {
+		properties["pattern"] = stringProperty("RE2 pattern; only matching lines are returned, matched against the line with its [burn/step] prefix removed")
+		properties["context"] = integerProperty("Lines of context each side of a match")
+		properties["offset"] = integerProperty("First line to return, 0-based; pages through matches when pattern is set")
+		properties["limit"] = integerProperty("Maximum lines to return")
+		properties["tail"] = map[string]any{"type": "boolean", "description": "Take from the end of the step instead of the start"}
+		return properties
+	}
 	timeoutProperty := func() map[string]any {
 		return map[string]any{"type": "integer", "description": "Timeout seconds (maximum 120)", "minimum": 1, "maximum": 120}
 	}
@@ -250,9 +258,9 @@ func toolDefinitions() []map[string]any {
 	}
 	return []map[string]any{
 		tool("status", "Return concise CI status for a full SHA, short SHA, or branch, including the failed step.", object(map[string]any{"repo": stringProperty("Repository name when the selector is ambiguous"), "ref": stringProperty("Full SHA, short SHA, or branch")}, "ref")),
-		tool("logs", "Return exactly one named step log for a SHA.", object(map[string]any{"repo": stringProperty("Repository name when the SHA is ambiguous"), "sha": stringProperty("Full or short SHA"), "step": stringProperty("Step name")}, "sha", "step")),
+		tool("logs", "Return one named step log for a SHA, optionally filtered server-side. Prefer a pattern over retrieving a whole step: the response reports total and matched line counts so a narrowed read is never mistaken for a complete one.", object(logFilterProperties(map[string]any{"repo": stringProperty("Repository name when the SHA is ambiguous"), "sha": stringProperty("Full or short SHA"), "step": stringProperty("Step name")}), "sha", "step")),
 		tool("run_get", "Return one exact run and its named step results by durable run ID.", object(map[string]any{"id": stringProperty("Exact run ID")}, "id")),
-		tool("run_logs", "Return one exact burn/step log by durable run ID.", object(map[string]any{"id": stringProperty("Exact run ID"), "burn": stringProperty("Burn name"), "step": stringProperty("Step name")}, "id", "burn", "step")),
+		tool("run_logs", "Return one exact burn/step log by durable run ID, optionally filtered server-side. Prefer a pattern over retrieving a whole step: the response reports total and matched line counts so a narrowed read is never mistaken for a complete one.", object(logFilterProperties(map[string]any{"id": stringProperty("Exact run ID"), "burn": stringProperty("Burn name"), "step": stringProperty("Step name")}), "id", "burn", "step")),
 		tool("wait", "Long-poll until a SHA reaches a terminal state; timeout returns still-running cleanly. When trigger is set, waits for a run with that trigger (e.g. 'release' for a tag-push run).", object(map[string]any{"repo": stringProperty("Repository name when the SHA is ambiguous"), "sha": stringProperty("Full or short SHA"), "trigger": stringProperty("Filter by trigger type (e.g. 'release' for tag runs, 'ci' for branch runs)"), "timeout": timeoutProperty()}, "sha")),
 		tool("sync", "Park the exact SHA's WIP branch upstream without a green gate; this is not completion or promotion evidence. Rejects promotion, release, plan, and apply runs. When the SHA has branch-trigger runs on multiple distinct branches, the explicit branch argument is required.", object(map[string]any{"repo": stringProperty("Repository name when the SHA is ambiguous"), "sha": stringProperty("Full SHA"), "branch": stringProperty("Explicit branch name; required when the SHA has runs on multiple branches, optional otherwise")}, "sha")),
 		tool("promote", "Green-gate and publish a SHA without force.", object(map[string]any{"repo": stringProperty("Repository name when the SHA is ambiguous"), "sha": stringProperty("Full SHA"), "branch": stringProperty("Target branch")}, "sha", "branch")),

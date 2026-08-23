@@ -11,6 +11,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/oberthci/oberth/internal/runlog"
 )
 
 type fakeBackend struct {
@@ -30,6 +32,7 @@ type fakeBackend struct {
 	logBurn         string
 	logStep         string
 	logCalls        int
+	logFilter       runlog.Filter
 	liveOffset      int64
 	liveCalls       int
 }
@@ -70,6 +73,12 @@ func (backend *fakeBackend) RunLog(_ context.Context, _ Actor, id, burn, step st
 	backend.runID, backend.logBurn, backend.logStep = id, burn, step
 	backend.logCalls++
 	return map[string]string{"run_id": id, "burn": burn, "step": step, "output": "[test/unit] ok\n"}, nil
+}
+func (backend *fakeBackend) RunLogFiltered(_ context.Context, _ Actor, id, burn, step string, filter runlog.Filter) (any, error) {
+	backend.runID, backend.logBurn, backend.logStep = id, burn, step
+	backend.logFilter = filter
+	backend.logCalls++
+	return map[string]any{"run_id": id, "burn": burn, "step": step, "output": "[test/unit] ok\n"}, nil
 }
 func (backend *fakeBackend) RunLogLive(_ context.Context, _ Actor, id string, offset int64) (any, error) {
 	backend.runID, backend.liveOffset = id, offset
@@ -544,9 +553,9 @@ func TestMCPToolInputsMatchContract(t *testing.T) {
 	t.Parallel()
 	want := map[string][]string{
 		"status":     {"ref", "repo"},
-		"logs":       {"repo", "sha", "step"},
+		"logs":       {"context", "limit", "offset", "pattern", "repo", "sha", "step", "tail"},
 		"run_get":    {"id"},
-		"run_logs":   {"burn", "id", "step"},
+		"run_logs":   {"burn", "context", "id", "limit", "offset", "pattern", "step", "tail"},
 		"wait":       {"repo", "sha", "timeout", "trigger"},
 		"sync":       {"branch", "repo", "sha"},
 		"promote":    {"branch", "repo", "sha"},
@@ -723,5 +732,39 @@ func TestMCPToolSurfaceMatchesContract(t *testing.T) {
 	}
 	if !slices.Equal(got, want) {
 		t.Fatalf("MCP tools = %v, want exact MCP tool surface %v", got, want)
+	}
+}
+
+func TestRunLogRejectsMalformedFilterParametersWithoutReachingTheView(t *testing.T) {
+	t.Parallel()
+	for _, query := range []string{"offset=-1", "limit=abc", "context=999", "pattern=" + strings.Repeat("x", 600)} {
+		server, backend := testServer(t)
+		request := httptest.NewRequest(http.MethodGet, "/api/runs/r-1/logs?burn=test&step=unit&"+query, nil)
+		request.Header.Set("Authorization", "Bearer valid-token")
+		response := httptest.NewRecorder()
+		server.Handler().ServeHTTP(response, request)
+		if response.Code != http.StatusBadRequest {
+			t.Fatalf("%s: status = %d, want 400", query, response.Code)
+		}
+		if backend.logCalls != 0 {
+			t.Fatalf("%s: reached the view layer despite invalid input", query)
+		}
+	}
+}
+
+func TestRunLogPassesFilterParametersThrough(t *testing.T) {
+	t.Parallel()
+	server, backend := testServer(t)
+	request := httptest.NewRequest(http.MethodGet,
+		"/api/runs/r-1/logs?burn=test&step=unit&pattern=FAIL&context=2&offset=5&limit=10&tail=true", nil)
+	request.Header.Set("Authorization", "Bearer valid-token")
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d body = %s", response.Code, response.Body.String())
+	}
+	want := runlog.Filter{Pattern: "FAIL", Context: 2, Offset: 5, Limit: 10, Tail: true}
+	if backend.logFilter != want {
+		t.Fatalf("filter = %#v, want %#v", backend.logFilter, want)
 	}
 }

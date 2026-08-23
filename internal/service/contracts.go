@@ -244,6 +244,7 @@ type LogStore interface {
 	Create(string) (*os.File, error)
 	BuildIndex(string) (runlog.Index, error)
 	Read(string, string, string) ([]byte, error)
+	ReadFiltered(string, string, string, runlog.Filter) ([]byte, runlog.Meta, error)
 	ReadActive(string, string, string) ([]byte, error)
 	Tail(string, int64) ([]byte, error)
 	// ReadFrom serves the dashboard's live view of a run in progress: bytes
@@ -380,10 +381,14 @@ type StatusResponse struct {
 }
 
 type LogResponse struct {
-	RunID  string `json:"run_id"`
-	Burn   string `json:"burn"`
-	Step   string `json:"step,omitempty"`
-	Output string `json:"output"`
+	RunID         string `json:"run_id"`
+	Burn          string `json:"burn"`
+	Step          string `json:"step,omitempty"`
+	Output        string `json:"output"`
+	TotalLines    int    `json:"total_lines,omitempty"`
+	MatchedLines  int    `json:"matched_lines,omitempty"`
+	ReturnedLines int    `json:"returned_lines,omitempty"`
+	Truncated     bool   `json:"truncated,omitempty"`
 }
 
 // LiveLogResponse is one polled slice of a running Job's redacted log stream.

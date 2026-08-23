@@ -21,6 +21,7 @@ const (
 	maxMarkerBytes   = 64 << 10
 	maxReadBytes     = 4 << 20
 	maxProgressBytes = 1 << 20
+	defaultLineLimit = 100000
 )
 
 var ErrLogSliceTooLarge = errors.New("run log slice exceeds response limit")
@@ -36,6 +37,26 @@ type Index struct {
 	RunID  string  `json:"run_id"`
 	Size   int64   `json:"size"`
 	Ranges []Range `json:"ranges"`
+}
+
+type Filter struct {
+	Pattern string
+	Context int
+	Offset  int
+	Limit   int
+	Tail    bool
+}
+
+func (filter Filter) empty() bool {
+	return filter.Pattern == "" && filter.Context == 0 && filter.Offset == 0 && filter.Limit == 0 && !filter.Tail
+}
+
+type Meta struct {
+	TotalLines    int   `json:"total_lines"`
+	MatchedLines  int   `json:"matched_lines"`
+	ReturnedLines int   `json:"returned_lines"`
+	Truncated     bool  `json:"truncated"`
+	Bytes         int64 `json:"bytes"`
 }
 
 type Store struct {
@@ -89,9 +110,14 @@ func (store *Store) BuildIndex(runID string) (Index, error) {
 }
 
 func (store *Store) Read(runID, burn, step string) ([]byte, error) {
+	body, _, err := store.ReadFiltered(runID, burn, step, Filter{})
+	return body, err
+}
+
+func (store *Store) ReadFiltered(runID, burn, step string, filter Filter) ([]byte, Meta, error) {
 	index, err := store.loadIndex(runID)
 	if err != nil {
-		return nil, err
+		return nil, Meta{}, err
 	}
 	var selected []Range
 	var total int64
@@ -100,35 +126,26 @@ func (store *Store) Read(runID, burn, step string) ([]byte, error) {
 			continue
 		}
 		length := candidate.End - candidate.Start
-		if length < 0 || length > maxReadBytes || total > maxReadBytes-length {
-			return nil, ErrLogSliceTooLarge
+		if length < 0 {
+			continue
 		}
 		total += length
 		selected = append(selected, candidate)
 	}
 	if len(selected) == 0 {
-		return nil, fmt.Errorf("log slice %s/%s: %w", burn, step, os.ErrNotExist)
+		return nil, Meta{}, fmt.Errorf("log slice %s/%s: %w", burn, step, os.ErrNotExist)
+	}
+	if filter.empty() && total > maxReadBytes {
+		return nil, Meta{}, ErrLogSliceTooLarge
 	}
 	path, _ := store.logPath(runID)
 	// logPath validated the owner ID and confined this path to the log root.
 	file, err := os.Open(path) //nolint:gosec
 	if err != nil {
-		return nil, fmt.Errorf("open run log: %w", err)
+		return nil, Meta{}, fmt.Errorf("open run log: %w", err)
 	}
 	defer func() { _ = file.Close() }()
-	body := make([]byte, int(total))
-	var offset int
-	for _, wanted := range selected {
-		if _, err := file.Seek(wanted.Start, io.SeekStart); err != nil {
-			return nil, err
-		}
-		length := int(wanted.End - wanted.Start)
-		if _, err := io.ReadFull(file, body[offset:offset+length]); err != nil {
-			return nil, err
-		}
-		offset += length
-	}
-	return body, nil
+	return filterRanges(file, selected, total, filter)
 }
 
 // ReadActive returns the most recent bounded bytes for one step from a run's
@@ -656,4 +673,93 @@ func safeID(value string) bool {
 		return false
 	}
 	return true
+}
+
+func stepContent(line string) string {
+	if !strings.HasPrefix(line, "[") {
+		return line
+	}
+	close := strings.Index(line, "] ")
+	if close < 0 {
+		return line
+	}
+	return line[close+2:]
+}
+
+func filterRanges(file *os.File, ranges []Range, total int64, filter Filter) ([]byte, Meta, error) {
+	meta := Meta{Bytes: total}
+	limit := filter.Limit
+	if limit <= 0 {
+		limit = defaultLineLimit
+	}
+	window := newLineWindow(filter.Offset, limit, filter.Tail)
+	for _, wanted := range ranges {
+		if _, err := file.Seek(wanted.Start, io.SeekStart); err != nil {
+			return nil, Meta{}, err
+		}
+		reader := bufio.NewReader(io.LimitReader(file, wanted.End-wanted.Start))
+		for {
+			line, err := reader.ReadString('\n')
+			if line != "" {
+				meta.TotalLines++
+				meta.MatchedLines++
+				window.offer(line)
+			}
+			if err != nil {
+				break
+			}
+		}
+	}
+	out, returned, truncatedByBytes := window.bytes(maxReadBytes)
+	meta.ReturnedLines = returned
+	available := meta.MatchedLines - filter.Offset
+	if available < 0 {
+		available = 0
+	}
+	meta.Truncated = truncatedByBytes || meta.ReturnedLines < available
+	return out, meta, nil
+}
+
+type lineWindow struct {
+	offset int
+	limit  int
+	tail   bool
+	seen   int
+	lines  []string
+}
+
+func newLineWindow(offset, limit int, tail bool) *lineWindow {
+	return &lineWindow{offset: offset, limit: limit, tail: tail}
+}
+
+func (window *lineWindow) offer(line string) {
+	window.seen++
+	if window.seen <= window.offset {
+		return
+	}
+	if window.tail {
+		window.lines = append(window.lines, line)
+		if len(window.lines) > window.limit {
+			window.lines = window.lines[len(window.lines)-window.limit:]
+		}
+		return
+	}
+	if len(window.lines) < window.limit {
+		window.lines = append(window.lines, line)
+	}
+}
+
+func (window *lineWindow) bytes(budget int64) ([]byte, int, bool) {
+	var out []byte
+	var used int64
+	returned := 0
+	for _, line := range window.lines {
+		if used+int64(len(line)) > budget {
+			return out, returned, true
+		}
+		used += int64(len(line))
+		out = append(out, line...)
+		returned++
+	}
+	return out, returned, false
 }

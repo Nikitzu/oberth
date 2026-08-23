@@ -6,10 +6,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/oberthci/oberth/internal/runlog"
 	"html"
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 )
@@ -48,6 +50,7 @@ type ViewService interface {
 	Runs(context.Context, Actor, RunFilter) (any, error)
 	Run(context.Context, Actor, string) (any, error)
 	RunLog(context.Context, Actor, string, string, string) (any, error)
+	RunLogFiltered(context.Context, Actor, string, string, string, runlog.Filter) (any, error)
 	RunLogLive(context.Context, Actor, string, int64) (any, error)
 	Repositories(context.Context, Actor) (any, error)
 	Issues(context.Context, Actor, IssueFilter) (any, error)
@@ -201,6 +204,11 @@ func (server *Server) handleRunDetail(writer http.ResponseWriter, request *http.
 	server.writeView(writer, value, err)
 }
 
+const (
+	maxLogPatternBytes = 512
+	maxLogContextLines = 50
+)
+
 func (server *Server) handleRunLog(writer http.ResponseWriter, request *http.Request) {
 	id := request.PathValue("run")
 	query := request.URL.Query()
@@ -209,8 +217,35 @@ func (server *Server) handleRunLog(writer http.ResponseWriter, request *http.Req
 		writeJSON(writer, http.StatusBadRequest, map[string]string{"error": "run ID plus burn and step query parameters are required"})
 		return
 	}
-	value, err := server.views.RunLog(request.Context(), actorFrom(request.Context()), id, burn, step)
+	filter, err := logFilterFrom(query)
+	if err != nil {
+		writeJSON(writer, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	value, err := server.views.RunLogFiltered(request.Context(), actorFrom(request.Context()), id, burn, step, filter)
 	server.writeView(writer, value, err)
+}
+
+func logFilterFrom(query url.Values) (runlog.Filter, error) {
+	filter := runlog.Filter{Pattern: query.Get("pattern"), Tail: query.Get("tail") == "true"}
+	for name, target := range map[string]*int{"context": &filter.Context, "offset": &filter.Offset, "limit": &filter.Limit} {
+		raw := query.Get(name)
+		if raw == "" {
+			continue
+		}
+		value, err := strconv.Atoi(raw)
+		if err != nil || value < 0 {
+			return runlog.Filter{}, fmt.Errorf("invalid log %s: must be a non-negative integer", name)
+		}
+		*target = value
+	}
+	if len(filter.Pattern) > maxLogPatternBytes {
+		return runlog.Filter{}, fmt.Errorf("log pattern exceeds %d bytes", maxLogPatternBytes)
+	}
+	if filter.Context > maxLogContextLines {
+		return runlog.Filter{}, fmt.Errorf("log context exceeds %d lines", maxLogContextLines)
+	}
+	return filter, nil
 }
 
 // handleRunLogLive serves the polled live view of a running Job's redacted
