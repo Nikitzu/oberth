@@ -53,6 +53,7 @@ type ArgoJobs struct {
 	config            argojob.Config
 	secretAccess      SecretAccessLoader
 	fragments         FragmentLoader
+	files             FileLoader
 	collector         ArtifactCollector
 	artifacts         ArtifactStore
 	artifactLimit     int64
@@ -110,7 +111,8 @@ func (jobs *ArgoJobs) SetReconcilerHealth(checker ReconcilerHealthChecker) {
 	jobs.reconcilerHealthy = checker
 }
 
-func NewArgoJobs(controller argoControl, config argojob.Config, auditor service.Auditor, secretAccess SecretAccessLoader, fragments FragmentLoader) (*ArgoJobs, error) {
+func NewArgoJobs(controller argoControl, config argojob.Config, auditor service.Auditor,
+	secretAccess SecretAccessLoader, fragments FragmentLoader, files FileLoader) (*ArgoJobs, error) {
 	if controller == nil {
 		return nil, errors.New("app: Argo Workflow controller is required")
 	}
@@ -124,7 +126,8 @@ func NewArgoJobs(controller argoControl, config argojob.Config, auditor service.
 	if err := config.Validate(); err != nil {
 		return nil, err
 	}
-	return &ArgoJobs{controller: controller, auditor: auditor, config: config, secretAccess: secretAccess, fragments: fragments, intents: map[string]argoIntent{}}, nil
+	return &ArgoJobs{controller: controller, auditor: auditor, config: config, secretAccess: secretAccess,
+		fragments: fragments, files: files, intents: map[string]argoIntent{}}, nil
 }
 
 func (jobs *ArgoJobs) CreateCI(ctx context.Context, request service.JobRequest) error {
@@ -277,12 +280,16 @@ func (jobs *ArgoJobs) create(ctx context.Context, request service.JobRequest, tr
 	if err != nil {
 		return fmt.Errorf("app: resolve fragments for %s: %w", request.Repository.Name, err)
 	}
+	files, err := loadFiles(ctx, jobs.files, source)
+	if err != nil {
+		return fmt.Errorf("app: resolve file dependencies for %s: %w", request.Repository.Name, err)
+	}
 	submission := argojob.Request{
 		RunID: request.Run.ID, Name: request.JobName,
 		Repo: request.Repository.Name, UpstreamOrg: request.UpstreamOrg,
 		Ref: request.Run.Ref, SHA: testedSHA, Trigger: trigger, Source: source,
 		SourceDir: request.SourceDir, ApprovedSecrets: approvedSecrets,
-		Fragments: fragments,
+		Fragments: fragments, Files: files,
 	}
 	if err := jobs.auditSubmission(ctx, request, submission); err != nil {
 		return err
@@ -341,8 +348,14 @@ func (jobs *ArgoJobs) auditSubmission(ctx context.Context, request service.JobRe
 		declared = workflow.Annotations["oberth.ci/declared-secret-paths"]
 	}
 	fragments := ""
+	files := ""
 	if workflow.Annotations != nil {
 		fragments = workflow.Annotations[argojob.FragmentsAnnotation]
+		// The resolved lock, not the declaration: Build replaced it. This is
+		// what makes "this run read version v1 of the registry, whose content
+		// hashed to X" a fact recorded before the run rather than a claim made
+		// after it.
+		files = workflow.Annotations[argoworkflow.FilesAnnotation]
 	}
 	automount := workflow.Spec.AutomountServiceAccountToken != nil && *workflow.Spec.AutomountServiceAccountToken
 	details := map[string]any{
@@ -366,6 +379,7 @@ func (jobs *ArgoJobs) auditSubmission(ctx context.Context, request service.JobRe
 		"automount_service_account_token": automount,
 		"declared_secret_paths":           declared,
 		"fragments":                       fragments,
+		"files":                           files,
 	}
 	encoded, err := json.Marshal(details)
 	if err != nil {

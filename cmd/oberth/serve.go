@@ -561,11 +561,17 @@ func serve(ctx context.Context, options serveOptions, logger *log.Logger) (resul
 	if err != nil {
 		return err
 	}
+	// The same allowlist governs both: one decision about which repositories a
+	// pipeline may read content from at build time.
+	fileLoader, err := app.NewGitFileLoader(git, database, splitRunnerImagePrefixes(options.fragmentAllowlist))
+	if err != nil {
+		return err
+	}
 	artifactStore, err := artifacts.Open(filepath.Join(options.dataRoot, "artifacts"))
 	if err != nil {
 		return err
 	}
-	argoJobs, err := buildArgoEngine(options, restConfig, kube, database, database, fragmentLoader,
+	argoJobs, err := buildArgoEngine(options, restConfig, kube, database, database, fragmentLoader, fileLoader,
 		artifactStoreAdapter{store: artifactStore}, options.artifactsLimitBytes, options.artifactsBudgetBytes)
 	if err != nil {
 		return err
