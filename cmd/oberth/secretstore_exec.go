@@ -13,6 +13,7 @@ import (
 
 	"github.com/oberthci/oberth/internal/redact"
 	"github.com/oberthci/oberth/internal/secretstore"
+	"github.com/oberthci/oberth/pkg/periapsis"
 )
 
 const (
@@ -20,6 +21,12 @@ const (
 	// materialised secret tree. It carries the same name and meaning it had on
 	// the Kubernetes Job path, so a script works unchanged under either engine.
 	secretExecStoreDirEnv = "OBERTH_SECRETSTORE_DIR"
+
+	// secretExecKVMountEnv names the KV mount holding Oberth's secrets, so the
+	// translation below does not hardcode an administrator's choice. The
+	// fallback matches the chart's own secretstore.kvMount default.
+	secretExecKVMountEnv = "OBERTH_SECRETSTORE_KV_MOUNT"
+	defaultKVMount       = "oberth"
 
 	// secretExecFileMode and secretExecDirMode mirror the Job path's delivery:
 	// the owner may read the file and nothing else, and the tree is not
@@ -115,6 +122,18 @@ func runSecretStoreExec(ctx context.Context, arguments []string, standardOut, er
 	if err != nil {
 		return fmt.Errorf("configure secret store client: %w", err)
 	}
+
+	// Upstream-scoped paths arrive in their virtual form,
+	// oberth/upstream/<org>/<repo>/<secret>. A CI trigger may declare nothing
+	// else (pkg/argoworkflow/declare.go AuthorizeSecretPaths) and admission
+	// requires every --path to match its declaration verbatim
+	// (internal/argojob/spec.go), so the virtual form is the only thing that
+	// can reach this point on a branch pipeline. The value itself lives at the
+	// KV v2 data path, which is also what the credentialed policy grants, so
+	// without this the read is issued against a path no policy covers and the
+	// store answers 403. Release-tier paths are authored as <mount>/data/...
+	// already and pass through untouched.
+	paths = translateUpstreamPaths(paths, kvMountName())
 
 	fetched, err := client.FetchKV(ctx, paths)
 	if err != nil {
@@ -529,4 +548,29 @@ func isMaterializeStoreCredential(name string) bool {
 	return strings.HasPrefix(name, "VAULT_") ||
 		strings.HasPrefix(name, "BAO_") ||
 		strings.HasPrefix(name, "CONSUL_")
+}
+
+// kvMountName resolves the KV mount holding Oberth's secrets.
+func kvMountName() string {
+	if mount := os.Getenv(secretExecKVMountEnv); mount != "" {
+		return mount
+	}
+	return defaultKVMount
+}
+
+// translateUpstreamPaths rewrites upstream-scoped declarations to the KV data
+// path their values actually live at, leaving every other path untouched. A
+// path that does not parse is passed through so the store's own error surfaces
+// rather than one invented here.
+func translateUpstreamPaths(paths []string, kvMount string) []string {
+	translated := make([]string, 0, len(paths))
+	for _, path := range paths {
+		scoped, upstreamScoped, err := periapsis.ParseUpstreamSecretStorePath(path)
+		if err != nil || !upstreamScoped {
+			translated = append(translated, path)
+			continue
+		}
+		translated = append(translated, scoped.FetchPath(kvMount))
+	}
+	return translated
 }
