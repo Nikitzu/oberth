@@ -104,6 +104,8 @@ call the proxy hostname directly.
 | `logs` | One named step's log output for a SHA, optionally filtered |
 | `run_get` | One exact durable run and its named step results by run ID |
 | `run_logs` | One exact burn/step log by durable run ID, optionally filtered |
+| `artifacts` | The files a run kept, with size and modification time |
+| `artifact_get` | One artifact's contents by run ID and name, optionally filtered |
 | `wait` | Long-poll until a SHA reaches a terminal state |
 | `sync` | Park a WIP branch upstream without a green gate (not completion evidence) |
 | `promote` | Green-gate a SHA, merge with target branch, push without force |
@@ -121,7 +123,7 @@ call the proxy hostname directly.
 
 ### Filtering log output
 
-`logs` and `run_logs` accept five optional parameters. Filtering happens on the
+`logs`, `run_logs` and `artifact_get` accept five optional parameters. Filtering happens on the
 server, so a narrowed read never sends the whole step over the wire.
 
 | Parameter | Meaning |

@@ -39,7 +39,7 @@ func main() {
 	}
 }
 
-const usageCommands = "audit, init, validate, install, upgrade, serve, upstream, repo, fragments, uplink, access, secretstore, or version"
+const usageCommands = "audit, init, validate, install, upgrade, serve, upstream, repo, fragments, artifacts, uplink, access, secretstore, or version"
 
 func runCLI(ctx context.Context, arguments []string, input io.Reader, output io.Writer) error {
 	if len(arguments) == 0 {
@@ -63,6 +63,8 @@ func runCLI(ctx context.Context, arguments []string, input io.Reader, output io.
 		return runRepo(ctx, arguments[1:], output)
 	case "fragments":
 		return runFragments(ctx, arguments[1:], output)
+	case "artifacts":
+		return runArtifacts(ctx, arguments[1:], output)
 	case "uplink":
 		return runUplink(ctx, arguments[1:], input, output)
 	case "access":
