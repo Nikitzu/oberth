@@ -720,7 +720,7 @@ func serve(ctx context.Context, options serveOptions, logger *log.Logger) (resul
 		Publisher: publisher,
 		Runs:      database, History: database, Repositories: database, Issues: database,
 		Promotions: database, PromotionRuns: database, Enqueues: scheduler, Git: git,
-		Refs: git, Logs: logs, Auditor: database, Health: health, Signals: signals,
+		Refs: git, Logs: logs, Artifacts: artifactStore, Auditor: database, Health: health, Signals: signals,
 		MutationGate:           anchors.AllowMutation,
 		PromotionWorkspaceRoot: filepath.Join(options.dataRoot, "work"),
 		SecretAccess:           database,
