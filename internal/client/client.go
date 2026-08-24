@@ -174,12 +174,35 @@ func (client *Client) GetRaw(ctx context.Context, path string, query map[string]
 }
 
 func classifyTransport(path string, err error) error {
-	message := err.Error()
-	if strings.Contains(message, "x509") || strings.Contains(message, "certificate") {
-		return fmt.Errorf("client: the server's certificate is not trusted; "+
-			"set OBERTH_CA_CERT to the PEM that signed it (%s)", path)
+	var hostname x509.HostnameError
+	if errors.As(err, &hostname) {
+		return fmt.Errorf("client: the server's certificate does not cover %q; it is issued for %s. "+
+			"Reach the server by one of those names, or have the operator add this address to the certificate",
+			hostname.Host, strings.Join(certificateNames(hostname.Certificate), ", "))
+	}
+	var authority x509.UnknownAuthorityError
+	if errors.As(err, &authority) {
+		return fmt.Errorf("client: the server's certificate is signed by an authority this machine "+
+			"does not trust; set OBERTH_CA_CERT to the PEM that signed it (%s)", path)
+	}
+	if strings.Contains(err.Error(), "x509") || strings.Contains(err.Error(), "certificate") {
+		return fmt.Errorf("client: the server's certificate could not be verified for %s", path)
 	}
 	return fmt.Errorf("client: cannot reach the server for %s", path)
+}
+
+func certificateNames(certificate *x509.Certificate) []string {
+	if certificate == nil {
+		return []string{"an unreadable set of names"}
+	}
+	names := append([]string{}, certificate.DNSNames...)
+	for _, address := range certificate.IPAddresses {
+		names = append(names, address.String())
+	}
+	if len(names) == 0 && certificate.Subject.CommonName != "" {
+		names = append(names, certificate.Subject.CommonName)
+	}
+	return names
 }
 
 func statusError(path string, response *http.Response) error {
