@@ -3,8 +3,11 @@ package app
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
+
+	"github.com/oberthci/oberth/internal/model"
 )
 
 type ArtifactCollector interface {
@@ -35,7 +38,22 @@ func (jobs *ArgoJobs) collectArtifacts(ctx context.Context, workflowName, runID 
 	if err := jobs.artifacts.Extract(runID, bytes.NewReader(archive), jobs.artifactLimit); err != nil {
 		return fmt.Sprintf("store: %v", err)
 	}
+	jobs.auditArtifacts(ctx, runID, map[string]any{"bytes": len(archive), "stored": true})
 	return ""
+}
+
+func (jobs *ArgoJobs) auditArtifacts(ctx context.Context, runID string, details map[string]any) {
+	if jobs.auditor == nil {
+		return
+	}
+	encoded, err := json.Marshal(details)
+	if err != nil {
+		return
+	}
+	_, _ = jobs.auditor.AppendAuditAction(ctx, model.AuditActionSpec{
+		Actor: "oberth", Action: "ci.argo.artifacts",
+		ResourceType: "run", ResourceID: runID, Details: string(encoded),
+	})
 }
 
 func (jobs *ArgoJobs) reportArtifactFailure(runID, reason string) {
@@ -45,6 +63,11 @@ func (jobs *ArgoJobs) reportArtifactFailure(runID, reason string) {
 	}
 	jobs.artifactFailures[runID] = reason
 	jobs.mu.Unlock()
+}
+
+func (jobs *ArgoJobs) recordArtifactFailure(ctx context.Context, runID, reason string) {
+	jobs.reportArtifactFailure(runID, reason)
+	jobs.auditArtifacts(ctx, runID, map[string]any{"stored": false, "reason": reason})
 }
 
 func (jobs *ArgoJobs) ArtifactFailure(runID string) string {

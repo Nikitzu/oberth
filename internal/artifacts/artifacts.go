@@ -118,15 +118,14 @@ func judge(stream io.Reader, limit int64) ([]stagedMember, int64, error) {
 		if err != nil {
 			return nil, 0, fmt.Errorf("artifacts: read collection: %w", err)
 		}
+		if header.Typeflag == tar.TypeDir {
+			continue
+		}
 		name, err := safeMemberName(header.Name)
 		if err != nil {
 			return nil, 0, err
 		}
-		switch header.Typeflag {
-		case tar.TypeDir:
-			continue
-		case tar.TypeReg:
-		default:
+		if header.Typeflag != tar.TypeReg {
 			return nil, 0, fmt.Errorf("%w: %q is not a regular file", ErrRefused, header.Name)
 		}
 		if header.Linkname != "" {

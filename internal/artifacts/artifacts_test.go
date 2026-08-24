@@ -343,3 +343,20 @@ func FuzzExtract(f *testing.F) {
 		_, _ = store.Extract("run-fuzz", bytes.NewReader(raw), 1<<16)
 	})
 }
+
+func TestExtractAcceptsAnArchiveWrittenByTarDashC(t *testing.T) {
+	t.Parallel()
+	store, _ := newStore(t)
+	archive := archiveOf(t,
+		member{name: "./", typeflag: tar.TypeDir},
+		member{name: "./surefire/", typeflag: tar.TypeDir},
+		member{name: "./surefire/TEST-Report.xml", body: "<testsuite/>"},
+	)
+	manifest, err := store.Extract("run-abc", archive, 1<<20)
+	if err != nil {
+		t.Fatalf("the shape `tar -czf - -C dir .` actually produces was refused: %v", err)
+	}
+	if len(manifest.Entries) != 1 || manifest.Entries[0].Name != "surefire/TEST-Report.xml" {
+		t.Fatalf("entries = %+v", manifest.Entries)
+	}
+}
