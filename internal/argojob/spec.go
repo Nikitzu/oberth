@@ -402,6 +402,8 @@ type Request struct {
 	// Must be non-nil. An empty map means no grants; a nil map is a
 	// programming error (the caller forgot to load the approval table).
 	ApprovedSecrets map[string]bool
+
+	Fragments map[argoworkflow.FragmentKey]argoworkflow.Fragment
 }
 
 // Build turns a repository document into the exact Workflow object Oberth will
@@ -420,6 +422,9 @@ func Build(config Config, request Request) (*wfv1.Workflow, error) {
 	}
 	workflow, err := argoworkflow.Decode(request.Source)
 	if err != nil {
+		return nil, err
+	}
+	if _, err := argoworkflow.Resolve(workflow, request.Fragments); err != nil {
 		return nil, err
 	}
 	declaredPaths, err := argoworkflow.DeclaredSecretPaths(workflow)
