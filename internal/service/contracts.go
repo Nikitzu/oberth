@@ -249,8 +249,8 @@ type EnqueueObserver interface {
 type LogStore interface {
 	Create(string) (*os.File, error)
 	BuildIndex(string) (runlog.Index, error)
-	Read(string, string, string) ([]byte, error)
-	ReadActive(string, string, string) ([]byte, error)
+	ReadFiltered(string, string, string, runlog.Filter) ([]byte, runlog.Meta, error)
+	ReadActiveFiltered(string, string, string, runlog.Filter) ([]byte, runlog.Meta, error)
 	Tail(string, int64) ([]byte, error)
 	// ReadFrom serves the dashboard's live view of a run in progress: bytes
 	// from offset (negative means tail), the next poll offset, and the
@@ -386,10 +386,15 @@ type StatusResponse struct {
 }
 
 type LogResponse struct {
-	RunID  string `json:"run_id"`
-	Burn   string `json:"burn"`
-	Step   string `json:"step,omitempty"`
-	Output string `json:"output"`
+	RunID         string `json:"run_id"`
+	Burn          string `json:"burn"`
+	Step          string `json:"step,omitempty"`
+	Output        string `json:"output"`
+	TotalLines    int    `json:"total_lines"`
+	MatchedLines  int    `json:"matched_lines"`
+	ReturnedLines int    `json:"returned_lines"`
+	Truncated     bool   `json:"truncated"`
+	Bytes         int64  `json:"bytes"`
 }
 
 // LiveLogResponse is one polled slice of a running Job's redacted log stream.

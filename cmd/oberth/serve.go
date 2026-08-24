@@ -1527,7 +1527,8 @@ func pathWithin(root, path string) bool { return gitoid.StrictPathWithin(root, p
 // service or store.
 func classifyViewError(err error) (int, string) {
 	switch {
-	case errors.Is(err, service.ErrInvalidInput):
+	case errors.Is(err, service.ErrInvalidInput),
+		errors.Is(err, runlog.ErrInvalidPattern):
 		return http.StatusBadRequest, err.Error()
 	case errors.Is(err, service.ErrForbidden):
 		return http.StatusForbidden, "forbidden"
