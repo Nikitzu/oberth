@@ -87,6 +87,8 @@ type serveOptions struct {
 	fragmentAllowlist       string
 	artifactsLimitBytes     int64
 	artifactsBudgetBytes    int64
+	scheduleMinInterval     time.Duration
+	scheduleMaxEntries      int
 	maxConcurrent           int
 	publishOnGreen          bool
 	ciCacheRoot             string
@@ -166,6 +168,8 @@ func parseServeOptions(arguments []string, output io.Writer) (serveOptions, erro
 	flags.StringVar(&options.fragmentAllowlist, "fragment-allowlist", "", "comma-separated repositories usable as pipeline fragments; empty permits every registered repository")
 	flags.Int64Var(&options.artifactsLimitBytes, "artifacts-limit-bytes", defaultArtifactsLimitBytes, "maximum total bytes of artifacts kept per run")
 	flags.Int64Var(&options.artifactsBudgetBytes, "artifacts-budget-bytes", defaultArtifactsBudgetBytes, "total artifact storage before the oldest runs are evicted")
+	flags.DurationVar(&options.scheduleMinInterval, "schedule-min-interval", defaultScheduleMinInterval, "shortest interval a repository may schedule itself at")
+	flags.IntVar(&options.scheduleMaxEntries, "schedule-max-entries", defaultScheduleMaxEntries, "most schedule entries one repository may declare")
 	flags.IntVar(&options.maxConcurrent, "max-concurrent-jobs", 3, "maximum concurrent Jobs")
 	flags.BoolVar(&options.publishOnGreen, "publish-on-green", true,
 		"force-sync an ordinary green branch run to the upstream forge. Set false to keep the gate advisory: "+
@@ -788,7 +792,16 @@ func serve(ctx context.Context, options serveOptions, logger *log.Logger) (resul
 		}
 		return nil
 	}
-	return runComponents(ctx, options, scheduler, anchors, git, sshService, httpsServer, newAdminGateServer(anchors.AllowMutation, options.database), activateScheduler, accessReconciler, logger)
+	schedules := app.NewSchedules(app.SchedulesConfig{
+		Repositories: database.ListRepositories,
+		Git:          git,
+		Runs:         database,
+		Enqueuer:     scheduler,
+		State:        app.NewMemoryScheduleState(),
+		MinInterval:  options.scheduleMinInterval,
+		MaxEntries:   options.scheduleMaxEntries,
+	})
+	return runComponents(ctx, options, scheduler, anchors, git, sshService, httpsServer, newAdminGateServer(anchors.AllowMutation, options.database), activateScheduler, accessReconciler, schedules, logger)
 }
 
 type startupContinuity interface {
@@ -1188,6 +1201,7 @@ func runComponents(
 	adminServer *http.Server,
 	activateScheduler func(context.Context) error,
 	accessReconciler *service.AccessReconciler,
+	schedules *app.Schedules,
 	logger *log.Logger,
 ) error {
 	runCtx, cancel := context.WithCancel(ctx)
@@ -1258,6 +1272,16 @@ func runComponents(
 	go func() {
 		defer workers.Done()
 		git.StartPeriodicGC(runCtx, options.gcInterval)
+	}()
+	workers.Add(1)
+	go func() {
+		defer workers.Done()
+		if schedules == nil {
+			return
+		}
+		if err := schedules.Run(runCtx); err != nil && runCtx.Err() == nil {
+			logger.Printf("schedule ticker stopped: %v", err)
+		}
 	}()
 	if accessReconciler != nil {
 		workers.Add(1)
@@ -1573,4 +1597,6 @@ func classifyViewError(err error) (int, string) {
 const (
 	defaultArtifactsLimitBytes  = 256 << 20
 	defaultArtifactsBudgetBytes = 4 << 30
+	defaultScheduleMinInterval  = 15 * time.Minute
+	defaultScheduleMaxEntries   = 8
 )
