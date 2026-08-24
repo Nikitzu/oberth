@@ -797,7 +797,7 @@ func serve(ctx context.Context, options serveOptions, logger *log.Logger) (resul
 		Git:          git,
 		Runs:         database,
 		Enqueuer:     scheduler,
-		State:        app.NewMemoryScheduleState(),
+		State:        database,
 		MinInterval:  options.scheduleMinInterval,
 		MaxEntries:   options.scheduleMaxEntries,
 	})

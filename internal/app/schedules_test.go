@@ -61,11 +61,11 @@ type fakeScheduleState struct {
 	events []string
 }
 
-func (f *fakeScheduleState) LastFires(_ context.Context, repo string) (map[string]time.Time, error) {
+func (f *fakeScheduleState) ScheduleFires(_ context.Context, repo string) (map[string]time.Time, error) {
 	return f.fires[repo], nil
 }
 
-func (f *fakeScheduleState) RecordFire(_ context.Context, repo, entry string, _ time.Time, outcome string) error {
+func (f *fakeScheduleState) RecordScheduleFire(_ context.Context, repo, entry string, _ time.Time, outcome string) error {
 	f.events = append(f.events, repo+"/"+entry+":"+outcome)
 	if f.fires == nil {
 		f.fires = map[string]map[string]time.Time{}
@@ -268,5 +268,60 @@ func TestAFailedEnqueueIsRecordedRatherThanLost(t *testing.T) {
 
 	if len(state.events) == 0 || state.events[0] != "alpha/nightly:failed" {
 		t.Fatalf("a failed enqueue recorded %v", state.events)
+	}
+}
+
+func TestARestartAfterAMissedFireRunsOnceNotOncePerMissedFire(t *testing.T) {
+	t.Parallel()
+	git := &fakeScheduleGit{
+		sha:  map[string]string{"alpha": "0123456789abcdef0123456789abcdef01234567"},
+		blob: map[string]string{"alpha": nightlyFile},
+	}
+	schedules, enqueuer, _, state := testSchedules(t, git, oneRepo())
+	schedules.observed = instant(t, "2026-08-01T00:00:00Z")
+	state.fires["alpha"] = map[string]time.Time{"nightly": instant(t, "2026-08-01T03:00:00Z")}
+
+	schedules.Tick(context.Background(), instant(t, "2026-08-24T09:00:00Z"))
+
+	if len(enqueuer.requests) != 1 {
+		t.Fatalf("23 days of downtime enqueued %d runs, want exactly 1", len(enqueuer.requests))
+	}
+}
+
+func TestAFireIsNotRepeatedWithinTheSameMinute(t *testing.T) {
+	t.Parallel()
+	git := &fakeScheduleGit{
+		sha:  map[string]string{"alpha": "0123456789abcdef0123456789abcdef01234567"},
+		blob: map[string]string{"alpha": nightlyFile},
+	}
+	schedules, enqueuer, _, state := testSchedules(t, git, oneRepo())
+	schedules.observed = instant(t, "2026-08-24T00:00:00Z")
+
+	moment := instant(t, "2026-08-24T03:05:00Z")
+	schedules.Tick(context.Background(), moment)
+	state.fires["alpha"] = map[string]time.Time{"nightly": moment}
+	schedules.Tick(context.Background(), moment)
+
+	if len(enqueuer.requests) != 1 {
+		t.Fatalf("two ticks in the same minute enqueued %d runs, want 1", len(enqueuer.requests))
+	}
+}
+
+func TestTheMemoryStateOnlyAdvancesOnAFiredOutcome(t *testing.T) {
+	t.Parallel()
+	state := NewMemoryScheduleState()
+	ctx := context.Background()
+	when := instant(t, "2026-08-24T03:00:00Z")
+	for _, outcome := range []string{"skipped", "refused", "failed"} {
+		if err := state.RecordScheduleFire(ctx, "alpha", "nightly", when, outcome); err != nil {
+			t.Fatal(err)
+		}
+	}
+	fires, err := state.ScheduleFires(ctx, "alpha")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(fires) != 0 {
+		t.Fatalf("a non-fired outcome advanced the clock: %+v", fires)
 	}
 }

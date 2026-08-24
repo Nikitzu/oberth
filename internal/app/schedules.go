@@ -37,8 +37,8 @@ type ScheduleRuns interface {
 }
 
 type ScheduleState interface {
-	LastFires(ctx context.Context, repo string) (map[string]time.Time, error)
-	RecordFire(ctx context.Context, repo, entry string, at time.Time, outcome string) error
+	ScheduleFires(ctx context.Context, repo string) (map[string]time.Time, error)
+	RecordScheduleFire(ctx context.Context, repo, entry string, at time.Time, outcome string) error
 }
 
 type SchedulesConfig struct {
@@ -115,7 +115,7 @@ func (schedules *Schedules) tickRepository(ctx context.Context, repository model
 
 	last := map[string]time.Time{}
 	if schedules.config.State != nil {
-		if stored, stateErr := schedules.config.State.LastFires(ctx, repository.Name); stateErr == nil {
+		if stored, stateErr := schedules.config.State.ScheduleFires(ctx, repository.Name); stateErr == nil {
 			last = stored
 		}
 	}
@@ -185,7 +185,7 @@ func (schedules *Schedules) record(ctx context.Context, repo, entry string, at t
 	if schedules.config.State == nil {
 		return
 	}
-	_ = schedules.config.State.RecordFire(ctx, repo, entry, at, outcome)
+	_ = schedules.config.State.RecordScheduleFire(ctx, repo, entry, at, outcome)
 }
 
 func scheduleEventID() string {
@@ -205,7 +205,7 @@ func NewMemoryScheduleState() *MemoryScheduleState {
 	return &MemoryScheduleState{fires: map[string]map[string]time.Time{}}
 }
 
-func (state *MemoryScheduleState) LastFires(_ context.Context, repo string) (map[string]time.Time, error) {
+func (state *MemoryScheduleState) ScheduleFires(_ context.Context, repo string) (map[string]time.Time, error) {
 	state.mu.Lock()
 	defer state.mu.Unlock()
 	copied := map[string]time.Time{}
@@ -215,7 +215,7 @@ func (state *MemoryScheduleState) LastFires(_ context.Context, repo string) (map
 	return copied, nil
 }
 
-func (state *MemoryScheduleState) RecordFire(_ context.Context, repo, entry string, at time.Time, outcome string) error {
+func (state *MemoryScheduleState) RecordScheduleFire(_ context.Context, repo, entry string, at time.Time, outcome string) error {
 	if outcome != "fired" || entry == "" {
 		return nil
 	}
