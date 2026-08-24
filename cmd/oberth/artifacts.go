@@ -8,6 +8,7 @@ import (
 	"io"
 
 	"github.com/oberthci/oberth/internal/artifacts"
+	"github.com/oberthci/oberth/internal/client"
 )
 
 func runArtifacts(ctx context.Context, arguments []string, output io.Writer) error {
@@ -26,6 +27,10 @@ func runArtifacts(ctx context.Context, arguments []string, output io.Writer) err
 	if len(rest) == 0 || len(rest) > 2 {
 		return fmt.Errorf("%w: artifacts <run-id> [name]", errUsage)
 	}
+	if config := client.FromEnv(); config.Configured() {
+		return remoteArtifacts(ctx, config, rest, output)
+	}
+	reportMode("local store")
 	store, err := artifacts.Open(*dataRoot + "/artifacts")
 	if err != nil {
 		return err
