@@ -332,7 +332,7 @@ function branchSteps(run) {
   if (!steps.length) return "";
   return `<div class="bstp">${steps.map(step => {
     const sk = statusKind(step.Status);
-    return `<button class="bs ${esc(sk)}" data-run-id="${esc(run.ID)}"><span class="dot ${esc(sk)}"></span>${esc(step.Step)}<span class="du">${sk === "cancel" ? "skipped" : sk === "pending" ? esc(statusLabel(step.Status)) : esc(fmtDur(spanSeconds(step.StartedAt, step.FinishedAt, sk === "run")))}</span></button>`;
+    return `<button class="bs ${esc(sk)}" data-run-id="${esc(run.ID)}" data-step-key="${esc(stepKey(step))}"><span class="dot ${esc(sk)}"></span>${esc(step.Step)}<span class="du">${sk === "cancel" ? "skipped" : sk === "pending" ? esc(statusLabel(step.Status)) : esc(fmtDur(spanSeconds(step.StartedAt, step.FinishedAt, sk === "run")))}</span></button>`;
   }).join("")}</div>`;
 }
 
@@ -1080,7 +1080,12 @@ app.addEventListener("click", event => {
     return;
   }
   if ((target = event.target.closest("[data-open-issue]"))) { openIssue(target.dataset.openIssue, target); return; }
-  if ((target = event.target.closest("[data-run-id]"))) { go(`/runs/${enc(target.dataset.runId)}`); return; }
+  if ((target = event.target.closest("[data-run-id]"))) {
+    const runID = target.dataset.runId;
+    if (target.dataset.stepKey) { state.step = target.dataset.stepKey; state.stepRunID = runID; }
+    go(`/runs/${enc(runID)}`);
+    return;
+  }
   if ((target = event.target.closest("[data-repo-runs]"))) { state.repo = target.dataset.repoRuns; go("/runs"); return; }
   if ((target = event.target.closest("[data-branch-toggle]"))) {
     const key = target.dataset.branchToggle;
