@@ -108,6 +108,9 @@ func runSkillsInstall(arguments []string, output io.Writer) error {
 		if relErr != nil {
 			relative = path
 		}
+		if *personal {
+			relative = "~/" + relative
+		}
 		if _, err := fmt.Fprintf(output, "wrote: %s\n", relative); err != nil {
 			return err
 		}
