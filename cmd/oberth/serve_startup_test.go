@@ -624,7 +624,8 @@ ALTER TABLE step_results DROP COLUMN declared_size;
 ALTER TABLE uplinks DROP COLUMN admin;
 ALTER TABLE upstreams DROP COLUMN key_name;
 ALTER TABLE runs DROP COLUMN credentialed;
-DELETE FROM schema_migrations WHERE version IN (3, 4, 5, 6, 7, 8);
+DROP TABLE IF EXISTS schedule_fires;
+DELETE FROM schema_migrations WHERE version IN (3, 4, 5, 6, 7, 8, 9);
 COMMIT;
 PRAGMA foreign_keys = ON;
 `); err != nil {
@@ -745,7 +746,8 @@ DROP TABLE uplinks;
 ALTER TABLE uplinks_v1 RENAME TO uplinks;
 CREATE UNIQUE INDEX uplinks_token_credential_idx ON uplinks(token_credential_id);
 ALTER TABLE runs DROP COLUMN credentialed;
-DELETE FROM schema_migrations WHERE version IN (2, 3, 4, 5, 6, 7, 8);
+DROP TABLE IF EXISTS schedule_fires;
+DELETE FROM schema_migrations WHERE version IN (2, 3, 4, 5, 6, 7, 8, 9);
 COMMIT;
 PRAGMA foreign_keys = ON;
 `); err != nil {
