@@ -28,6 +28,7 @@ import (
 
 	"github.com/oberthci/oberth/internal/api"
 	"github.com/oberthci/oberth/internal/app"
+	"github.com/oberthci/oberth/internal/artifacts"
 	"github.com/oberthci/oberth/internal/auditanchor"
 	"github.com/oberthci/oberth/internal/auth"
 	"github.com/oberthci/oberth/internal/gitcache"
@@ -86,6 +87,8 @@ type serveOptions struct {
 	scheduleMinInterval     time.Duration
 	scheduleMaxEntries      int
 	fragmentAllowlist       string
+	artifactsLimitBytes     int64
+	artifactsBudgetBytes    int64
 	maxConcurrent           int
 	ciCacheRoot             string
 	releaseCacheRoot        string
@@ -166,6 +169,8 @@ func parseServeOptions(arguments []string, output io.Writer) (serveOptions, erro
 	flags.DurationVar(&options.scheduleMinInterval, "schedule-min-interval", defaultScheduleMinInterval, "shortest interval a repository may schedule itself at")
 	flags.IntVar(&options.scheduleMaxEntries, "schedule-max-entries", defaultScheduleMaxEntries, "most schedule entries one repository may declare")
 	flags.StringVar(&options.fragmentAllowlist, "fragment-allowlist", "", "comma-separated repositories usable as pipeline fragments; empty permits every registered repository")
+	flags.Int64Var(&options.artifactsLimitBytes, "artifacts-limit-bytes", defaultArtifactsLimitBytes, "maximum total bytes of artifacts kept per run")
+	flags.Int64Var(&options.artifactsBudgetBytes, "artifacts-budget-bytes", defaultArtifactsBudgetBytes, "total artifact storage before the oldest runs are evicted")
 	flags.IntVar(&options.maxConcurrent, "max-concurrent-jobs", 3, "maximum concurrent Jobs")
 	flags.StringVar(&options.ciCacheRoot, "ci-cache-root", "/var/cache/oberth/ci", "CI host cache root")
 	flags.StringVar(&options.releaseCacheRoot, "release-cache-root", "/var/cache/oberth/release", "release host cache root")
@@ -555,7 +560,12 @@ func serve(ctx context.Context, options serveOptions, logger *log.Logger) (resul
 	if err != nil {
 		return err
 	}
-	argoJobs, err := buildArgoEngine(options, restConfig, kube, database, database, fragmentLoader)
+	artifactStore, err := artifacts.Open(filepath.Join(options.dataRoot, "artifacts"))
+	if err != nil {
+		return err
+	}
+	argoJobs, err := buildArgoEngine(options, restConfig, kube, database, database, fragmentLoader,
+		artifactStoreAdapter{store: artifactStore}, options.artifactsLimitBytes, options.artifactsBudgetBytes)
 	if err != nil {
 		return err
 	}
@@ -707,7 +717,7 @@ func serve(ctx context.Context, options serveOptions, logger *log.Logger) (resul
 	controlAPI, err := service.NewAPI(service.APIConfig{
 		Runs: database, History: database, Repositories: database, Issues: database,
 		Promotions: database, PromotionRuns: database, Enqueues: scheduler, Git: git,
-		Refs: git, Logs: logs, Auditor: database, Health: health, Signals: signals,
+		Refs: git, Logs: logs, Artifacts: artifactStore, Auditor: database, Health: health, Signals: signals,
 		MutationGate:           anchors.AllowMutation,
 		PromotionWorkspaceRoot: filepath.Join(options.dataRoot, "work"),
 		SecretAccess:           database,
@@ -1585,6 +1595,8 @@ func classifyViewError(err error) (int, string) {
 }
 
 const (
-	defaultScheduleMinInterval = 15 * time.Minute
-	defaultScheduleMaxEntries  = 8
+	defaultScheduleMinInterval  = 15 * time.Minute
+	defaultScheduleMaxEntries   = 8
+	defaultArtifactsLimitBytes  = 256 << 20
+	defaultArtifactsBudgetBytes = 4 << 30
 )

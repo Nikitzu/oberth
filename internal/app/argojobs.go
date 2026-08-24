@@ -53,6 +53,11 @@ type ArgoJobs struct {
 	config            argojob.Config
 	secretAccess      SecretAccessLoader
 	fragments         FragmentLoader
+	collector         ArtifactCollector
+	artifacts         ArtifactStore
+	artifactLimit     int64
+	artifactBudget    int64
+	artifactFailures  map[string]string
 	reconcilerHealthy ReconcilerHealthChecker
 
 	mu      sync.Mutex
@@ -386,6 +391,9 @@ func (jobs *ArgoJobs) Wait(ctx context.Context, name string, destination io.Writ
 	completion, err := jobs.controller.Wait(ctx, name, intent.runID, destination)
 	if err != nil {
 		return service.JobResult{}, err
+	}
+	if reason := jobs.collectArtifacts(context.WithoutCancel(ctx), name, intent.runID); reason != "" {
+		jobs.recordArtifactFailure(context.WithoutCancel(ctx), intent.runID, reason)
 	}
 	return jobs.result(completion), nil
 }

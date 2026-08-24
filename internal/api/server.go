@@ -48,6 +48,8 @@ type IssueFilter struct {
 }
 
 type ViewService interface {
+	RunArtifacts(context.Context, Actor, string) (any, error)
+	RunArtifact(context.Context, Actor, string, string, runlog.Filter) (any, error)
 	Runs(context.Context, Actor, RunFilter) (any, error)
 	Run(context.Context, Actor, string) (any, error)
 	RunLog(context.Context, Actor, string, string, string) (any, error)
@@ -131,6 +133,8 @@ func (server *Server) routes() {
 	server.mux.Handle("GET /api/runs/{run}", server.requireAuth(http.HandlerFunc(server.handleRunDetail)))
 	server.mux.Handle("GET /api/runs/{run}/logs", server.requireAuth(http.HandlerFunc(server.handleRunLog)))
 	server.mux.Handle("GET /api/runs/{run}/livelog", server.requireAuth(http.HandlerFunc(server.handleRunLogLive)))
+	server.mux.Handle("GET /api/runs/{run}/artifacts", server.requireAuth(http.HandlerFunc(server.handleRunArtifacts)))
+	server.mux.Handle("GET /api/runs/{run}/artifacts/{name...}", server.requireAuth(http.HandlerFunc(server.handleRunArtifactDownload)))
 	server.mux.Handle("GET /api/repos", server.requireAuth(http.HandlerFunc(server.handleRepos)))
 	server.mux.Handle("GET /api/issues", server.requireAuth(http.HandlerFunc(server.handleIssues)))
 	server.mux.Handle("GET /api/status", server.requireAuth(http.HandlerFunc(server.handleStatus)))

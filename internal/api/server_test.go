@@ -33,6 +33,10 @@ type fakeBackend struct {
 	logFilter       runlog.Filter
 	liveOffset      int64
 	liveCalls       int
+	artifactName    string
+	artifactFilter  runlog.Filter
+	artifactBody    string
+	artifactErr     error
 }
 
 func (backend *fakeBackend) Authenticate(_ context.Context, token string) (Actor, error) {
@@ -72,6 +76,27 @@ func (backend *fakeBackend) RunLog(_ context.Context, _ Actor, id, burn, step st
 	backend.logCalls++
 	return map[string]string{"run_id": id, "burn": burn, "step": step, "output": "[test/unit] ok\n"}, nil
 }
+func (backend *fakeBackend) RunArtifacts(_ context.Context, _ Actor, id string) (any, error) {
+	backend.runID = id
+	return map[string]any{"run_id": id, "artifacts": []map[string]any{{"name": "surefire/TEST.xml", "size": 12}}}, nil
+}
+
+func (backend *fakeBackend) RunArtifact(_ context.Context, _ Actor, id, name string, filter runlog.Filter) (any, error) {
+	backend.runID, backend.artifactName, backend.artifactFilter = id, name, filter
+	if backend.artifactErr != nil {
+		return nil, backend.artifactErr
+	}
+	return fakeArtifact{name: name, body: backend.artifactBody}, nil
+}
+
+type fakeArtifact struct {
+	name string
+	body string
+}
+
+func (f fakeArtifact) ArtifactBytes() []byte { return []byte(f.body) }
+func (f fakeArtifact) ArtifactName() string  { return f.name }
+
 func (backend *fakeBackend) RunLogFiltered(_ context.Context, _ Actor, id, burn, step string, filter runlog.Filter) (any, error) {
 	backend.runID, backend.logBurn, backend.logStep = id, burn, step
 	backend.logFilter = filter
@@ -689,7 +714,7 @@ func TestMCPToolCountMatchesDocumented(t *testing.T) {
 	t.Parallel()
 	// The documented count in docs/mcp-setup.md must match the registered
 	// tool count. A mismatch means the table drifted from the code.
-	const documented = 22
+	const documented = 24
 	definitions := toolDefinitions()
 	if len(definitions) != documented {
 		t.Fatalf("registered %d tools, documented %d in docs/mcp-setup.md — update the table", len(definitions), documented)
@@ -708,7 +733,7 @@ func TestMCPToolCountMatchesDocumented(t *testing.T) {
 
 func TestMCPToolSurfaceMatchesContract(t *testing.T) {
 	want := []string{
-		"status", "logs", "run_get", "run_logs", "wait", "sync", "promote", "promote_status",
+		"status", "logs", "run_get", "artifacts", "artifact_get", "run_logs", "wait", "sync", "promote", "promote_status",
 		"issue_create", "issue_get", "issue_update", "issue_close",
 		"issue_delete", "issue_list", "issue_lock",
 		"access_list", "access_allow", "access_revoke",

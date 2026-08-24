@@ -992,3 +992,38 @@ func takeFromEnd(lines []numberedLine, budget int64) ([]byte, []int, bool) {
 	out, numbers, _ := takeFromStart(lines[first:], budget)
 	return out, numbers, first > 0
 }
+
+func FilterBytes(raw []byte, filter Filter) ([]byte, Meta, error) {
+	meta := Meta{Bytes: int64(len(raw))}
+	if filter.Context < 0 || filter.Context > maxContextLines {
+		return nil, Meta{}, fmt.Errorf("%w: context must be between 0 and %d", ErrInvalidPattern, maxContextLines)
+	}
+	pattern, err := compilePattern(filter.Pattern)
+	if err != nil {
+		return nil, Meta{}, err
+	}
+	collector := newCollector(pattern, filter)
+	reader := bufio.NewReader(bytes.NewReader(raw))
+	number := 0
+	for {
+		line, readErr := reader.ReadString('\n')
+		if line != "" {
+			number++
+			meta.TotalLines++
+			collector.offer(numberedLine{number: number, text: line})
+		}
+		if readErr != nil {
+			break
+		}
+	}
+	collector.close()
+	meta.MatchedLines = collector.matched
+	if pattern == nil {
+		meta.MatchedLines = meta.TotalLines
+	}
+	out, numbers, truncatedByBytes := collector.bytes(maxReadBytes)
+	meta.ReturnedLines = len(numbers)
+	meta.LineNumbers = numbers
+	meta.Truncated = truncatedByBytes || collector.withheld()
+	return out, meta, nil
+}

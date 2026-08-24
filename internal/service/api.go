@@ -33,6 +33,7 @@ type APIConfig struct {
 	Git                    DeliveryGit
 	Refs                   RefResolver
 	Logs                   LogStore
+	Artifacts              ArtifactStore
 	Auditor                Auditor
 	Health                 Health
 	Signals                *Signals
@@ -56,6 +57,7 @@ type API struct {
 	enqueues               EnqueueObserver
 	git                    DeliveryGit
 	logs                   LogStore
+	artifacts              ArtifactStore
 	refs                   RefResolver
 	auditor                Auditor
 	health                 Health
@@ -102,7 +104,7 @@ func NewAPI(config APIConfig) (*API, error) {
 	return &API{
 		runs: config.Runs, history: config.History, repositories: config.Repositories,
 		issues: config.Issues, promotions: config.Promotions, promotionRuns: config.PromotionRuns,
-		enqueues: config.Enqueues, git: config.Git, refs: config.Refs, logs: config.Logs, auditor: config.Auditor,
+		enqueues: config.Enqueues, git: config.Git, refs: config.Refs, logs: config.Logs, artifacts: config.Artifacts, auditor: config.Auditor,
 		health: config.Health, signals: signals, maximumWait: maximumWait, mutationGate: mutationGate,
 		promotionWorkspaceRoot: promotionWorkspaceRoot, workspaces: workspaces,
 		secretAccess: config.SecretAccess, secretAccessReconciler: config.SecretAccessReconciler,
@@ -184,6 +186,35 @@ func (service *API) CallTool(ctx context.Context, actor api.Actor, name string, 
 			return nil, err
 		}
 		return service.RunLogFiltered(ctx, actor, arguments.ID, arguments.Burn, arguments.Step, filter)
+	case "artifacts":
+		var arguments struct {
+			ID string `json:"id"`
+		}
+		if err := decodeTool(raw, &arguments); err != nil {
+			return nil, err
+		}
+		return service.RunArtifacts(ctx, actor, arguments.ID)
+	case "artifact_get":
+		var arguments struct {
+			ID      string `json:"id"`
+			Name    string `json:"name"`
+			Pattern string `json:"pattern"`
+			Context int    `json:"context"`
+			Offset  int    `json:"offset"`
+			Limit   int    `json:"limit"`
+			Tail    bool   `json:"tail"`
+		}
+		if err := decodeTool(raw, &arguments); err != nil {
+			return nil, err
+		}
+		if strings.TrimSpace(arguments.ID) == "" || strings.TrimSpace(arguments.Name) == "" {
+			return nil, fmt.Errorf("%w: run ID and artifact name are required", ErrInvalidInput)
+		}
+		filter, err := toolLogFilter(arguments.Pattern, arguments.Context, arguments.Offset, arguments.Limit, arguments.Tail)
+		if err != nil {
+			return nil, err
+		}
+		return service.RunArtifact(ctx, actor, arguments.ID, arguments.Name, filter)
 	case "wait":
 		var arguments struct {
 			Repo    string `json:"repo"`
