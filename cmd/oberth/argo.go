@@ -35,6 +35,7 @@ func buildArgoEngine(
 	kube kubernetes.Interface,
 	auditor service.Auditor,
 	secretAccess app.SecretAccessLoader,
+	fragments app.FragmentLoader,
 ) (*app.ArgoJobs, error) {
 	argoClient, err := wfclientset.NewForConfig(restConfig)
 	if err != nil {
@@ -81,7 +82,7 @@ func buildArgoEngine(
 	if seeder == nil {
 		return nil, errors.New("configure Argo source seeding: the in-cluster Kubernetes client is required")
 	}
-	return app.NewArgoJobs(controller.WithSourceSeeder(seeder), config, auditor, secretAccess)
+	return app.NewArgoJobs(controller.WithSourceSeeder(seeder), config, auditor, secretAccess, fragments)
 }
 
 // validateArgoServeOptions fails a misconfigured Argo engine at startup rather
