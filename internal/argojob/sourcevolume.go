@@ -89,6 +89,11 @@ const (
 	binaryFileName = "oberth"
 
 	artifactsSubPath = "artifacts"
+
+	// filesSubPath holds the run's declared file dependencies, as a sibling of
+	// the checkout rather than a directory inside it, so a repository cannot
+	// shadow a delivered file with one of its own.
+	filesSubPath = "files"
 )
 
 // SourceVolume describes the per-run claim a Workflow's containers mount.
@@ -106,6 +111,11 @@ type SourceVolume struct {
 	VaultCASubPath string
 
 	ArtifactsSubPath string
+
+	// FilesSubPath is the directory inside the claim holding this run's
+	// resolved file dependencies, laid out as <repository>/<path>. Empty
+	// unless this run's seeding actually wrote them.
+	FilesSubPath string
 	// BinarySubPath is the directory inside the claim holding the Oberth
 	// server binary, and is empty unless this run's seeding actually wrote
 	// it. When set, Build mounts it read-only into credentialed containers

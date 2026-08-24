@@ -408,6 +408,18 @@ type Request struct {
 	ApprovedSecrets map[string]bool
 
 	Fragments map[argoworkflow.FragmentKey]argoworkflow.Fragment
+
+	// Files is the resolved content of every file dependency the document
+	// declared, loaded by the server from its own git cache at a pinned tag.
+	//
+	// It is carried on the Request rather than derived from the seeded volume
+	// on purpose. sameSubmission compares a Workflow built with a real
+	// SourceVolume against one built with a zero SourceVolume, so anything
+	// keyed off the seeding differs structurally between those two paths --
+	// which is why VAULT_CACERT has to be stripped by name in
+	// normalizeSourceVolume. This is identical on both paths, so what it gates
+	// needs no such exception.
+	Files map[argoworkflow.FileRef]argoworkflow.SeededFile
 }
 
 // Build turns a repository document into the exact Workflow object Oberth will
@@ -429,6 +441,12 @@ func Build(config Config, request Request) (*wfv1.Workflow, error) {
 		return nil, err
 	}
 	fragmentLock, err := argoworkflow.Resolve(workflow, request.Fragments)
+	if err != nil {
+		return nil, err
+	}
+	// Before DeclaredSecretPaths, for the same reason fragment resolution is:
+	// everything downstream reads a document that must already be final.
+	fileLock, err := argoworkflow.ResolveFiles(workflow, request.Files)
 	if err != nil {
 		return nil, err
 	}
@@ -511,7 +529,9 @@ func Build(config Config, request Request) (*wfv1.Workflow, error) {
 	}
 
 	scopeSynchronization(workflow, request)
-	applyServerMetadata(workflow, config, request, declaredPaths, fragmentLock)
+	if err := applyServerMetadata(workflow, config, request, declaredPaths, fragmentLock, fileLock); err != nil {
+		return nil, err
+	}
 	applyServerBounds(workflow, config)
 	applyServerSecurity(workflow)
 	injectServerVolumes(workflow, config, request, credentialed)
@@ -641,7 +661,8 @@ func (config Config) identityFor(trigger periapsis.Trigger, hasSecretPaths bool)
 	}, nil
 }
 
-func applyServerMetadata(workflow *wfv1.Workflow, config Config, request Request, declaredPaths []string, fragmentLock argoworkflow.Lock) {
+func applyServerMetadata(workflow *wfv1.Workflow, config Config, request Request,
+	declaredPaths []string, fragmentLock argoworkflow.Lock, fileLock argoworkflow.FileLock) error {
 	workflow.APIVersion = argoworkflow.APIVersion
 	workflow.Kind = argoworkflow.Kind
 	workflow.Name = request.Name
@@ -675,6 +696,22 @@ func applyServerMetadata(workflow *wfv1.Workflow, config Config, request Request
 			workflow.Annotations[FragmentsAnnotation] = string(encoded)
 		}
 	}
+	// The declared references are replaced by what they resolved to, so the
+	// annotation on a submitted Workflow always states pinned commits and
+	// content digests. Build refuses a declaration it could not resolve, so
+	// there is no run in which the unresolved form survives to be misread as
+	// a lock.
+	//
+	// A marshal failure fails the build rather than being swallowed. The
+	// fragment stamp above swallows its error, which silently drops an audit
+	// record; that is a bug to fix, not a pattern to copy.
+	if len(fileLock) != 0 {
+		encoded, err := json.Marshal(fileLock)
+		if err != nil {
+			return fmt.Errorf("argojob: record the resolved file dependencies: %w", err)
+		}
+		workflow.Annotations[argoworkflow.FilesAnnotation] = string(encoded)
+	}
 	if workflow.Spec.PodMetadata == nil {
 		workflow.Spec.PodMetadata = &wfv1.Metadata{}
 	}
@@ -683,6 +720,7 @@ func applyServerMetadata(workflow *wfv1.Workflow, config Config, request Request
 	}
 	workflow.Spec.PodMetadata.Labels["oberth.ci/run"] = labelValue(request.RunID)
 	workflow.Spec.PodMetadata.Labels["oberth.ci/trigger"] = string(request.Trigger)
+	return nil
 }
 
 // scopeSynchronization rewrites every mutex name to include the trigger and
@@ -850,6 +888,14 @@ const (
 	// `oberth secretstore exec` as the native credential chain replacement.
 	ArtifactsVolumeName = "oberth-artifacts"
 	ArtifactsMountPath  = "/work/artifacts"
+
+	// FilesMountPath is where a pipeline finds its declared file dependencies,
+	// laid out as <repository>/<path>.
+	//
+	// Outside SourceMountPath, for the reason the Vault anchor is: a
+	// repository sees its own tree at the checkout and nothing the server
+	// added to it, and cannot shadow a delivered file with one of its own.
+	FilesMountPath = "/work/files"
 
 	OberthBinMountPath = "/run/oberth/bin"
 	// OberthBinPath is the full path to the oberth binary inside the mount.
@@ -1080,6 +1126,18 @@ func injectServerVolumes(workflow *wfv1.Workflow, config Config, request Request
 				SubPath:   request.SourceVolume.ArtifactsSubPath,
 			})
 		}
+		if request.filesDelivered() {
+			// Delivered to every run, credentialed or not. The anchor and the
+			// server binary are gated on credentials because both are about
+			// identity; declared public file content is not, so gating it the
+			// same way would be superstition rather than a boundary.
+			mounts = append(mounts, corev1.VolumeMount{
+				Name:      SourceVolumeName,
+				MountPath: FilesMountPath,
+				SubPath:   request.SourceVolume.FilesSubPath,
+				ReadOnly:  true,
+			})
+		}
 		if credentialed && request.vaultCADelivered() {
 			// The anchor rides the same claim as a second subPath, so it needs
 			// no volume of its own and is collected with the run's storage.
@@ -1226,6 +1284,15 @@ func (request Request) vaultCADelivered() bool {
 // into the source claim.
 func (request Request) binaryDelivered() bool {
 	return strings.TrimSpace(request.SourceVolume.BinarySubPath) != ""
+}
+
+// filesDelivered reports whether this run's seeding wrote file dependencies.
+// It gates the mount only. What the pipeline is told through OBERTH_FILES is
+// gated on request.Files instead, because the mount name is normalized out of
+// the spec identity and an environment variable is not.
+func (request Request) filesDelivered() bool {
+	return strings.TrimSpace(request.SourceVolume.ClaimName) != "" &&
+		strings.TrimSpace(request.SourceVolume.FilesSubPath) != ""
 }
 
 func (request Request) artifactsDelivered() bool {
@@ -1542,6 +1609,10 @@ func injectRunEnvironment(workflow *wfv1.Workflow, config Config, request Reques
 	}
 	if request.artifactsDelivered() {
 		environment = append(environment, corev1.EnvVar{Name: "OBERTH_ARTIFACTS", Value: ArtifactsMountPath})
+	}
+	// Gated on the Request, never on the seeded volume. See Request.Files.
+	if len(request.Files) != 0 {
+		environment = append(environment, corev1.EnvVar{Name: "OBERTH_FILES", Value: FilesMountPath})
 	}
 	if config.cacheRootFor(request.Trigger) != "" {
 		// The server states where the cache is, exactly as it states where the
