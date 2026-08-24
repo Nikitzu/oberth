@@ -303,11 +303,11 @@ implementation detail disagree.
   authority is configured.
 - A bearer credential maps to exactly one uplink public-key fingerprint and
   identity. Plaintext tokens are displayed once and are never persisted.
-- MCP exposes 23 tools: `status`, bounded named-step `logs`, exact-run
-  `run_get`/`run_logs`, `artifacts`/`artifact_get`, `wait`, `sync`, `promote`,
-  `promote_status`, issue create/get/update/close/delete/list/lock,
-  secret-access list/allow/revoke, `repo_list`, `run_list`, and
-  `system_status`.
+- MCP exposes 25 tools: `status`, bounded named-step `logs`, exact-run
+  `run_get`/`run_logs`, `artifacts`/`artifact_get`, `skills`/`skill_get`,
+  `wait`, `sync`, `promote`, `promote_status`, issue
+  create/get/update/close/delete/list/lock, secret-access list/allow/revoke,
+  `repo_list`, `run_list`, and `system_status`.
 - A `status` selector naming an existing cached branch with no recorded run
   returns the ref's repository, branch, and current commit SHA with status
   `no-runs` instead of a not-found error; unknown selectors keep not-found.

@@ -17,6 +17,7 @@ import (
 	"github.com/oberthci/oberth/internal/model"
 	"github.com/oberthci/oberth/internal/runlog"
 	"github.com/oberthci/oberth/internal/runprogress"
+	"github.com/oberthci/oberth/internal/skills"
 	"github.com/oberthci/oberth/internal/store"
 )
 
@@ -187,6 +188,24 @@ func (service *API) CallTool(ctx context.Context, actor api.Actor, name string, 
 			return nil, err
 		}
 		return service.RunLogFiltered(ctx, actor, arguments.ID, arguments.Burn, arguments.Step, filter)
+	case "skills":
+		var arguments struct{}
+		if err := decodeTool(raw, &arguments); err != nil {
+			return nil, err
+		}
+		return skills.List(), nil
+	case "skill_get":
+		var arguments struct {
+			Name string `json:"name"`
+		}
+		if err := decodeTool(raw, &arguments); err != nil {
+			return nil, err
+		}
+		skill, err := skills.Get(arguments.Name)
+		if err != nil {
+			return nil, fmt.Errorf("%w: %w", ErrInvalidInput, err)
+		}
+		return skill, nil
 	case "artifacts":
 		var arguments struct {
 			ID string `json:"id"`

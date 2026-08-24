@@ -106,6 +106,8 @@ call the proxy hostname directly.
 | `run_logs` | One exact burn/step log by durable run ID, optionally filtered |
 | `artifacts` | The files a run kept, with size and modification time |
 | `artifact_get` | One artifact's contents by run ID and name, optionally filtered |
+| `skills` | The skills Oberth ships for working with it |
+| `skill_get` | One skill body by name, as markdown |
 | `wait` | Long-poll until a SHA reaches a terminal state |
 | `sync` | Park a WIP branch upstream without a green gate (not completion evidence) |
 | `promote` | Green-gate a SHA, merge with target branch, push without force |
