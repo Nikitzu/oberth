@@ -1,14 +1,21 @@
 package argojob
 
 import (
+	"archive/tar"
+	"compress/gzip"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"io"
 	"strings"
 	"testing"
 
 	wfv1 "github.com/argoproj/argo-workflows/v4/pkg/apis/workflow/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes/fake"
 
 	"github.com/oberthci/oberth/pkg/argoworkflow"
 	"github.com/oberthci/oberth/pkg/periapsis"
@@ -183,4 +190,133 @@ func filesEnvValue(workflow *wfv1.Workflow) string {
 		}
 	}
 	return ""
+}
+
+// TestSeedWritesFileDependenciesIntoTheClaim proves the bytes reach the claim
+// in the layout the mount expects, and that the archive carries no "./" member.
+//
+// That last clause is not hypothetical. `tar -czf - -C dir .` emits "./" as its
+// first member, which broke every artifact collection in this programme until
+// it was found. Building the archive in Go rather than shelling out is what
+// removes the whole class, and this asserts it stayed removed.
+func TestSeedWritesFileDependenciesIntoTheClaim(t *testing.T) {
+	t.Parallel()
+	client := fake.NewClientset()
+	runningSeedPods(client)
+
+	var calls []seedExecCall
+	seeder := NewSourceSeeder(client, recordingExec(&calls), seedTestConfig())
+	files := map[argoworkflow.FileRef]argoworkflow.SeededFile{
+		registryRef: {SHA: strings.Repeat("a", 40), Bytes: []byte("repos: []\n")},
+		{Repo: "policy", Version: "v3", Path: "ci/images.txt"}: {
+			SHA: strings.Repeat("b", 40), Bytes: []byte("golang\n"),
+		},
+	}
+
+	volume, err := seeder.Seed(context.Background(), "oberth-oberth-abc-def", writeCheckout(t), false, files)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if volume.FilesSubPath != "files" {
+		t.Fatalf("FilesSubPath = %q", volume.FilesSubPath)
+	}
+
+	var filesCall *seedExecCall
+	for index := range calls {
+		if strings.Contains(strings.Join(calls[index].command, " "), "/seed/files") {
+			filesCall = &calls[index]
+		}
+	}
+	if filesCall == nil {
+		t.Fatalf("no exec targeted the files subPath; commands were %v", calls)
+	}
+
+	members := map[string]string{}
+	stream, err := gzip.NewReader(strings.NewReader(filesCall.stdin))
+	if err != nil {
+		t.Fatalf("the files stream is not gzipped: %v", err)
+	}
+	archive := tar.NewReader(stream)
+	for {
+		header, err := archive.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("read the files archive: %v", err)
+		}
+		if header.Name == "./" || header.Name == "." {
+			t.Fatal(`the archive carries a "./" member, the bug that broke artifact collection`)
+		}
+		if header.Typeflag != tar.TypeReg {
+			continue
+		}
+		body, err := io.ReadAll(archive)
+		if err != nil {
+			t.Fatalf("read member %s: %v", header.Name, err)
+		}
+		members[header.Name] = string(body)
+	}
+
+	if got := members["tzmem/graph/repos.yml"]; got != "repos: []\n" {
+		t.Fatalf("tzmem/graph/repos.yml = %q", got)
+	}
+	if got := members["policy/ci/images.txt"]; got != "golang\n" {
+		t.Fatalf("policy/ci/images.txt = %q", got)
+	}
+	if len(members) != 2 {
+		t.Fatalf("archive carries %d files, want 2: %v", len(members), members)
+	}
+}
+
+func TestSeedWritesNoFilesDirectoryWhenNoneWereDeclared(t *testing.T) {
+	t.Parallel()
+	client := fake.NewClientset()
+	runningSeedPods(client)
+
+	var calls []seedExecCall
+	seeder := NewSourceSeeder(client, recordingExec(&calls), seedTestConfig())
+	volume, err := seeder.Seed(context.Background(), "oberth-oberth-abc-def", writeCheckout(t), false, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if volume.FilesSubPath != "" {
+		t.Fatalf("FilesSubPath = %q on a run that declared no files", volume.FilesSubPath)
+	}
+}
+
+// A run whose file dependencies could not be written must not proceed. A
+// pipeline reading a registry that is silently absent answers "no" to every
+// entry, which is worse than failing.
+func TestSeedFailsWhenFileDependenciesCannotBeWritten(t *testing.T) {
+	t.Parallel()
+	client := fake.NewClientset()
+	runningSeedPods(client)
+
+	exec := func(_ context.Context, _, _, _ string, command []string,
+		stdin io.Reader, _, _ io.Writer,
+	) error {
+		if stdin != nil {
+			_, _ = io.Copy(io.Discard, stdin)
+		}
+		if strings.Contains(strings.Join(command, " "), "/seed/files") {
+			return errors.New("no space left on device")
+		}
+		return nil
+	}
+	seeder := NewSourceSeeder(client, exec, seedTestConfig())
+	files := map[argoworkflow.FileRef]argoworkflow.SeededFile{
+		registryRef: {SHA: strings.Repeat("a", 40), Bytes: []byte("repos: []\n")},
+	}
+	if _, err := seeder.Seed(context.Background(), "oberth-oberth-abc-def", writeCheckout(t), false, files); err == nil {
+		t.Fatal("Seed succeeded despite failing to write the declared files")
+	}
+	claims, err := client.CoreV1().PersistentVolumeClaims(seedTestConfig().Namespace).
+		List(context.Background(), metav1.ListOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(claims.Items) != 0 {
+		t.Fatalf("a failed seeding left %d claims behind", len(claims.Items))
+	}
 }

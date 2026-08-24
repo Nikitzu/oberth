@@ -67,7 +67,7 @@ func TestSeedReportsAnInvalidVolumeSizeInsteadOfPanicking(t *testing.T) {
 	}, config)
 	seeder.config.SourceVolumeSize = "not-a-quantity"
 
-	_, err := seeder.Seed(context.Background(), "oberth-oberth-abc-def", writeCheckout(t), false)
+	_, err := seeder.Seed(context.Background(), "oberth-oberth-abc-def", writeCheckout(t), false, nil)
 	if err == nil || !strings.Contains(err.Error(), "not a Kubernetes quantity") {
 		t.Fatalf("expected a reported error, got: %v", err)
 	}
@@ -124,7 +124,7 @@ func TestSeedStreamsTheCheckoutIntoThePipelineNamespace(t *testing.T) {
 		t.Fatal("seeder was not constructed")
 	}
 
-	volume, err := seeder.Seed(context.Background(), "oberth-oberth-abc-def", writeCheckout(t), false)
+	volume, err := seeder.Seed(context.Background(), "oberth-oberth-abc-def", writeCheckout(t), false, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -171,7 +171,7 @@ func TestSeedRemovesTheClaimWhenStreamingFails(t *testing.T) {
 	config := seedTestConfig()
 	seeder := NewSourceSeeder(client, exec, config)
 
-	if _, err := seeder.Seed(context.Background(), "oberth-oberth-abc-def", writeCheckout(t), false); err == nil {
+	if _, err := seeder.Seed(context.Background(), "oberth-oberth-abc-def", writeCheckout(t), false, nil); err == nil {
 		t.Fatal("expected the streaming failure to surface")
 	}
 	_, err := client.CoreV1().PersistentVolumeClaims(config.Namespace).
@@ -198,7 +198,7 @@ func TestSeedPodHoldsNoServiceAccountToken(t *testing.T) {
 	seeder := NewSourceSeeder(client, func(context.Context, string, string, string, []string, io.Reader, io.Writer, io.Writer) error {
 		return nil
 	}, seedTestConfig())
-	if _, err := seeder.Seed(context.Background(), "oberth-oberth-abc-def", writeCheckout(t), false); err != nil {
+	if _, err := seeder.Seed(context.Background(), "oberth-oberth-abc-def", writeCheckout(t), false, nil); err != nil {
 		t.Fatal(err)
 	}
 	if created == nil {
@@ -435,7 +435,7 @@ func TestSeedDeliversTheVaultTrustAnchorOnTheReleaseTier(t *testing.T) {
 	config.VaultCACertPEM = testVaultCAPEM(t)
 	seeder := NewSourceSeeder(client, recordingExec(&calls), config)
 
-	volume, err := seeder.Seed(context.Background(), "oberth-oberth-abc-def", writeCheckout(t), true)
+	volume, err := seeder.Seed(context.Background(), "oberth-oberth-abc-def", writeCheckout(t), true, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -480,7 +480,7 @@ func TestSeedWithholdsTheVaultTrustAnchorFromTheCITier(t *testing.T) {
 	config.VaultCACertPEM = testVaultCAPEM(t)
 	seeder := NewSourceSeeder(client, recordingExec(&calls), config)
 
-	volume, err := seeder.Seed(context.Background(), "oberth-oberth-abc-def", writeCheckout(t), false)
+	volume, err := seeder.Seed(context.Background(), "oberth-oberth-abc-def", writeCheckout(t), false, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -515,7 +515,7 @@ func TestSeedFailsWhenTheTrustAnchorCannotBeDelivered(t *testing.T) {
 	config.VaultCACertPEM = testVaultCAPEM(t)
 	seeder := NewSourceSeeder(client, exec, config)
 
-	if _, err := seeder.Seed(context.Background(), "oberth-oberth-abc-def", writeCheckout(t), true); err == nil ||
+	if _, err := seeder.Seed(context.Background(), "oberth-oberth-abc-def", writeCheckout(t), true, nil); err == nil ||
 		!strings.Contains(err.Error(), "trust anchor") {
 		t.Fatalf("expected a reported anchor failure, got: %v", err)
 	}

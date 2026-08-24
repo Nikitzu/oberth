@@ -147,7 +147,7 @@ func (controller *Controller) Create(ctx context.Context, request Request) (stri
 	}
 
 	// Workflow definitively does not exist. Seed the source claim.
-	volume, err := controller.seeder.Seed(ctx, request.Name, request.SourceDir, credentialed)
+	volume, err := controller.seeder.Seed(ctx, request.Name, request.SourceDir, credentialed, request.Files)
 	if err != nil {
 		return "", err
 	}

@@ -2,6 +2,7 @@ package argojob
 
 import (
 	"archive/tar"
+	"bytes"
 	"compress/gzip"
 	"context"
 	"crypto/sha256"
@@ -12,6 +13,7 @@ import (
 	"io/fs"
 	"os"
 	"path"
+	"sort"
 	"strings"
 	"time"
 
@@ -21,6 +23,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	k8stypes "k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
+
+	"github.com/oberthci/oberth/pkg/argoworkflow"
 )
 
 // A pipeline's containers must see the exact pushed revision, and the server
@@ -157,6 +161,7 @@ func NewSourceSeeder(client kubernetes.Interface, exec ExecStreamer, config Conf
 // storage behind in the pipeline namespace.
 func (seeder *SourceSeeder) Seed(
 	ctx context.Context, workflowName, sourceDir string, credentialed bool,
+	files map[argoworkflow.FileRef]argoworkflow.SeededFile,
 ) (SourceVolume, error) {
 	volume := SourceVolume{ClaimName: sourceClaimName(workflowName), SubPath: "src"}
 	if strings.TrimSpace(sourceDir) == "" {
@@ -178,7 +183,7 @@ func (seeder *SourceSeeder) Seed(
 	if err := seeder.createClaim(ctx, volume.ClaimName, workflowName); err != nil {
 		return SourceVolume{}, err
 	}
-	if err := seeder.fill(ctx, &volume, sourceDir, credentialed); err != nil {
+	if err := seeder.fill(ctx, &volume, sourceDir, credentialed, files); err != nil {
 		seeder.DeleteClaim(context.WithoutCancel(ctx), volume.ClaimName)
 		return SourceVolume{}, err
 	}
@@ -226,6 +231,7 @@ func (seeder *SourceSeeder) createClaim(ctx context.Context, name, workflowName 
 // write to.
 func (seeder *SourceSeeder) fill(
 	ctx context.Context, volume *SourceVolume, sourceDir string, credentialed bool,
+	files map[argoworkflow.FileRef]argoworkflow.SeededFile,
 ) error {
 	podName := volume.ClaimName
 	if err := seeder.createSeedPod(ctx, podName, volume.ClaimName); err != nil {
@@ -259,10 +265,118 @@ func (seeder *SourceSeeder) fill(
 			volume.ClaimName, err, strings.TrimSpace(stderr.String()))
 	}
 	volume.ArtifactsSubPath = artifactsSubPath
+	if err := seeder.fillFiles(ctx, volume, podName, files); err != nil {
+		return err
+	}
 	if err := seeder.fillVaultCA(ctx, volume, podName, credentialed); err != nil {
 		return err
 	}
 	return seeder.fillServerBinary(ctx, volume, podName, credentialed)
+}
+
+// fillFiles streams the run's resolved file dependencies into the claim, over
+// the same exec, while the seeding Pod is still up.
+//
+// Delivered to every run rather than only credentialed ones: the trust anchor
+// and the server binary are gated on credentials because both are about
+// identity, and declared file content is not.
+//
+// The archive is built here rather than by shelling out to tar. That is not
+// style. `tar -czf - -C dir .` emits "./" as its first member, which broke
+// every artifact collection in this codebase until it was found; writing the
+// members explicitly means there is no "./" to handle and no extractor
+// behaviour to depend on.
+//
+// A failure fails the run. A pipeline reading a registry that is silently
+// absent answers "no" to every entry it should answer "yes" to, which is worse
+// than not running at all.
+func (seeder *SourceSeeder) fillFiles(
+	ctx context.Context, volume *SourceVolume, podName string,
+	files map[argoworkflow.FileRef]argoworkflow.SeededFile,
+) error {
+	if len(files) == 0 {
+		return nil
+	}
+	archive, err := writeFileDependencyArchive(files)
+	if err != nil {
+		return fmt.Errorf("argojob: build the file dependency archive: %w", err)
+	}
+	target := path.Join(seedMountPath, filesSubPath)
+	command := []string{"/bin/sh", "-c", "mkdir -p " + target + " && tar -xzf - -C " + target}
+
+	var stdout, stderr strings.Builder
+	if err := seeder.exec(ctx, seeder.config.Namespace, podName, seedContainer, command,
+		bytes.NewReader(archive), &stdout, &stderr); err != nil {
+		return fmt.Errorf("argojob: stream the declared file dependencies into %s: %w: %s",
+			volume.ClaimName, err, strings.TrimSpace(stderr.String()))
+	}
+	volume.FilesSubPath = filesSubPath
+	return nil
+}
+
+// writeFileDependencyArchive lays the resolved files out as <repository>/<path>
+// in a gzipped tar, with every parent directory carrying an explicit header so
+// extraction does not depend on the extractor creating them.
+//
+// Iteration is over sorted references, not the map, so the same set of files
+// always produces the same bytes.
+func writeFileDependencyArchive(files map[argoworkflow.FileRef]argoworkflow.SeededFile) ([]byte, error) {
+	refs := make([]argoworkflow.FileRef, 0, len(files))
+	for ref := range files {
+		refs = append(refs, ref)
+	}
+	sort.Slice(refs, func(i, j int) bool { return refs[i].String() < refs[j].String() })
+
+	var buffer bytes.Buffer
+	compressor := gzip.NewWriter(&buffer)
+	writer := tar.NewWriter(compressor)
+	written := map[string]bool{}
+
+	for _, ref := range refs {
+		name := path.Join(ref.Repo, ref.Path)
+		for _, parent := range parentDirectories(name) {
+			if written[parent] {
+				continue
+			}
+			written[parent] = true
+			if err := writer.WriteHeader(&tar.Header{
+				Name: parent + "/", Mode: 0o755, Typeflag: tar.TypeDir,
+			}); err != nil {
+				return nil, err
+			}
+		}
+		body := files[ref].Bytes
+		if err := writer.WriteHeader(&tar.Header{
+			Name: name, Mode: 0o444, Size: int64(len(body)), Typeflag: tar.TypeReg,
+		}); err != nil {
+			return nil, err
+		}
+		if _, err := writer.Write(body); err != nil {
+			return nil, err
+		}
+	}
+	if err := writer.Close(); err != nil {
+		return nil, err
+	}
+	if err := compressor.Close(); err != nil {
+		return nil, err
+	}
+	return buffer.Bytes(), nil
+}
+
+// parentDirectories lists every ancestor of a slash-separated member name,
+// outermost first. The name is already validated by argoworkflow.ParseFileRef,
+// so no segment is empty, "." or "..".
+func parentDirectories(name string) []string {
+	segments := strings.Split(name, "/")
+	if len(segments) < 2 {
+		return nil
+	}
+	parents := make([]string, 0, len(segments)-1)
+	for index := 1; index < len(segments); index++ {
+		parents = append(parents, strings.Join(segments[:index], "/"))
+	}
+	return parents
 }
 
 // fillVaultCA streams the OpenBao TLS trust anchor into the same claim, over
