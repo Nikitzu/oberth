@@ -16,12 +16,14 @@ type ArtifactCollector interface {
 
 type ArtifactStore interface {
 	Extract(runID string, stream io.Reader, limit int64) error
+	Evict(budget int64) ([]string, error)
 }
 
-func (jobs *ArgoJobs) SetArtifacts(collector ArtifactCollector, store ArtifactStore, limit int64) {
+func (jobs *ArgoJobs) SetArtifacts(collector ArtifactCollector, store ArtifactStore, limit, budget int64) {
 	jobs.collector = collector
 	jobs.artifacts = store
 	jobs.artifactLimit = limit
+	jobs.artifactBudget = budget
 }
 
 func (jobs *ArgoJobs) collectArtifacts(ctx context.Context, workflowName, runID string) string {
@@ -38,7 +40,11 @@ func (jobs *ArgoJobs) collectArtifacts(ctx context.Context, workflowName, runID 
 	if err := jobs.artifacts.Extract(runID, bytes.NewReader(archive), jobs.artifactLimit); err != nil {
 		return fmt.Sprintf("store: %v", err)
 	}
-	jobs.auditArtifacts(ctx, runID, map[string]any{"bytes": len(archive), "stored": true})
+	details := map[string]any{"bytes": len(archive), "stored": true}
+	if evicted, err := jobs.artifacts.Evict(jobs.artifactBudget); err == nil && len(evicted) != 0 {
+		details["evicted"] = evicted
+	}
+	jobs.auditArtifacts(ctx, runID, details)
 	return ""
 }
 

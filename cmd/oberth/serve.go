@@ -86,6 +86,7 @@ type serveOptions struct {
 	runnerImagePrefixes     string
 	fragmentAllowlist       string
 	artifactsLimitBytes     int64
+	artifactsBudgetBytes    int64
 	maxConcurrent           int
 	publishOnGreen          bool
 	ciCacheRoot             string
@@ -164,6 +165,7 @@ func parseServeOptions(arguments []string, output io.Writer) (serveOptions, erro
 	flags.StringVar(&options.runnerImagePrefixes, "runner-image-prefixes", strings.Join(periapsis.DefaultRunnerImagePrefixes, ","), "comma-separated allowlist of permitted runner image prefixes")
 	flags.StringVar(&options.fragmentAllowlist, "fragment-allowlist", "", "comma-separated repositories usable as pipeline fragments; empty permits every registered repository")
 	flags.Int64Var(&options.artifactsLimitBytes, "artifacts-limit-bytes", defaultArtifactsLimitBytes, "maximum total bytes of artifacts kept per run")
+	flags.Int64Var(&options.artifactsBudgetBytes, "artifacts-budget-bytes", defaultArtifactsBudgetBytes, "total artifact storage before the oldest runs are evicted")
 	flags.IntVar(&options.maxConcurrent, "max-concurrent-jobs", 3, "maximum concurrent Jobs")
 	flags.BoolVar(&options.publishOnGreen, "publish-on-green", true,
 		"force-sync an ordinary green branch run to the upstream forge. Set false to keep the gate advisory: "+
@@ -560,7 +562,7 @@ func serve(ctx context.Context, options serveOptions, logger *log.Logger) (resul
 		return err
 	}
 	argoJobs, err := buildArgoEngine(options, restConfig, kube, database, database, fragmentLoader,
-		artifactStoreAdapter{store: artifactStore}, options.artifactsLimitBytes)
+		artifactStoreAdapter{store: artifactStore}, options.artifactsLimitBytes, options.artifactsBudgetBytes)
 	if err != nil {
 		return err
 	}
@@ -1568,4 +1570,7 @@ func classifyViewError(err error) (int, string) {
 	}
 }
 
-const defaultArtifactsLimitBytes = 256 << 20
+const (
+	defaultArtifactsLimitBytes  = 256 << 20
+	defaultArtifactsBudgetBytes = 4 << 30
+)

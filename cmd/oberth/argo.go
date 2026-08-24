@@ -39,6 +39,7 @@ func buildArgoEngine(
 	fragments app.FragmentLoader,
 	artifactStore app.ArtifactStore,
 	artifactLimit int64,
+	artifactBudget int64,
 ) (*app.ArgoJobs, error) {
 	argoClient, err := wfclientset.NewForConfig(restConfig)
 	if err != nil {
@@ -88,7 +89,7 @@ func buildArgoEngine(
 		return nil, err
 	}
 	if artifactStore != nil {
-		jobs.SetArtifacts(seeder, artifactStore, artifactLimit)
+		jobs.SetArtifacts(seeder, artifactStore, artifactLimit, artifactBudget)
 	}
 	return jobs, nil
 }
@@ -201,4 +202,8 @@ type artifactStoreAdapter struct {
 func (adapter artifactStoreAdapter) Extract(runID string, stream io.Reader, limit int64) error {
 	_, err := adapter.store.Extract(runID, stream, limit)
 	return err
+}
+
+func (adapter artifactStoreAdapter) Evict(budget int64) ([]string, error) {
+	return adapter.store.Evict(budget)
 }
