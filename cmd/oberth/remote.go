@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/oberthci/oberth/internal/client"
@@ -182,6 +183,99 @@ func runRunDetail(ctx context.Context, arguments []string, output io.Writer) err
 	return nil
 }
 
+type remoteLog struct {
+	RunID         string `json:"run_id"`
+	Burn          string `json:"burn"`
+	Step          string `json:"step"`
+	Output        string `json:"output"`
+	TotalLines    int    `json:"total_lines"`
+	MatchedLines  int    `json:"matched_lines"`
+	ReturnedLines int    `json:"returned_lines"`
+	Truncated     bool   `json:"truncated"`
+	Bytes         int64  `json:"bytes"`
+}
+
+func runRemoteLog(ctx context.Context, arguments []string, output io.Writer) error {
+	flags := flag.NewFlagSet("log", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	burn := flags.String("burn", "", "burn name")
+	step := flags.String("step", "", "step name")
+	pattern := flags.String("pattern", "", "RE2 pattern; offset and limit then page over matches")
+	context_ := flags.Int("context", 0, "lines of context around each match")
+	offset := flags.Int("offset", 0, "skip this many")
+	limit := flags.Int("limit", 0, "return at most this many")
+	tail := flags.Bool("tail", false, "read from the end")
+	raw := flags.Bool("raw", false, "keep the [burn/step] prefix on each line")
+	asJSON := flags.Bool("json", false, "emit the server's payload unchanged")
+	if err := flags.Parse(arguments); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			flags.SetOutput(output)
+			flags.Usage()
+			return nil
+		}
+		return fmt.Errorf("%w: %w", errUsage, err)
+	}
+	if flags.NArg() != 1 {
+		return fmt.Errorf("%w: log <run-id> --burn <burn> --step <step>", errUsage)
+	}
+	if strings.TrimSpace(*burn) == "" || strings.TrimSpace(*step) == "" {
+		return fmt.Errorf("%w: --burn and --step are required; oberth run <id> lists them", errUsage)
+	}
+	api, err := remoteClient()
+	if err != nil {
+		return err
+	}
+	reportMode("server")
+	path := "/api/runs/" + flags.Arg(0) + "/logs"
+	query := map[string]string{"burn": *burn, "step": *step, "pattern": *pattern}
+	for name, value := range map[string]int{"context": *context_, "offset": *offset, "limit": *limit} {
+		if value > 0 {
+			query[name] = fmt.Sprint(value)
+		}
+	}
+	if *tail {
+		query["tail"] = "true"
+	}
+	if *asJSON {
+		return emitJSON(ctx, api, path, query, output)
+	}
+	var log remoteLog
+	if err := api.Get(ctx, path, query, &log); err != nil {
+		return err
+	}
+	body := log.Output
+	if !*raw {
+		body = stripStepPrefix(body, log.Burn, log.Step)
+	}
+	if _, err := io.WriteString(output, body); err != nil {
+		return err
+	}
+	if body != "" && !strings.HasSuffix(body, "\n") {
+		if _, err := io.WriteString(output, "\n"); err != nil {
+			return err
+		}
+	}
+	_, err = fmt.Fprintf(os.Stderr, "%d of %d lines returned, %d matched, %d bytes in the step%s\n",
+		log.ReturnedLines, log.TotalLines, log.MatchedLines, log.Bytes, truncatedNote(log.Truncated))
+	return err
+}
+
+func truncatedNote(truncated bool) string {
+	if truncated {
+		return "; TRUNCATED, you did not see everything"
+	}
+	return ""
+}
+
+func stripStepPrefix(body, burn, step string) string {
+	prefix := "[" + burn + "/" + step + "] "
+	lines := strings.Split(body, "\n")
+	for index, line := range lines {
+		lines[index] = strings.TrimPrefix(line, prefix)
+	}
+	return strings.Join(lines, "\n")
+}
+
 func runRepos(ctx context.Context, arguments []string, output io.Writer) error {
 	flags, asJSON, err := remoteFlags("repos", arguments, output)
 	if err != nil || flags == nil {
@@ -258,4 +352,49 @@ func span(started, finished *time.Time) string {
 		return fmt.Sprintf("%ds", seconds)
 	}
 	return fmt.Sprintf("%dm %02ds", seconds/60, seconds%60)
+}
+
+type remoteArtifactEntry struct {
+	Name     string    `json:"name"`
+	Size     int64     `json:"size"`
+	Modified time.Time `json:"modified"`
+}
+
+type remoteArtifactList struct {
+	RunID     string                `json:"run_id"`
+	Artifacts []remoteArtifactEntry `json:"artifacts"`
+}
+
+func remoteArtifacts(ctx context.Context, config client.Config, rest []string, output io.Writer) error {
+	api, err := client.New(config)
+	if err != nil {
+		return err
+	}
+	reportMode("server")
+	if len(rest) == 2 {
+		body, readErr := api.GetRaw(ctx, "/api/runs/"+rest[0]+"/artifacts/"+rest[1], nil)
+		if readErr != nil {
+			return readErr
+		}
+		_, writeErr := output.Write(body)
+		return writeErr
+	}
+	var listing remoteArtifactList
+	if err := api.Get(ctx, "/api/runs/"+rest[0]+"/artifacts", nil, &listing); err != nil {
+		return err
+	}
+	if len(listing.Artifacts) == 0 {
+		_, err := fmt.Fprintf(output, "run %s kept no artifacts\n", rest[0])
+		return err
+	}
+	if _, err := fmt.Fprintf(output, "%-12s  %-20s  %s\n", "SIZE", "MODIFIED", "NAME"); err != nil {
+		return err
+	}
+	for _, entry := range listing.Artifacts {
+		if _, err := fmt.Fprintf(output, "%-12d  %-20s  %s\n",
+			entry.Size, entry.Modified.UTC().Format("2006-01-02 15:04:05"), entry.Name); err != nil {
+			return err
+		}
+	}
+	return nil
 }

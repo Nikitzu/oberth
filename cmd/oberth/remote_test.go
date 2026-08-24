@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -108,5 +109,102 @@ func TestRenderedOutputCarriesNoModeLine(t *testing.T) {
 	}
 	if strings.Contains(out.String(), "reading:") {
 		t.Fatalf("the mode line went to stdout, so it would contaminate a pipe:\n%s", out.String())
+	}
+}
+
+func TestLogPassesEveryFilterAsAQueryParameter(t *testing.T) {
+	var seen string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen = r.URL.RawQuery
+		_, _ = w.Write([]byte(`{"run_id":"r","burn":"ci","step":"test","output":"","total_lines":0}`))
+	}))
+	defer server.Close()
+	configure(t, server)
+
+	var out bytes.Buffer
+	err := runRemoteLog(context.Background(), []string{
+		"--burn", "ci", "--step", "test", "--pattern", "FAIL",
+		"--context", "3", "--offset", "5", "--limit", "10", "--tail", "run-abc",
+	}, &out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"burn=ci", "step=test", "pattern=FAIL", "context=3", "offset=5", "limit=10", "tail=true"} {
+		if !strings.Contains(seen, want) {
+			t.Fatalf("query %q missing %q", seen, want)
+		}
+	}
+}
+
+func TestLogStripsTheStepPrefixUnlessAskedNotTo(t *testing.T) {
+	payload := `{"run_id":"r","burn":"ci","step":"test","output":"[ci/test] first\n[ci/test] second\n",` +
+		`"total_lines":2,"matched_lines":2,"returned_lines":2}`
+	configure(t, remoteServer(t, payload))
+
+	var out bytes.Buffer
+	if err := runRemoteLog(context.Background(), []string{"--burn", "ci", "--step", "test", "run-abc"}, &out); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out.String(), "[ci/test]") {
+		t.Fatalf("the prefix was not stripped:\n%s", out.String())
+	}
+	if !strings.Contains(out.String(), "first") {
+		t.Fatalf("content lost:\n%s", out.String())
+	}
+
+	var raw bytes.Buffer
+	if err := runRemoteLog(context.Background(), []string{"--burn", "ci", "--step", "test", "--raw", "run-abc"}, &raw); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(raw.String(), "[ci/test]") {
+		t.Fatalf("--raw did not keep the prefix:\n%s", raw.String())
+	}
+}
+
+func TestLogRequiresBurnAndStep(t *testing.T) {
+	configure(t, remoteServer(t, `{}`))
+	var out bytes.Buffer
+	err := runRemoteLog(context.Background(), []string{"run-abc"}, &out)
+	if err == nil {
+		t.Fatal("log ran without --burn and --step")
+	}
+	if !strings.Contains(err.Error(), "--burn") {
+		t.Fatalf("error does not say what is missing: %v", err)
+	}
+}
+
+func TestLogCountsGoToStderrNotStdout(t *testing.T) {
+	payload := `{"run_id":"r","burn":"ci","step":"test","output":"line\n","total_lines":9,` +
+		`"matched_lines":1,"returned_lines":1,"truncated":true}`
+	configure(t, remoteServer(t, payload))
+
+	var out bytes.Buffer
+	if err := runRemoteLog(context.Background(), []string{"--burn", "ci", "--step", "test", "run-abc"}, &out); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out.String(), "lines returned") || strings.Contains(out.String(), "TRUNCATED") {
+		t.Fatalf("the counts contaminated the log body, so piping to a file would corrupt it:\n%s", out.String())
+	}
+	if strings.TrimSpace(out.String()) != "line" {
+		t.Fatalf("stdout is not just the log:\n%q", out.String())
+	}
+}
+
+func TestEveryRemoteCommandAcceptsJSON(t *testing.T) {
+	configure(t, remoteServer(t, `{"ok":true}`))
+	commands := map[string]func(context.Context, []string, io.Writer) error{
+		"runs":   runRuns,
+		"repos":  runRepos,
+		"issues": runIssues,
+		"status": runRemoteStatus,
+	}
+	for name, run := range commands {
+		var out bytes.Buffer
+		if err := run(context.Background(), []string{"--json"}, &out); err != nil {
+			t.Fatalf("%s --json: %v", name, err)
+		}
+		if !strings.Contains(out.String(), `"ok"`) {
+			t.Fatalf("%s --json did not emit the server payload:\n%s", name, out.String())
+		}
 	}
 }
