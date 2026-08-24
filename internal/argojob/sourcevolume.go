@@ -87,6 +87,8 @@ const (
 	// fetching the binary from a registry or baking it into an image.
 	binarySubPath  = "oberth-bin"
 	binaryFileName = "oberth"
+
+	artifactsSubPath = "artifacts"
 )
 
 // SourceVolume describes the per-run claim a Workflow's containers mount.
@@ -102,6 +104,8 @@ type SourceVolume struct {
 	// injected for a file that was never written is a step that fails its
 	// login on a missing file instead of a missing anchor.
 	VaultCASubPath string
+
+	ArtifactsSubPath string
 	// BinarySubPath is the directory inside the claim holding the Oberth
 	// server binary, and is empty unless this run's seeding actually wrote
 	// it. When set, Build mounts it read-only into credentialed containers
@@ -236,11 +240,15 @@ func (seeder *SourceSeeder) fill(
 
 	var stdout, stderr strings.Builder
 	target := path.Join(seedMountPath, volume.SubPath)
-	command := []string{"/bin/sh", "-c", "mkdir -p " + target + " && tar -xzf - -C " + target}
+	artifacts := path.Join(seedMountPath, artifactsSubPath)
+	command := []string{"/bin/sh", "-c",
+		"mkdir -p " + target + " && tar -xzf - -C " + target +
+			" && mkdir -p " + artifacts + " && chmod 1777 " + artifacts}
 	if err := seeder.exec(ctx, seeder.config.Namespace, podName, seedContainer, command, reader, &stdout, &stderr); err != nil {
 		return fmt.Errorf("argojob: stream source checkout into %s: %w: %s",
 			volume.ClaimName, err, strings.TrimSpace(stderr.String()))
 	}
+	volume.ArtifactsSubPath = artifactsSubPath
 	if err := seeder.fillVaultCA(ctx, volume, podName, credentialed); err != nil {
 		return err
 	}

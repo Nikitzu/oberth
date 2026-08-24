@@ -846,6 +846,9 @@ const (
 	// OberthBinMountPath is where a credentialed container finds the Oberth
 	// server binary, delivered from the source claim. The binary enables
 	// `oberth secretstore exec` as the native credential chain replacement.
+	ArtifactsVolumeName = "oberth-artifacts"
+	ArtifactsMountPath  = "/work/artifacts"
+
 	OberthBinMountPath = "/run/oberth/bin"
 	// OberthBinPath is the full path to the oberth binary inside the mount.
 	OberthBinPath = OberthBinMountPath + "/oberth"
@@ -1060,6 +1063,21 @@ func injectServerVolumes(workflow *wfv1.Workflow, config Config, request Request
 			SubPath:   request.SourceVolume.SubPath,
 			ReadOnly:  true,
 		})
+		if request.artifactsDelivered() {
+			workflow.Spec.Volumes = append(workflow.Spec.Volumes, corev1.Volume{
+				Name: ArtifactsVolumeName,
+				VolumeSource: corev1.VolumeSource{
+					PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
+						ClaimName: claim,
+					},
+				},
+			})
+			mounts = append(mounts, corev1.VolumeMount{
+				Name:      ArtifactsVolumeName,
+				MountPath: ArtifactsMountPath,
+				SubPath:   request.SourceVolume.ArtifactsSubPath,
+			})
+		}
 		if credentialed && request.vaultCADelivered() {
 			// The anchor rides the same claim as a second subPath, so it needs
 			// no volume of its own and is collected with the run's storage.
@@ -1206,6 +1224,11 @@ func (request Request) vaultCADelivered() bool {
 // into the source claim.
 func (request Request) binaryDelivered() bool {
 	return strings.TrimSpace(request.SourceVolume.BinarySubPath) != ""
+}
+
+func (request Request) artifactsDelivered() bool {
+	return strings.TrimSpace(request.SourceVolume.ClaimName) != "" &&
+		strings.TrimSpace(request.SourceVolume.ArtifactsSubPath) != ""
 }
 
 func injectTemplateVolumeMounts(template *wfv1.Template, injected []corev1.VolumeMount, depth int) {
@@ -1514,6 +1537,9 @@ func injectRunEnvironment(workflow *wfv1.Workflow, config Config, request Reques
 		{Name: "OBERTH_SHA", Value: request.SHA},
 		{Name: "OBERTH_TRIGGER", Value: string(request.Trigger)},
 		{Name: "OBERTH_RUN_ID", Value: request.RunID},
+	}
+	if request.artifactsDelivered() {
+		environment = append(environment, corev1.EnvVar{Name: "OBERTH_ARTIFACTS", Value: ArtifactsMountPath})
 	}
 	if config.cacheRootFor(request.Trigger) != "" {
 		// The server states where the cache is, exactly as it states where the
