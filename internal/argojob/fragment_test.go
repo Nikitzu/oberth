@@ -277,3 +277,68 @@ func TestBuildRefusesInliningPastTheTemplateCeiling(t *testing.T) {
 		t.Fatal("inlining past the template ceiling was admitted")
 	}
 }
+
+func TestBuildRecordsTheResolvedFragmentVersions(t *testing.T) {
+	key, fragment := plainFragment(t, "transferz/maven-verify", "v3")
+	request := fragmentRequest(t, consumingDocument("    oberth.ci/size: S\n", key.String()),
+		map[argoworkflow.FragmentKey]argoworkflow.Fragment{key: fragment})
+
+	workflow, err := Build(testConfig(), request)
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	recorded := workflow.Annotations[FragmentsAnnotation]
+	if recorded == "" {
+		t.Fatal("the submitted Workflow records no fragment versions, so the audit chain cannot either")
+	}
+	var lock argoworkflow.Lock
+	if err := json.Unmarshal([]byte(recorded), &lock); err != nil {
+		t.Fatalf("annotation is not decodable: %v", err)
+	}
+	if len(lock) != 1 {
+		t.Fatalf("recorded %d fragments, want 1", len(lock))
+	}
+	if lock[0].Key != key {
+		t.Fatalf("recorded key %+v, want %+v", lock[0].Key, key)
+	}
+	if lock[0].SHA != fragment.SHA {
+		t.Fatalf("recorded SHA %q, want the commit the tag resolved to %q", lock[0].SHA, fragment.SHA)
+	}
+	if lock[0].Digest == "" {
+		t.Fatal("recorded no document digest")
+	}
+}
+
+func TestAMovedTagChangesTheRecordedSHA(t *testing.T) {
+	key, fragment := plainFragment(t, "transferz/maven-verify", "v3")
+	source := consumingDocument("    oberth.ci/size: S\n", key.String())
+
+	build := func(sha string) string {
+		moved := fragment
+		moved.SHA = sha
+		request := fragmentRequest(t, source, map[argoworkflow.FragmentKey]argoworkflow.Fragment{key: moved})
+		workflow, err := Build(testConfig(), request)
+		if err != nil {
+			t.Fatalf("build: %v", err)
+		}
+		return workflow.Annotations[FragmentsAnnotation]
+	}
+	before := build(strings.Repeat("1", 40))
+	after := build(strings.Repeat("2", 40))
+	if before == after {
+		t.Fatal("the same consuming commit recorded the same fragment SHA after the tag moved; a moved tag would be invisible")
+	}
+	if !strings.Contains(before, strings.Repeat("1", 40)) || !strings.Contains(after, strings.Repeat("2", 40)) {
+		t.Fatalf("the recorded SHAs do not track the tag:\nbefore %s\nafter  %s", before, after)
+	}
+}
+
+func TestBuildRecordsNothingWhenNoFragmentsAreUsed(t *testing.T) {
+	workflow, err := Build(testConfig(), testRequest(periapsis.TriggerCI, greedyDocument))
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if _, present := workflow.Annotations[FragmentsAnnotation]; present {
+		t.Fatal("a pipeline using no fragments carries a fragments annotation")
+	}
+}

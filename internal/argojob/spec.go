@@ -15,6 +15,7 @@ import (
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/hex"
+	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"fmt"
@@ -42,6 +43,7 @@ const (
 	// value is a list of OpenBao paths; on this tier no secret value ever
 	// passes through the server at all.
 	secretPathsAnnotation = "oberth.ci/declared-secret-paths"
+	FragmentsAnnotation   = "oberth.ci/fragments"
 
 	defaultWorkflowTimeout = 12 * time.Hour
 	defaultTTLSeconds      = int32(3600)
@@ -424,7 +426,8 @@ func Build(config Config, request Request) (*wfv1.Workflow, error) {
 	if err != nil {
 		return nil, err
 	}
-	if _, err := argoworkflow.Resolve(workflow, request.Fragments); err != nil {
+	fragmentLock, err := argoworkflow.Resolve(workflow, request.Fragments)
+	if err != nil {
 		return nil, err
 	}
 	declaredPaths, err := argoworkflow.DeclaredSecretPaths(workflow)
@@ -506,7 +509,7 @@ func Build(config Config, request Request) (*wfv1.Workflow, error) {
 	}
 
 	scopeSynchronization(workflow, request)
-	applyServerMetadata(workflow, config, request, declaredPaths)
+	applyServerMetadata(workflow, config, request, declaredPaths, fragmentLock)
 	applyServerBounds(workflow, config)
 	applyServerSecurity(workflow)
 	injectServerVolumes(workflow, config, request, credentialed)
@@ -636,7 +639,7 @@ func (config Config) identityFor(trigger periapsis.Trigger, hasSecretPaths bool)
 	}, nil
 }
 
-func applyServerMetadata(workflow *wfv1.Workflow, config Config, request Request, declaredPaths []string) {
+func applyServerMetadata(workflow *wfv1.Workflow, config Config, request Request, declaredPaths []string, fragmentLock argoworkflow.Lock) {
 	workflow.APIVersion = argoworkflow.APIVersion
 	workflow.Kind = argoworkflow.Kind
 	workflow.Name = request.Name
@@ -664,6 +667,11 @@ func applyServerMetadata(workflow *wfv1.Workflow, config Config, request Request
 		// Paths only, never values: this is the auditable statement of intent
 		// that the run's audit action records at submission time.
 		workflow.Annotations[secretPathsAnnotation] = strings.Join(declaredPaths, ",")
+	}
+	if len(fragmentLock) != 0 {
+		if encoded, err := json.Marshal(fragmentLock); err == nil {
+			workflow.Annotations[FragmentsAnnotation] = string(encoded)
+		}
 	}
 	if workflow.Spec.PodMetadata == nil {
 		workflow.Spec.PodMetadata = &wfv1.Metadata{}

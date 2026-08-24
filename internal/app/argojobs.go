@@ -335,6 +335,10 @@ func (jobs *ArgoJobs) auditSubmission(ctx context.Context, request service.JobRe
 	if workflow.Annotations != nil {
 		declared = workflow.Annotations["oberth.ci/declared-secret-paths"]
 	}
+	fragments := ""
+	if workflow.Annotations != nil {
+		fragments = workflow.Annotations[argojob.FragmentsAnnotation]
+	}
 	automount := workflow.Spec.AutomountServiceAccountToken != nil && *workflow.Spec.AutomountServiceAccountToken
 	details := map[string]any{
 		"repo": request.Repository.Name, "upstream_org": request.UpstreamOrg,
@@ -356,6 +360,7 @@ func (jobs *ArgoJobs) auditSubmission(ctx context.Context, request service.JobRe
 		}(),
 		"automount_service_account_token": automount,
 		"declared_secret_paths":           declared,
+		"fragments":                       fragments,
 	}
 	encoded, err := json.Marshal(details)
 	if err != nil {
