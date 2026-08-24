@@ -162,6 +162,8 @@ type Config struct {
 	// TTLSeconds is how long a finished Workflow object is retained.
 	TTLSeconds int32
 
+	ArtifactsLimitBytes int64
+
 	// MaxRunLogBytes bounds the aggregate bytes written across all steps of
 	// one run log. Without this ceiling, a pipeline with 512 admitted steps
 	// could write up to 512 * 32 MiB = 16 GiB to the shared server PVC.

@@ -28,6 +28,7 @@ import (
 
 	"github.com/oberthci/oberth/internal/api"
 	"github.com/oberthci/oberth/internal/app"
+	"github.com/oberthci/oberth/internal/artifacts"
 	"github.com/oberthci/oberth/internal/auditanchor"
 	"github.com/oberthci/oberth/internal/auth"
 	"github.com/oberthci/oberth/internal/gitcache"
@@ -84,6 +85,7 @@ type serveOptions struct {
 	namespace               string
 	runnerImagePrefixes     string
 	fragmentAllowlist       string
+	artifactsLimitBytes     int64
 	maxConcurrent           int
 	publishOnGreen          bool
 	ciCacheRoot             string
@@ -161,6 +163,7 @@ func parseServeOptions(arguments []string, output io.Writer) (serveOptions, erro
 	flags.StringVar(&options.namespace, "namespace", "oberth", "Kubernetes namespace")
 	flags.StringVar(&options.runnerImagePrefixes, "runner-image-prefixes", strings.Join(periapsis.DefaultRunnerImagePrefixes, ","), "comma-separated allowlist of permitted runner image prefixes")
 	flags.StringVar(&options.fragmentAllowlist, "fragment-allowlist", "", "comma-separated repositories usable as pipeline fragments; empty permits every registered repository")
+	flags.Int64Var(&options.artifactsLimitBytes, "artifacts-limit-bytes", defaultArtifactsLimitBytes, "maximum total bytes of artifacts kept per run")
 	flags.IntVar(&options.maxConcurrent, "max-concurrent-jobs", 3, "maximum concurrent Jobs")
 	flags.BoolVar(&options.publishOnGreen, "publish-on-green", true,
 		"force-sync an ordinary green branch run to the upstream forge. Set false to keep the gate advisory: "+
@@ -552,7 +555,12 @@ func serve(ctx context.Context, options serveOptions, logger *log.Logger) (resul
 	if err != nil {
 		return err
 	}
-	argoJobs, err := buildArgoEngine(options, restConfig, kube, database, database, fragmentLoader)
+	artifactStore, err := artifacts.Open(filepath.Join(options.dataRoot, "artifacts"))
+	if err != nil {
+		return err
+	}
+	argoJobs, err := buildArgoEngine(options, restConfig, kube, database, database, fragmentLoader,
+		artifactStoreAdapter{store: artifactStore}, options.artifactsLimitBytes)
 	if err != nil {
 		return err
 	}
@@ -1559,3 +1567,5 @@ func classifyViewError(err error) (int, string) {
 		return http.StatusInternalServerError, "internal error"
 	}
 }
+
+const defaultArtifactsLimitBytes = 256 << 20

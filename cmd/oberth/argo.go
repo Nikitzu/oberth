@@ -21,6 +21,7 @@ import (
 
 	"github.com/oberthci/oberth/internal/app"
 	"github.com/oberthci/oberth/internal/argojob"
+	"github.com/oberthci/oberth/internal/artifacts"
 	"github.com/oberthci/oberth/internal/service"
 )
 
@@ -36,6 +37,8 @@ func buildArgoEngine(
 	auditor service.Auditor,
 	secretAccess app.SecretAccessLoader,
 	fragments app.FragmentLoader,
+	artifactStore app.ArtifactStore,
+	artifactLimit int64,
 ) (*app.ArgoJobs, error) {
 	argoClient, err := wfclientset.NewForConfig(restConfig)
 	if err != nil {
@@ -80,7 +83,14 @@ func buildArgoEngine(
 	if seeder == nil {
 		return nil, errors.New("configure Argo source seeding: the in-cluster Kubernetes client is required")
 	}
-	return app.NewArgoJobs(controller.WithSourceSeeder(seeder), config, auditor, secretAccess, fragments)
+	jobs, err := app.NewArgoJobs(controller.WithSourceSeeder(seeder), config, auditor, secretAccess, fragments)
+	if err != nil {
+		return nil, err
+	}
+	if artifactStore != nil {
+		jobs.SetArtifacts(seeder, artifactStore, artifactLimit)
+	}
+	return jobs, nil
 }
 
 // validateArgoServeOptions fails a misconfigured Argo engine at startup rather
@@ -182,4 +192,13 @@ func newArgoExecStreamer(restConfig *rest.Config, kube kubernetes.Interface) arg
 		}
 		return executor.StreamWithContext(ctx, remotecommand.StreamOptions{Stdin: stdin, Stdout: stdout, Stderr: stderr})
 	}
+}
+
+type artifactStoreAdapter struct {
+	store *artifacts.Store
+}
+
+func (adapter artifactStoreAdapter) Extract(runID string, stream io.Reader, limit int64) error {
+	_, err := adapter.store.Extract(runID, stream, limit)
+	return err
 }
