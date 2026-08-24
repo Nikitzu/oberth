@@ -63,6 +63,8 @@ func runCLI(ctx context.Context, arguments []string, input io.Reader, output io.
 		return runRepo(ctx, arguments[1:], output)
 	case "fragments":
 		return runFragments(ctx, arguments[1:], output)
+	case "files":
+		return runFiles(ctx, arguments[1:], output)
 	case "artifacts":
 		return runArtifacts(ctx, arguments[1:], output)
 	case "schedules":

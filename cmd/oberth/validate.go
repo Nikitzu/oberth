@@ -154,6 +154,22 @@ func executeValidate(target validateTarget, output io.Writer) error {
 			continue
 		}
 
+		// File dependencies are reported but do not stop the check, unlike
+		// fragment references above. A fragment leaves the document
+		// structurally incomplete until it is resolved, so admitting it here
+		// would admit something other than what runs. A file dependency
+		// changes no template, so admission is checked exactly as it will be
+		// at push time, and the references are simply listed as unresolved
+		// -- the server pins and reads them.
+		fileRefs, fileErr := argoworkflow.FileRefs(workflow)
+		if fileErr != nil {
+			report.problem("file dependencies in %s: %v", entry.file, fileErr)
+			continue
+		}
+		for _, reference := range fileRefs {
+			report.line("  --  file %s resolved by the server at push time; its contents are unchecked", reference)
+		}
+
 		if err := argoworkflow.Admit(workflow, argoworkflow.Policy{RunnerImagePrefixes: target.imagePrefixes}); err != nil {
 			report.problem("admission %s: %v", entry.file, err)
 			continue

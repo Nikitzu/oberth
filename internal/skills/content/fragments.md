@@ -1,6 +1,6 @@
 ---
 name: oberth-fragments
-description: Share a pipeline step between repositories with Oberth fragments. Use when the same steps are copied across repos, when a templateRef is refused, or when asked how to publish or pin a shared pipeline.
+description: Share a pipeline step or a data file between repositories with Oberth fragments and file dependencies. Use when the same steps are copied across repos, when a templateRef is refused, when a step needs a file from another repository, or when asked how to publish or pin shared pipeline content.
 ---
 
 # Cross-repo pipeline fragments
@@ -57,8 +57,39 @@ approval table.
 Everything the admission gate refuses in a pipeline it also refuses inside a
 fragment. Being a fragment grants nothing.
 
+## Sharing a file rather than a step
+
+A fragment shares templates. When a step needs shared *data* -- a registry, a
+policy list, an identifier map -- declare a file dependency instead:
+
+```yaml
+metadata:
+  annotations:
+    oberth.ci/files: |
+      tzmem@v1:graph/repos.yml
+      policy@v3:ci/allowed-images.txt
+```
+
+Read it under `$OBERTH_FILES`, which is `/work/files`. The layout under it is
+the repository name then the file's own path, so the first of those lands at
+tzmem/graph/repos.yml inside that directory.
+
+The same pinning rule applies: `repository@version:path`, always a tag. The
+server resolves and reads it, so the pipeline needs no credential -- which is
+the point. Cloning another repository from a pipeline would need an uplink key,
+and an uplink key can promote to main.
+
+The mount is read-only and sits outside `/work/src`, so a repository cannot
+shadow a delivered file with one of its own. On the submitted Workflow the
+annotation holds the resolved lock -- commit and content digest per file -- not
+what was written, so what a run read is checkable after the fact.
+
+Limits: 8 files, 1 MiB each, 4 MiB in total. Over any of them the run is
+refused rather than the file truncated.
+
 ## Inspecting
 
 `oberth fragments list` shows which repositories publish fragments and at which
 versions. `oberth fragments show <repo>@<tag>` prints the document and the
-commit the tag resolved to.
+commit the tag resolved to. `oberth files show <repo>@<tag>:<path>` does the
+same for one file dependency.
