@@ -296,3 +296,38 @@ func TestNewRefusesAMalformedBaseURL(t *testing.T) {
 		}
 	}
 }
+
+func TestAHostnameMismatchNamesTheAddressesTheCertificateCovers(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer server.Close()
+
+	anchor := filepath.Join(t.TempDir(), "ca.pem")
+	pemBytes := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw})
+	if err := os.WriteFile(anchor, pemBytes, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	clearEnv(t)
+	address := strings.Replace(server.URL, "127.0.0.1", "localhost", 1)
+	t.Setenv("OBERTH_BASE_URL", address)
+	t.Setenv("OBERTH_TOKEN", secret)
+	t.Setenv("OBERTH_CA_CERT", anchor)
+	api, err := New(FromEnv())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out struct{}
+	err = api.Get(context.Background(), "/api/runs", nil, &out)
+	if err == nil {
+		t.Skip("this certificate covers localhost, so there is no mismatch to observe")
+	}
+	if strings.Contains(err.Error(), "OBERTH_CA_CERT") {
+		t.Fatalf("a hostname mismatch was reported as an untrusted authority, "+
+			"which sends the user to fix the wrong thing: %v", err)
+	}
+	if !strings.Contains(err.Error(), "does not cover") {
+		t.Fatalf("error does not explain the mismatch: %v", err)
+	}
+}
