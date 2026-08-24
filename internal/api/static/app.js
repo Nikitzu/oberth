@@ -303,6 +303,10 @@ function branchBlocks(runs) {
   return [...blocks.values()].sort((a, b) => new Date(runWhen(b.head) || 0) - new Date(runWhen(a.head) || 0));
 }
 
+function scheduledBadge(run) {
+  return String(run.Trigger || "").toLowerCase() === "schedule" ? '<span class="sched">scheduled</span>' : "";
+}
+
 function branchSentence(block) {
   const run = block.head, kind = statusKind(run.Status);
   const took = esc(fmtDur(runDuration(run)));
@@ -362,7 +366,7 @@ function branchBlock(block) {
       <div class="bacts">
         <button class="bbtn pri" data-run-id="${esc(run.ID)}">Open run<span class="kb">&#8629;</span></button>
         ${(() => { const url = compareURL(run); return url ? `<button class="bbtn" data-action="publish-pr" data-run="${esc(run.ID)}" data-compare="${esc(url)}">Open PR<span class="kb">p</span></button>` : ""; })()}
-        <span class="bnote">${esc(run.Actor || "unknown actor")} &middot; ${esc(shortSha(run.SHA))} &middot; ${esc(fmtDur(runDuration(run)))}</span>
+        <span class="bnote">${scheduledBadge(run)}${esc(run.Actor || "unknown actor")} &middot; ${esc(shortSha(run.SHA))} &middot; ${esc(fmtDur(runDuration(run)))}</span>
       </div>
       ${history.length ? `<div class="bhist">
         <div class="bhl">EARLIER ON THIS BRANCH</div>

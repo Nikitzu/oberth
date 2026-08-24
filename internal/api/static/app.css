@@ -306,3 +306,5 @@ pre.md-code{background:var(--tbg);padding:11px;border-radius:var(--rs);overflow-
 .artis-h{font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--idle);margin-right:4px}
 .arti{display:inline-flex;align-items:center;gap:8px;padding:3px 9px;border:1px solid var(--panel3);border-radius:5px;background:var(--panel);color:var(--acc);text-decoration:none;font-size:12px}
 .arti:hover{border-color:var(--acc-line);background:var(--acc-bg)}
+
+.sched{display:inline-block;margin-right:6px;padding:1px 6px;border:1px solid var(--acc-line);border-radius:4px;background:var(--acc-bg);color:var(--acc);font-size:10px;letter-spacing:.06em;text-transform:uppercase}
