@@ -83,6 +83,8 @@ type serveOptions struct {
 	knownHosts              string
 	namespace               string
 	runnerImagePrefixes     string
+	scheduleMinInterval     time.Duration
+	scheduleMaxEntries      int
 	maxConcurrent           int
 	ciCacheRoot             string
 	releaseCacheRoot        string
@@ -160,6 +162,8 @@ func parseServeOptions(arguments []string, output io.Writer) (serveOptions, erro
 	flags.StringVar(&options.knownHosts, "known-hosts", "/etc/oberth/known-hosts/known_hosts", "upstream known_hosts")
 	flags.StringVar(&options.namespace, "namespace", "oberth", "Kubernetes namespace")
 	flags.StringVar(&options.runnerImagePrefixes, "runner-image-prefixes", strings.Join(periapsis.DefaultRunnerImagePrefixes, ","), "comma-separated allowlist of permitted runner image prefixes")
+	flags.DurationVar(&options.scheduleMinInterval, "schedule-min-interval", defaultScheduleMinInterval, "shortest interval a repository may schedule itself at")
+	flags.IntVar(&options.scheduleMaxEntries, "schedule-max-entries", defaultScheduleMaxEntries, "most schedule entries one repository may declare")
 	flags.IntVar(&options.maxConcurrent, "max-concurrent-jobs", 3, "maximum concurrent Jobs")
 	flags.StringVar(&options.ciCacheRoot, "ci-cache-root", "/var/cache/oberth/ci", "CI host cache root")
 	flags.StringVar(&options.releaseCacheRoot, "release-cache-root", "/var/cache/oberth/release", "release host cache root")
@@ -767,7 +771,16 @@ func serve(ctx context.Context, options serveOptions, logger *log.Logger) (resul
 		}
 		return nil
 	}
-	return runComponents(ctx, options, scheduler, anchors, git, sshService, httpsServer, newAdminGateServer(anchors.AllowMutation, options.database), activateScheduler, accessReconciler, logger)
+	schedules := app.NewSchedules(app.SchedulesConfig{
+		Repositories: database.ListRepositories,
+		Git:          git,
+		Runs:         database,
+		Enqueuer:     scheduler,
+		State:        database,
+		MinInterval:  options.scheduleMinInterval,
+		MaxEntries:   options.scheduleMaxEntries,
+	})
+	return runComponents(ctx, options, scheduler, anchors, git, sshService, httpsServer, newAdminGateServer(anchors.AllowMutation, options.database), activateScheduler, accessReconciler, schedules, logger)
 }
 
 type startupContinuity interface {
@@ -1167,6 +1180,7 @@ func runComponents(
 	adminServer *http.Server,
 	activateScheduler func(context.Context) error,
 	accessReconciler *service.AccessReconciler,
+	schedules *app.Schedules,
 	logger *log.Logger,
 ) error {
 	runCtx, cancel := context.WithCancel(ctx)
@@ -1237,6 +1251,16 @@ func runComponents(
 	go func() {
 		defer workers.Done()
 		git.StartPeriodicGC(runCtx, options.gcInterval)
+	}()
+	workers.Add(1)
+	go func() {
+		defer workers.Done()
+		if schedules == nil {
+			return
+		}
+		if err := schedules.Run(runCtx); err != nil && runCtx.Err() == nil {
+			logger.Printf("schedule ticker stopped: %v", err)
+		}
 	}()
 	if accessReconciler != nil {
 		workers.Add(1)
@@ -1553,3 +1577,8 @@ func classifyViewError(err error) (int, string) {
 		return http.StatusInternalServerError, "internal error"
 	}
 }
+
+const (
+	defaultScheduleMinInterval = 15 * time.Minute
+	defaultScheduleMaxEntries  = 8
+)

@@ -7,7 +7,7 @@ type migration struct {
 }
 
 const (
-	latestMigrationVersion = 8
+	latestMigrationVersion = 9
 	// oberthSchemaIdentity is a compatibility-frozen opaque literal: every
 	// deployed database carries this exact identity row and a CHECK constraint
 	// on it. Renaming it is a breaking schema migration, not a string cleanup.
@@ -672,5 +672,15 @@ CREATE UNIQUE INDEX secret_access_active
 	{
 		version: 8,
 		sql:     `ALTER TABLE runs ADD COLUMN credentialed INTEGER NOT NULL DEFAULT 0 CHECK (credentialed IN (0, 1));`,
+	},
+	{
+		version: 9,
+		sql: `CREATE TABLE schedule_fires (
+    repo TEXT NOT NULL,
+    entry TEXT NOT NULL,
+    fired_at INTEGER NOT NULL,
+    outcome TEXT NOT NULL,
+    PRIMARY KEY (repo, entry)
+) WITHOUT ROWID;`,
 	},
 }
