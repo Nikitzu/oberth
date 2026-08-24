@@ -666,6 +666,30 @@ async function renderRunDetail(runID, seq, background) {
   if (!currentRoute(seq)) return;
   await renderRunDetailView(detail, seq);
 }
+async function runArtifacts(runID) {
+  if (!runID) return [];
+  try {
+    const payload = await api(`/api/runs/${encodeURIComponent(runID)}/artifacts`);
+    return payload && Array.isArray(payload.artifacts) ? payload.artifacts : [];
+  } catch { return []; }
+}
+
+function artifactStrip(runID, entries) {
+  if (!entries || !entries.length) return "";
+  const links = entries.map(entry => {
+    const href = `/api/runs/${encodeURIComponent(runID)}/artifacts/${entry.name.split("/").map(encodeURIComponent).join("/")}`;
+    return `<a class="arti" href="${esc(href)}" download>${esc(entry.name)}<span class="du">${esc(fmtBytes(entry.size))}</span></a>`;
+  }).join("");
+  return `<div class="artis"><span class="artis-h">kept</span>${links}</div>`;
+}
+
+function fmtBytes(size) {
+  if (!size && size !== 0) return "";
+  if (size < 1024) return `${size} B`;
+  if (size < 1024 * 1024) return `${Math.round(size / 1024)} KB`;
+  return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+}
+
 async function renderRunDetailView(detail, seq) {
   const run = detail.Run || {}, steps = detail.Steps || [];
   const repository = detail.Repository && detail.Repository.Name ? detail.Repository.Name : repoName(run.RepoID);
@@ -695,6 +719,8 @@ async function renderRunDetailView(detail, seq) {
   const filterCaret = previousFilter ? previousFilter.selectionStart : 0;
   const previousStepList = document.getElementById("stepList");
   const previousStepScroll = previousStepList ? previousStepList.scrollTop : 0;
+  const artifacts = kind === "run" ? [] : await runArtifacts(run.ID);
+  if (!currentRoute(seq)) return;
   setChrome("runs");
   replaceApp(`
   <section class="screen">
@@ -739,6 +765,7 @@ async function renderRunDetailView(detail, seq) {
         <div class="rt"><button class="copy-btn" data-copy-text="${esc(run.ID)}">copy run id</button></div>
       </div>
       <div id="termBody" class="logbody">${terminal}</div>
+      ${artifactStrip(run.ID, artifacts)}
     </div>
     </div>
   </section>`);

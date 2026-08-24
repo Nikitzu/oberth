@@ -301,3 +301,8 @@ pre.md-code{background:var(--tbg);padding:11px;border-radius:var(--rs);overflow-
 .logfilter input::placeholder{color:var(--dim)}
 .logfilter input::-webkit-search-cancel-button{-webkit-appearance:none}
 .logmeta{color:var(--dim);font-size:10.5px}
+
+.artis{display:flex;flex-wrap:wrap;gap:6px;align-items:center;padding:8px 12px;border-top:1px solid var(--panel3);background:var(--panel2)}
+.artis-h{font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--idle);margin-right:4px}
+.arti{display:inline-flex;align-items:center;gap:8px;padding:3px 9px;border:1px solid var(--panel3);border-radius:5px;background:var(--panel);color:var(--acc);text-decoration:none;font-size:12px}
+.arti:hover{border-color:var(--acc-line);background:var(--acc-bg)}
