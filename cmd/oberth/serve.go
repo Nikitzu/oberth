@@ -83,6 +83,7 @@ type serveOptions struct {
 	knownHosts              string
 	namespace               string
 	runnerImagePrefixes     string
+	fragmentAllowlist       string
 	maxConcurrent           int
 	publishOnGreen          bool
 	ciCacheRoot             string
@@ -159,6 +160,7 @@ func parseServeOptions(arguments []string, output io.Writer) (serveOptions, erro
 	flags.StringVar(&options.knownHosts, "known-hosts", "/etc/oberth/known-hosts/known_hosts", "upstream known_hosts")
 	flags.StringVar(&options.namespace, "namespace", "oberth", "Kubernetes namespace")
 	flags.StringVar(&options.runnerImagePrefixes, "runner-image-prefixes", strings.Join(periapsis.DefaultRunnerImagePrefixes, ","), "comma-separated allowlist of permitted runner image prefixes")
+	flags.StringVar(&options.fragmentAllowlist, "fragment-allowlist", "", "comma-separated repositories usable as pipeline fragments; empty permits every registered repository")
 	flags.IntVar(&options.maxConcurrent, "max-concurrent-jobs", 3, "maximum concurrent Jobs")
 	flags.BoolVar(&options.publishOnGreen, "publish-on-green", true,
 		"force-sync an ordinary green branch run to the upstream forge. Set false to keep the gate advisory: "+
@@ -546,7 +548,11 @@ func serve(ctx context.Context, options serveOptions, logger *log.Logger) (resul
 	if err != nil {
 		return err
 	}
-	argoJobs, err := buildArgoEngine(options, restConfig, kube, database, database)
+	fragmentLoader, err := app.NewGitFragmentLoader(git, database, splitRunnerImagePrefixes(options.fragmentAllowlist))
+	if err != nil {
+		return err
+	}
+	argoJobs, err := buildArgoEngine(options, restConfig, kube, database, database, fragmentLoader)
 	if err != nil {
 		return err
 	}

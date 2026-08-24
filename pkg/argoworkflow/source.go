@@ -29,6 +29,8 @@ const (
 	ReleaseFile = ".oberth/release.yaml"
 )
 
+const FragmentFile = ".oberth/fragment.yaml"
+
 // MaxSourceBytes bounds one pipeline document. It matches the Go path's bound
 // so neither authoring format can present the server with an unbounded read.
 const MaxSourceBytes = periapsis.MaxSourceBytes
