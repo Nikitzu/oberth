@@ -893,7 +893,10 @@ function issueListURL() {
   return "/api/issues?" + query.toString();
 }
 function issueRow(issue) {
-  return `<button type="button" class="issue-row" data-open-issue="${esc(issue.ID)}" aria-label="Open internal issue ${esc(issue.ID)}: ${esc(issue.Title)}"><span class="sha">#${esc(issue.ID)}</span><span>${pill(issue.Kind, issue.Kind === "ci" ? "run" : "pending")}</span><span>${pill(issue.State, issue.State === "open" ? "fail" : "pass")}</span><span class="clip">${esc(issue.RepoID ? repoName(issue.RepoID) : "workspace")}</span><span class="branch clip">${esc(issue.Branch || "--")}</span><span class="issue-title" title="${esc(issue.Title)}">${esc(issue.Title)}</span><span title="occurrences">×${esc(issue.Occurrences || 1)}</span><span title="updated ${esc(fmtTime(issue.UpdatedAt))}">${esc(ago(issue.UpdatedAt))}</span></button>`;
+  // Seven children for seven tracks. The kind pill is gone: two adjacent pills
+  // competed for one glance, and the title already implies which kind an issue
+  // is. Counts and times carry no glyph because the column header names them.
+  return `<button type="button" class="issue-cols issue-row" data-open-issue="${esc(issue.ID)}" aria-label="Open internal issue ${esc(issue.ID)}: ${esc(issue.Title)}"><span class="sha">#${esc(issue.ID)}</span>${pill(issue.State, issue.State === "open" ? "fail" : "pass")}<span class="clip">${esc(issue.RepoID ? repoName(issue.RepoID) : "workspace")}</span><span class="branch clip">${esc(issue.Branch || "--")}</span><span class="issue-title" title="${esc(issue.Title)}">${esc(issue.Title)}</span><span class="num" title="occurrences">${esc(issue.Occurrences || 1)}</span><span class="num" title="updated ${esc(fmtTime(issue.UpdatedAt))}">${esc(ago(issue.UpdatedAt))}</span></button>`;
 }
 async function renderIssues(seq) {
   setChrome("issues");
@@ -921,7 +924,7 @@ async function renderIssues(seq) {
       <label>repo <select data-action="issue-repo"><option value="">all</option>${state.repos.map(repo => `<option value="${esc(repo.Name)}" ${state.issueRepo === repo.Name ? "selected" : ""}>${esc(repo.Name)}</option>`).join("")}</select></label>
       <span class="sstat">${issues.length} shown${state.issueCursorHistory.length ? ` · page ${state.issueCursorHistory.length + 1}` : ""}</span>
     </div>
-    ${issues.length ? `<div class="panel">${issues.map(issueRow).join("")}
+    ${issues.length ? `<div class="panel"><div class="issue-cols issue-head" aria-hidden="true"><span>id</span><span>state</span><span>repo</span><span>branch</span><span>title</span><span class="num">seen</span><span class="num">updated</span></div>${issues.map(issueRow).join("")}
     <div class="issue-pager">
       <button type="button" class="btn" data-action="issue-newer" ${state.issueCursorHistory.length ? "" : "disabled"}>&lsaquo; newer</button>
       <button type="button" class="btn" data-action="issue-older" ${page.NextBefore ? "" : "disabled"}>older &rsaquo;</button>

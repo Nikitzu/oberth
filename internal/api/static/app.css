@@ -9,6 +9,7 @@
   --fg:#f9f9f9;--muted:#cecece;--dim:#9c9c9d;
   --acc:#55b3ff;--acc-ink:#07080a;--acc-bg:#55b3ff26;--acc-line:#55b3ff66;
   --pass:#5fc992;--fail:#ff6363;--run:#ffbc33;--idle:#6a6b6c;
+  --pass-mark:#5fc992;--fail-mark:#ff6363;--run-mark:#ffbc33;
   --pass-bg:#5fc9921f;--fail-bg:#ff63631f;--run-bg:#ffbc331f;
   --tbg:#0b0c0e;--tfg:#e6e6e7;--tdim:#6a6b6c;
   --shadow:0 1px 2px #00000073;
@@ -21,8 +22,10 @@ body.light{
   --line:#e4e6ea;--line2:#c9cdd3;
   --fg:#15171a;--muted:#4a4f57;--dim:#7c828b;
   --acc:#2f6ba3;--acc-ink:#ffffff;--acc-bg:#2f6ba30f;--acc-line:#2f6ba342;
-  --pass:#1a7f4b;--fail:#c33c33;--run:#9a6a10;--idle:#9aa0a8;
+  --pass:#14603a;--fail:#9d2f27;--run:#6f4c08;--idle:#9aa0a8;
   --pass-bg:#1a7f4b14;--fail-bg:#c33c3314;--run-bg:#9a6a1014;
+  /* Marks, not text: the dot only has to clear 3:1. */
+  --pass-mark:#1a7f4b;--fail-mark:#c33c33;--run-mark:#9a6a10;
   --tbg:#f6f7f9;--tfg:#1d2024;--tdim:#7c828b;
   --shadow:0 1px 2px #15171a0f;
 }
@@ -84,10 +87,11 @@ a{color:inherit}
   color:var(--fail);font-family:var(--sans)}
 
 .dot{width:9px;height:9px;border-radius:50%;flex:none;background:var(--idle)}
-.dot.pass{background:var(--pass)}.dot.fail{background:var(--fail)}
-.dot.run{background:var(--run)}.dot.pending,.dot.cancel{background:var(--idle)}
-.pill{display:inline-flex;align-items:center;gap:6px;padding:2px 9px;border-radius:20px;
-  border:1px solid var(--line2);font-size:10.5px;color:var(--muted);white-space:nowrap}
+.dot.pass{background:var(--pass-mark)}.dot.fail{background:var(--fail-mark)}
+.dot.run{background:var(--run-mark)}.dot.pending,.dot.cancel{background:var(--idle)}
+.pill{display:inline-flex;align-items:center;gap:6px;padding:3px 9px;border-radius:5px;
+  border:1px solid var(--line2);font-size:11.5px;color:var(--muted);white-space:nowrap;
+  justify-self:start}
 .pill.pass{color:var(--pass);border-color:var(--pass);background:var(--pass-bg)}
 .pill.fail{color:var(--fail);border-color:var(--fail);background:var(--fail-bg)}
 .pill.run{color:var(--run);border-color:var(--run);background:var(--run-bg)}
@@ -183,9 +187,22 @@ option{background:var(--panel);color:var(--fg)}
   overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:52%}
 .chain-bad{color:var(--fail)}
 
-.issue-row{display:grid;grid-template-columns:58px 62px 60px 1fr 96px 68px;gap:11px;
-  align-items:center;padding:9px 16px;font-size:11.5px;border-top:1px solid var(--line);width:100%}
+/* Seven tracks, seven children, none of them auto.
+   Each row is its own grid container, so an auto or max-content track resolves
+   against that row alone: a "closed" chip and an "open" chip then produce
+   different column widths and nothing lines up, including the header. Fixed and
+   fr tracks resolve identically everywhere, which is what makes a list of
+   separate elements read as a table. */
+.issue-cols{display:grid;
+  grid-template-columns:52px 92px minmax(110px,1fr) minmax(80px,1fr) minmax(150px,2fr) 34px 52px;
+  gap:0;align-items:center;width:100%}
+.issue-cols>*{padding-right:12px;min-width:0}
+.issue-cols>*:last-child{padding-right:0}
+.issue-head{padding:8px 16px;border-top:1px solid var(--line);color:var(--dim);
+  font:600 10px/1 var(--sans);letter-spacing:.07em;text-transform:uppercase}
+.issue-row{padding:7px 16px;font-size:11.5px;border-top:1px solid var(--line)}
 .issue-row:hover{background:var(--panel2)}
+.num{text-align:right;font-family:var(--mono);font-variant-numeric:tabular-nums}
 .issue-title{color:var(--fg);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:var(--sans)}
 .clip{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .sha{font-family:var(--mono);color:var(--dim)}
@@ -286,7 +303,10 @@ pre.md-code{background:var(--tbg);padding:11px;border-radius:var(--rs);overflow-
   .bbody{padding:13px 14px 15px}
   .bsay{padding-left:0}
   .bnote,.sstat{margin-left:0;width:100%}
-  .issue-row{grid-template-columns:1fr;gap:4px}
+  .issue-cols{grid-template-columns:1fr;gap:3px}
+  .issue-cols>*{padding-right:0}
+  .issue-head{display:none}
+  .num{text-align:left}
   .prow{flex-wrap:wrap}
   .prow .pd{margin-left:0;max-width:100%;text-align:left}
   .dlg{width:100vw;max-width:none;height:100dvh;max-height:none;border:0;border-radius:0;margin:0}
