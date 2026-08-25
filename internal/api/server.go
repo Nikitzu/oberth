@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/oberthci/oberth/internal/runlog"
 	"html"
 	"io"
 	"log"
@@ -14,6 +13,8 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+
+	"github.com/oberthci/oberth/internal/runlog"
 )
 
 const maxRequestBytes = 1 << 20
