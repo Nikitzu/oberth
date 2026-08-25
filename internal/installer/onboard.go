@@ -276,6 +276,12 @@ func runOnboarding(ctx context.Context, cfg Config, deps Deps, tw *tableWriter, 
 		_, _ = fmt.Fprintln(w, strings.TrimRight(uplinkOutput, "\n"))
 	}
 
+	// Offered before the credential box is flushed, so the token is still the
+	// last thing on screen when the operator is told where to put it.
+	if err := offerClientAccess(ctx, cfg, deps, tw, token); err != nil {
+		return err
+	}
+
 	// Flush credentials after the table is fully closed.
 	creds.flush(w, color)
 
