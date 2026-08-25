@@ -3605,3 +3605,63 @@ func TestAuthenticatorAdminPropagation(t *testing.T) {
 		t.Fatal("non-admin uplink should produce Actor.Admin=false")
 	}
 }
+
+type stubRepositoryRemover struct {
+	removed []string
+}
+
+func (s *stubRepositoryRemover) RemoveRepository(_ context.Context, actor, name string) (store.RemovedRepository, error) {
+	s.removed = append(s.removed, name)
+	return store.RemovedRepository{
+		Repository:   model.Repository{ID: 1, Name: name},
+		UpstreamName: "test-upstream",
+	}, nil
+}
+
+func TestRepoRemoveRequiresAdminUplink(t *testing.T) {
+	t.Parallel()
+	fixture := newControlFixture(t)
+	remover := &stubRepositoryRemover{}
+	service, err := NewAPI(APIConfig{
+		Runs: fixture.store, History: fixture.store, Repositories: fixture.store,
+		Issues: fixture.store, Promotions: fixture.store, PromotionRuns: fixture.store,
+		Enqueues: fixture.scheduler, Git: fixture.git, Refs: fixture.refs,
+		Logs: fixture.logs, Auditor: fixture.store,
+		Signals: fixture.signals, MaximumWait: 50 * time.Millisecond,
+		PromotionWorkspaceRoot: filepath.Join(fixture.root, "promotion-work"),
+		RepositoryRemover:      remover,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	nonAdmin := api.Actor{Identity: "agent@host", Fingerprint: "SHA256:agent", Admin: false}
+
+	// Non-admin actor must be rejected.
+	_, err = service.CallTool(context.Background(), nonAdmin, "repo_remove",
+		json.RawMessage(`{"repo":"widget"}`))
+	if !errors.Is(err, ErrForbidden) {
+		t.Fatalf("repo_remove with non-admin error = %v, want ErrForbidden", err)
+	}
+	if len(remover.removed) != 0 {
+		t.Fatalf("non-admin repo_remove removed %d repos, want 0", len(remover.removed))
+	}
+
+	// Admin actor succeeds.
+	admin := api.Actor{Identity: "admin@host", Fingerprint: "SHA256:admin", Admin: true}
+	result, err := service.CallTool(context.Background(), admin, "repo_remove",
+		json.RawMessage(`{"repo":"widget"}`))
+	if err != nil {
+		t.Fatalf("repo_remove with admin error = %v", err)
+	}
+	if len(remover.removed) != 1 || remover.removed[0] != "widget" {
+		t.Fatalf("admin repo_remove removed = %v, want [widget]", remover.removed)
+	}
+	resultMap, ok := result.(map[string]string)
+	if !ok {
+		t.Fatalf("repo_remove result type = %T", result)
+	}
+	if resultMap["removed"] != "widget" || resultMap["upstream"] != "test-upstream" {
+		t.Fatalf("repo_remove result = %v", resultMap)
+	}
+}

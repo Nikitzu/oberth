@@ -52,6 +52,12 @@ type RepositoryReader interface {
 	ListRepositories(context.Context) ([]model.Repository, error)
 }
 
+// RepositoryRemover is the narrow contract for repository removal, requiring
+// only the store's RemoveRepository and the git cache cleanup callback.
+type RepositoryRemover interface {
+	RemoveRepository(context.Context, string, string) (store.RemovedRepository, error)
+}
+
 type RunLookup interface {
 	ResolveRun(context.Context, int64, string) (model.Run, error)
 }

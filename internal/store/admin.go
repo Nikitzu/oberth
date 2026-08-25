@@ -148,6 +148,106 @@ func (s *Store) RemoveUpstream(ctx context.Context, actor, name string) ([]strin
 	return repositories, nil
 }
 
+// RemoveRepository atomically removes one repository mapping after verifying
+// no runs are in-flight and no promotions are pending. The upstream name is
+// resolved for the confirmation message. A repository that holds immutable CI
+// history (runs, promotions, receive events, publications, or issues) fails
+// the removal closed: history rows are immutable evidence and are never
+// cascaded away. Deletion is audited. No tombstone is left, so upstream
+// discovery can re-register the name on a future push.
+func (s *Store) RemoveRepository(ctx context.Context, actor, name string) (RemovedRepository, error) {
+	if strings.TrimSpace(actor) == "" || strings.TrimSpace(name) == "" {
+		return RemovedRepository{}, fmt.Errorf("%w: actor and repository name are required", ErrInvalid)
+	}
+	now := unixNano(s.now())
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return RemovedRepository{}, fmt.Errorf("begin repository removal: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	// Resolve the repository and its upstream name.
+	var repoID, upstreamID int64
+	var repoName, defaultBranch string
+	var created, updated int64
+	if err := tx.QueryRowContext(ctx, `
+SELECT id, name, upstream_id, default_branch, created_at, updated_at
+FROM repositories WHERE name = ?`, name).Scan(
+		&repoID, &repoName, &upstreamID, &defaultBranch, &created, &updated); err != nil {
+		return RemovedRepository{}, translateNotFound("repository", err)
+	}
+	var upstreamName string
+	if err := tx.QueryRowContext(ctx, `SELECT name FROM upstreams WHERE id = ?`, upstreamID).Scan(&upstreamName); err != nil {
+		return RemovedRepository{}, fmt.Errorf("resolve upstream name: %w", err)
+	}
+
+	// Safety: refuse if any run is queued or running.
+	var activeRuns int
+	if err := tx.QueryRowContext(ctx, `
+SELECT COUNT(*) FROM runs WHERE repo_id = ? AND status IN ('queued', 'running')`,
+		repoID).Scan(&activeRuns); err != nil {
+		return RemovedRepository{}, fmt.Errorf("check in-flight runs: %w", err)
+	}
+	if activeRuns > 0 {
+		return RemovedRepository{}, fmt.Errorf("%w: repository %s has %d in-flight run(s); wait for them to finish before removing",
+			ErrInvalidState, name, activeRuns)
+	}
+
+	// Safety: refuse if any promotion is pending.
+	var pendingPromotions int
+	if err := tx.QueryRowContext(ctx, `
+SELECT COUNT(*) FROM promotions WHERE repo_id = ? AND status = 'pending'`,
+		repoID).Scan(&pendingPromotions); err != nil {
+		return RemovedRepository{}, fmt.Errorf("check pending promotions: %w", err)
+	}
+	if pendingPromotions > 0 {
+		return RemovedRepository{}, fmt.Errorf("%w: repository %s has %d pending promotion(s); wait for them to finish before removing",
+			ErrInvalidState, name, pendingPromotions)
+	}
+
+	// Attempt deletion. FK constraints from runs, promotions, receive_events,
+	// publications, issues, ci_issue_work, ci_issue_projections, trusted_plans,
+	// and trusted_applies will fail the deletion if any immutable history exists.
+	if _, err := tx.ExecContext(ctx, `DELETE FROM repositories WHERE id = ?`, repoID); err != nil {
+		if strings.Contains(err.Error(), "FOREIGN KEY constraint failed") {
+			return RemovedRepository{}, fmt.Errorf("repository %s has immutable CI history; removal is not supported once runs exist", name)
+		}
+		return RemovedRepository{}, fmt.Errorf("remove repository: %w", err)
+	}
+	details, err := json.Marshal(map[string]string{
+		"name":     name,
+		"upstream": upstreamName,
+	})
+	if err != nil {
+		return RemovedRepository{}, fmt.Errorf("encode repository removal audit: %w", err)
+	}
+	if _, err := appendAuditAction(ctx, tx, model.AuditActionSpec{
+		Actor: actor, Action: "repository.remove", ResourceType: "repository",
+		ResourceID: fmt.Sprint(repoID), Details: string(details),
+	}, now); err != nil {
+		return RemovedRepository{}, fmt.Errorf("audit repository removal: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return RemovedRepository{}, fmt.Errorf("commit repository removal: %w", err)
+	}
+	return RemovedRepository{
+		Repository: model.Repository{
+			ID: repoID, Name: repoName, UpstreamID: upstreamID,
+			DefaultBranch: defaultBranch,
+			CreatedAt:     fromUnixNano(created), UpdatedAt: fromUnixNano(updated),
+		},
+		UpstreamName: upstreamName,
+	}, nil
+}
+
+// RemovedRepository carries the removed repository's identity and its upstream
+// name for the confirmation message. The Repository value is the state at
+// removal time.
+type RemovedRepository struct {
+	model.Repository
+	UpstreamName string
+}
+
 func listUpstreamRepositoryNames(ctx context.Context, tx *sql.Tx, upstreamID int64) ([]string, error) {
 	rows, err := tx.QueryContext(ctx, `SELECT name FROM repositories WHERE upstream_id = ? ORDER BY name`, upstreamID)
 	if err != nil {
