@@ -1,0 +1,256 @@
+package installer
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
+	"strings"
+
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+)
+
+// Client access is offered here, immediately after the uplink is registered,
+// because this is the only moment the bearer token exists in this process.
+// Every other placement has to ask the operator to paste back a credential the
+// install just printed, and a credential that gets pasted is a credential that
+// ends up in a shell history.
+//
+// Nothing in this file may fail an install. A cluster that will not answer for
+// its own TLS Secret, a home directory that will not accept a write, a refused
+// prompt: each of them means the operator finishes by hand, which is what the
+// table row says. Only ErrInterrupted propagates.
+
+const (
+	clientAccessBoth = iota
+	clientAccessCLI
+	clientAccessMCP
+	clientAccessNeither
+)
+
+// httpsNodePort is the chart's fixed HTTPS NodePort, the address the dashboard
+// and both clients reach the server on.
+const httpsNodePort = "30443"
+
+func offerClientAccess(ctx context.Context, cfg Config, deps Deps, tw *tableWriter, token string) error {
+	// Deliberately narrower than isInteractive: this offer prompts and writes
+	// files, but never drives an interactive subprocess, so RunInteractive is
+	// not among what it needs. Asking for more than it uses would make it
+	// untestable on its own and would skip silently in a session that could in
+	// fact answer.
+	if deps.IsTerminal == nil || !deps.IsTerminal() || deps.Input == nil {
+		return nil
+	}
+	if strings.TrimSpace(token) == "" {
+		// No token means no uplink was registered, so there is nothing either
+		// client could authenticate with.
+		tw.AppendRow("Client access", "no uplink token", "⚠ manual", false)
+		return nil
+	}
+
+	w := deps.Output
+	color := isColor(deps)
+
+	choice, err := selectOption(ctx, deps, color, "Client access",
+		[]string{"Both", "CLI only", "MCP only", "Neither"}, clientAccessBoth)
+	if err != nil {
+		if errors.Is(err, ErrInterrupted) {
+			return ErrInterrupted
+		}
+		tw.AppendRow("Client access", "not configured", "⚠ manual", false)
+		return nil
+	}
+	if choice < 0 {
+		choice = clientAccessBoth
+	}
+	if choice == clientAccessNeither {
+		tw.AppendRow("Client access", "declined", "skipped", false)
+		return nil
+	}
+
+	root, err := clientConfigRoot()
+	if err != nil {
+		tw.AppendRow("Client access", "no config directory", "⚠ manual", false)
+		return nil
+	}
+	if err := os.MkdirAll(root, 0700); err != nil {
+		tw.AppendRow("Client access", displayPath(root), "✗ error", false)
+		return nil
+	}
+
+	// The certificate is the deployment's, so it is read from the deployment
+	// rather than reconstructed. Since Oberth #236 OBERTH_CA_CERT replaces the
+	// system pool instead of adding to it, so this file is required even where
+	// the signer would otherwise be trusted.
+	caPath := filepath.Join(root, "ca.crt")
+	authority, err := serverCACertificate(ctx, cfg, deps)
+	if err != nil {
+		tw.AppendRow("Client access", "TLS certificate unreadable", "⚠ manual", false)
+		return nil
+	}
+	if err := atomicWriteFile(caPath, authority, 0600); err != nil {
+		tw.AppendRow("Client access", displayPath(caPath), "✗ error", false)
+		return nil
+	}
+
+	baseURL := "https://" + clientReachableHost(deps) + ":" + httpsNodePort
+	tokenCommand, tokenHint := tokenCommandForHost()
+
+	if choice == clientAccessBoth || choice == clientAccessCLI {
+		path := filepath.Join(root, "env")
+		if err := atomicWriteFile(path, []byte(renderClientEnv(baseURL, caPath, tokenCommand)), 0600); err != nil {
+			tw.AppendRow("CLI access", displayPath(path), "✗ error", false)
+		} else {
+			tw.AppendRow("CLI access", displayPath(path), "✓ written", false)
+		}
+	}
+	if choice == clientAccessBoth || choice == clientAccessMCP {
+		path := filepath.Join(root, "mcp.json")
+		body, marshalErr := renderMCPConfig(baseURL, tokenCommand)
+		if marshalErr != nil {
+			tw.AppendRow("MCP access", displayPath(path), "✗ error", false)
+		} else if err := atomicWriteFile(path, body, 0600); err != nil {
+			tw.AppendRow("MCP access", displayPath(path), "✗ error", false)
+		} else {
+			tw.AppendRow("MCP access", displayPath(path), "✓ written", false)
+		}
+	}
+
+	printClientAccessNotes(w, root, choice, tokenHint)
+	return nil
+}
+
+// renderClientEnv writes what the CLI reads and deliberately not the token.
+// OBERTH_TOKEN_COMMAND names a command whose output is the token, so the
+// credential lives in the platform's secret store and this file can be read by
+// anything without leaking one.
+func renderClientEnv(baseURL, caPath, tokenCommand string) string {
+	return fmt.Sprintf(`# Written by oberth install. Source it, or add it to your shell profile:
+#
+#     . %s
+#
+# No token is stored here. OBERTH_TOKEN_COMMAND names a command whose standard
+# output is the bearer token, so it comes from your secret store and never
+# lands in a file. Replace it if you keep credentials somewhere else.
+export OBERTH_BASE_URL=%q
+export OBERTH_CA_CERT=%q
+export OBERTH_TOKEN_COMMAND=%q
+`, displayPath(filepath.Join(filepath.Dir(caPath), "env")), baseURL, caPath, tokenCommand)
+}
+
+// renderMCPConfig uses headersHelper rather than a literal Authorization
+// header, so the same token command serves both clients and neither config
+// file holds a credential. The helper is Claude Code's; a client that does not
+// implement it needs a literal header, which is why the install prints that
+// rather than writing a credential for a client we cannot check.
+func renderMCPConfig(baseURL, tokenCommand string) ([]byte, error) {
+	type server struct {
+		Type          string `json:"type"`
+		URL           string `json:"url"`
+		HeadersHelper string `json:"headersHelper"`
+	}
+	document := map[string]map[string]server{
+		"mcpServers": {
+			"oberth": {
+				Type: "http",
+				URL:  baseURL + "/mcp",
+				HeadersHelper: fmt.Sprintf(
+					`printf '{"Authorization":"Bearer %%s"}' "$(%s)"`, tokenCommand),
+			},
+		},
+	}
+	body, err := json.MarshalIndent(document, "", "  ")
+	if err != nil {
+		return nil, err
+	}
+	return append(body, '\n'), nil
+}
+
+// serverCACertificate reads the certificate the chart issued, from the Secret
+// the chart wrote it to.
+func serverCACertificate(ctx context.Context, cfg Config, deps Deps) ([]byte, error) {
+	if deps.KubeClient == nil {
+		return nil, errors.New("no cluster client")
+	}
+	ns := cfg.Namespace
+	if ns == "" {
+		ns = DefaultNamespace
+	}
+	secret, err := deps.KubeClient.CoreV1().Secrets(ns).Get(ctx, "oberth-tls", metav1.GetOptions{})
+	if err != nil {
+		return nil, err
+	}
+	certificate, ok := secret.Data["tls.crt"]
+	if !ok || len(certificate) == 0 {
+		return nil, errors.New("oberth-tls carries no tls.crt")
+	}
+	return certificate, nil
+}
+
+// clientReachableHost names the address a host-side client should use. It has
+// to be one the certificate carries: a kind install issues localhost through
+// certificateNamesForKind, and any other deployment names its own with
+// --tls-extra-dns-name.
+func clientReachableHost(deps Deps) string {
+	return sshHostFromServer(deps)
+}
+
+// tokenCommandForHost proposes the platform's own secret store. The second
+// return value is the command that puts the token there, which the install
+// prints rather than runs: storing a credential is the operator's to do.
+func tokenCommandForHost() (read string, store string) {
+	switch runtime.GOOS {
+	case "darwin":
+		return "security find-generic-password -s oberth-token -w",
+			`security add-generic-password -s oberth-token -a "$USER" -w`
+	default:
+		if _, err := exec.LookPath("secret-tool"); err == nil {
+			return "secret-tool lookup service oberth",
+				`secret-tool store --label="Oberth uplink token" service oberth`
+		}
+		return "pass show oberth/token", "pass insert oberth/token"
+	}
+}
+
+// clientConfigRoot honours XDG_CONFIG_HOME and otherwise uses ~/.config on both
+// macOS and Linux. os.UserConfigDir would return ~/Library/Application Support
+// on macOS, which is right for an application and wrong for something an
+// operator edits and sources from a shell profile.
+func clientConfigRoot() (string, error) {
+	if base := strings.TrimSpace(os.Getenv("XDG_CONFIG_HOME")); base != "" {
+		return filepath.Join(base, "oberth"), nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, ".config", "oberth"), nil
+}
+
+// displayPath shortens a path under the home directory to ~/..., because an
+// absolute path to a home directory is noise in a terminal.
+func displayPath(path string) string {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" || !strings.HasPrefix(path, home+string(filepath.Separator)) {
+		return path
+	}
+	return "~" + strings.TrimPrefix(path, home)
+}
+
+func printClientAccessNotes(w interface{ Write([]byte) (int, error) }, root string, choice int, storeCommand string) {
+	_, _ = fmt.Fprintf(w, "\nStore the bearer token above where the config expects it:\n\n    %s\n", storeCommand)
+	if choice == clientAccessBoth || choice == clientAccessCLI {
+		_, _ = fmt.Fprintf(w, "\nThen:  . %s\n", displayPath(filepath.Join(root, "env")))
+	}
+	if choice == clientAccessBoth || choice == clientAccessMCP {
+		_, _ = fmt.Fprintf(w,
+			"\nMCP: merge %s into your client's configuration. It uses headersHelper,\n"+
+				"which Claude Code implements; a client without it needs a literal\n"+
+				"\"Authorization\": \"Bearer <token>\" header instead.\n",
+			displayPath(filepath.Join(root, "mcp.json")))
+	}
+}
