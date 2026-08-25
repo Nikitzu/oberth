@@ -122,6 +122,56 @@ func (c *Cache) ReleaseReachable(ctx context.Context, input, commit, admissionSH
 	return false, err
 }
 
+// ReachableFromUpstreamDefault checks whether a commit is an ancestor of the
+// cached upstream default branch. Unlike ReleaseReachable — which uses the
+// exact admission snapshot bound to a specific receive — this uses the latest
+// upstream tracking ref, refreshed at the last Ensure. It is the fragment
+// reachability gate (#213): a cross-repo pipeline fragment's tag commit must
+// be reachable from its source repository's upstream default branch before a
+// release-tier pipeline may inline it.
+//
+// Returns true if the commit is an ancestor, false if not, or an error if the
+// repository is not cached or the commit is not present.
+func (c *Cache) ReachableFromUpstreamDefault(ctx context.Context, input, commit string) (bool, error) {
+	if err := ValidateSHA(commit); err != nil {
+		return false, err
+	}
+	repo, path, err := c.path(input)
+	if err != nil {
+		return false, err
+	}
+	lock := c.repoLock(repo)
+	lock.Lock()
+	defer lock.Unlock()
+	if !c.isBare(ctx, path) {
+		return false, fmt.Errorf("repository %s is not cached", repo)
+	}
+	branch, err := c.currentDefaultBranch(ctx, path)
+	if err != nil {
+		return false, fmt.Errorf("resolve default branch for %s: %w", repo, err)
+	}
+	tracking := upstreamRefPrefix + "heads/" + branch
+	tipSHA, err := c.capture(ctx, path, "rev-parse", "--verify", tracking+"^{commit}")
+	if err != nil {
+		return false, fmt.Errorf("upstream default branch %s is not tracked for %s: %w", branch, repo, err)
+	}
+	tipSHA = strings.TrimSpace(tipSHA)
+	if err := ValidateSHA(tipSHA); err != nil {
+		return false, err
+	}
+	if err := c.assertCommit(ctx, path, commit); err != nil {
+		return false, fmt.Errorf("fragment commit %s is not present in %s cache: %w", commit, repo, err)
+	}
+	err = c.run(ctx, commandSpec{dir: path, args: []string{"merge-base", "--is-ancestor", commit, tipSHA}})
+	if err == nil {
+		return true, nil
+	}
+	if isExitCode(err, 1) {
+		return false, nil
+	}
+	return false, err
+}
+
 // PreparePromotion fetches the exact upstream target and creates a local merge
 // candidate. A fast-forward reuses an already-tested source SHA.
 func (c *Cache) PreparePromotion(ctx context.Context, input, sourceSHA, targetBranch, workspace string) (MergeCandidate, error) {
