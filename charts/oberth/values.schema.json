@@ -385,6 +385,33 @@
         "inNamespaceAllPorts": {
           "type": "boolean",
           "description": "Allow pipeline pods to reach any pod in the same namespace on any port. Broader than inNamespacePorts; intended for local development clusters."
+        },
+        "extraEgress": {
+          "type": "array",
+          "description": "Additional egress destinations pipeline pods may reach, as CIDR plus TCP ports. For services that are neither HTTPS nor in-namespace, such as a local model endpoint. Not enforced unless the cluster's CNI implements NetworkPolicy.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "cidr",
+              "ports"
+            ],
+            "properties": {
+              "cidr": {
+                "type": "string",
+                "description": "Destination CIDR, e.g. 0.250.250.254/32. NetworkPolicy cannot match a DNS name."
+              },
+              "ports": {
+                "type": "array",
+                "description": "TCP ports permitted to that CIDR.",
+                "items": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 65535
+                }
+              }
+            }
+          }
         }
       }
     },

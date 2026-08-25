@@ -65,6 +65,29 @@ spec:
           protocol: TCP
         {{- end }}
     {{- end }}
+    # Additional egress destinations a deployment explicitly permits, for
+    # services a pipeline needs that are neither HTTPS nor in-namespace. The
+    # motivating case is a local model endpoint: an OpenAI-compatible server
+    # on the host, reached on its own port.
+    #
+    # ipBlock, so each entry names an address range rather than a DNS name --
+    # NetworkPolicy cannot match a hostname, and a rule that silently matched
+    # nothing would be worse than no rule.
+    #
+    # Deliberately not folded into the HTTPS rule above. Port 443 already
+    # allows any destination, so routing a new service through it would work
+    # with no configuration at all -- and that is precisely the reason not to:
+    # it would hide a new egress path inside a rule written for something else.
+    {{- range .Values.networkPolicy.extraEgress }}
+    - to:
+        - ipBlock:
+            cidr: {{ required "networkPolicy.extraEgress[].cidr is required" .cidr }}
+      ports:
+        {{- range .ports }}
+        - port: {{ . }}
+          protocol: TCP
+        {{- end }}
+    {{- end }}
     # Secret store (OpenBao/Vault) for release credentials. Branch-tier pods
     # have no Vault token so the network path is harmless; Kubernetes
     # NetworkPolicy cannot scope egress by ServiceAccount — only by pod
