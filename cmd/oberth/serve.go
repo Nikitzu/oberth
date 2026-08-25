@@ -576,7 +576,8 @@ func serve(ctx context.Context, options serveOptions, logger *log.Logger) (resul
 		return err
 	}
 	argoJobs, err := buildArgoEngine(options, restConfig, kube, database, database, fragmentLoader, fileLoader,
-		artifactStoreAdapter{store: artifactStore}, options.artifactsLimitBytes, options.artifactsBudgetBytes)
+		artifactStoreAdapter{store: artifactStore, scanPatterns: artifacts.DefaultScanPatterns},
+		options.artifactsLimitBytes, options.artifactsBudgetBytes)
 	if err != nil {
 		return err
 	}

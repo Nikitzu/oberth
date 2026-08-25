@@ -205,10 +205,13 @@ func newArgoExecStreamer(restConfig *rest.Config, kube kubernetes.Interface) arg
 
 type artifactStoreAdapter struct {
 	store *artifacts.Store
+	// scanPatterns is the redaction gate set (#208) every extraction runs
+	// under; the persisting call site sets it to DefaultScanPatterns.
+	scanPatterns []string
 }
 
 func (adapter artifactStoreAdapter) Extract(runID string, stream io.Reader, limit int64) error {
-	_, err := adapter.store.Extract(runID, stream, limit)
+	_, err := adapter.store.Extract(runID, stream, limit, adapter.scanPatterns)
 	return err
 }
 

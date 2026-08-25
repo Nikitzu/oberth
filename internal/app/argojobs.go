@@ -406,7 +406,7 @@ func (jobs *ArgoJobs) Wait(ctx context.Context, name string, destination io.Writ
 	if err != nil {
 		return service.JobResult{}, err
 	}
-	if reason := jobs.collectArtifacts(context.WithoutCancel(ctx), name, intent.runID); reason != "" {
+	if reason := jobs.collectArtifacts(context.WithoutCancel(ctx), name, intent.runID, intent.trigger); reason != "" {
 		jobs.recordArtifactFailure(context.WithoutCancel(ctx), intent.runID, reason)
 	}
 	return jobs.result(completion), nil

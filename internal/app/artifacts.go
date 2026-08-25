@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"io"
 
+	"github.com/oberthci/oberth/internal/artifacts"
 	"github.com/oberthci/oberth/internal/model"
+	"github.com/oberthci/oberth/pkg/periapsis"
 )
 
 type ArtifactCollector interface {
@@ -26,8 +28,16 @@ func (jobs *ArgoJobs) SetArtifacts(collector ArtifactCollector, store ArtifactSt
 	jobs.artifactBudget = budget
 }
 
-func (jobs *ArgoJobs) collectArtifacts(ctx context.Context, workflowName, runID string) string {
+func (jobs *ArgoJobs) collectArtifacts(ctx context.Context, workflowName, runID string, trigger periapsis.Trigger) string {
 	if jobs.collector == nil || jobs.artifacts == nil {
+		return ""
+	}
+	// Tier gate (#208): only CI-trigger runs persist artifacts. Credentialed
+	// tiers (release, plan, apply) hold secret material under the memory-only
+	// contract; a release step that wrote a credential into OBERTH_ARTIFACTS
+	// must never see it copied onto the server's /data PVC. The skip is
+	// silent by design — it is static policy, not a per-run failure.
+	if !artifacts.TierGated(string(trigger)) {
 		return ""
 	}
 	archive, err := jobs.collector.Collect(ctx, workflowName)

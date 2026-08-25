@@ -10,7 +10,7 @@ import (
 
 func storeRun(t *testing.T, store *Store, runID, body string, age time.Duration) {
 	t.Helper()
-	if _, err := store.Extract(runID, archiveOf(t, member{name: "report.txt", body: body}), 1<<20); err != nil {
+	if _, err := store.Extract(runID, archiveOf(t, member{name: "report.txt", body: body}), 1<<20, DefaultScanPatterns); err != nil {
 		t.Fatalf("seed %s: %v", runID, err)
 	}
 	stamp := time.Now().Add(-age)

@@ -41,6 +41,9 @@ func (server *Server) handleRunArtifactDownload(writer http.ResponseWriter, requ
 		return
 	}
 	writeArtifactHeaders(writer, name)
+	// #nosec G705 -- served as application/octet-stream attachment with
+	// X-Content-Type-Options: nosniff and CSP default-src 'none'; sandbox.
+	// The response is a forced download, never rendered.
 	_, _ = writer.Write(body.ArtifactBytes())
 }
 
