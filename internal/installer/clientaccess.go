@@ -116,12 +116,20 @@ func offerClientAccess(ctx context.Context, cfg Config, deps Deps, tw *tableWrit
 	if choice == clientAccessBoth || choice == clientAccessMCP {
 		path := filepath.Join(root, "mcp.json")
 		body, marshalErr := renderMCPConfig(baseURL, tokenCommand)
-		if marshalErr != nil {
+		switch {
+		case marshalErr != nil:
 			tw.AppendRow("MCP access", displayPath(path), "✗ error", false)
-		} else if err := atomicWriteFile(path, body, 0600); err != nil {
+		case atomicWriteFile(path, body, 0600) != nil:
 			tw.AppendRow("MCP access", displayPath(path), "✗ error", false)
-		} else {
-			tw.AppendRow("MCP access", displayPath(path), "✓ written", false)
+		default:
+			// The file alone configures nothing: no client reads this path. It
+			// is written as the record, and the client is registered through
+			// its own documented command where one exists.
+			if registerWithClaudeCode(ctx, deps, body) {
+				tw.AppendRow("MCP access", "registered with Claude Code", "✓ ready", false)
+			} else {
+				tw.AppendRow("MCP access", displayPath(path), "✓ written", false)
+			}
 		}
 	}
 
@@ -335,4 +343,46 @@ func reinstallFlagsFor(cfg Config) string {
 		flags.WriteString(" --tls-extra-ip " + address)
 	}
 	return flags.String()
+}
+
+// registerWithClaudeCode adds the server through the client's own documented
+// command rather than by editing its configuration file, which is the client's
+// to own and whose shape may change. Reports whether it succeeded.
+//
+// The JSON carries a headersHelper and no credential, so nothing sensitive
+// reaches the argument list.
+func registerWithClaudeCode(ctx context.Context, deps Deps, config []byte) bool {
+	lookPath := deps.LookPath
+	if lookPath == nil {
+		lookPath = exec.LookPath
+	}
+	if _, err := lookPath("claude"); err != nil {
+		return false
+	}
+	server, err := claudeServerEntry(config)
+	if err != nil {
+		return false
+	}
+	run := deps.RunCommand
+	if run == nil {
+		run = DefaultRunCommand
+	}
+	_, err = run(ctx, nil, "claude", "mcp", "add-json", "oberth", string(server), "--scope", "user")
+	return err == nil
+}
+
+// claudeServerEntry unwraps the mcpServers envelope, because add-json takes the
+// server object itself rather than the file a manual setup would write.
+func claudeServerEntry(config []byte) ([]byte, error) {
+	var document struct {
+		MCPServers map[string]json.RawMessage `json:"mcpServers"`
+	}
+	if err := json.Unmarshal(config, &document); err != nil {
+		return nil, err
+	}
+	entry, ok := document.MCPServers["oberth"]
+	if !ok {
+		return nil, errors.New("rendered configuration has no oberth server")
+	}
+	return entry, nil
 }
