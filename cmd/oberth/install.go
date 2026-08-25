@@ -65,6 +65,12 @@ func runInstall(ctx context.Context, arguments []string, input io.Reader, output
 			"`oberth access allow` records, e.g. oberth/data/release/cosign-secret); synced into the "+
 			"RELEASE-tier credentialed Vault policy as an exact read grant when --install-secretstore "+
 			"reconciles the store — the branch-tier ci-secrets policy never receives grants")
+	var valuesFiles stringList
+	flags.Var(&valuesFiles, "values",
+		"helm values file applied to the Oberth release (repeatable, applied in order); "+
+			"the installer's own settings still win, so a value it computed cannot be "+
+			"overridden by a stale one in a file")
+	flags.Var(&valuesFiles, "f", "shorthand for --values")
 	var tlsExtraDNSNames stringList
 	flags.Var(&tlsExtraDNSNames, "tls-extra-dns-name",
 		"additional DNS name the generated server certificate is issued for (repeatable), beyond the "+
@@ -93,6 +99,7 @@ func runInstall(ctx context.Context, arguments []string, input io.Reader, output
 	cfg.BinaryVersion = version
 	cfg.SecretStoreUndecided = !cfg.InstallSecretStore && !cfg.InstallSecretStoreDev
 	cfg.CredentialedSecretPaths = credentialedSecretPaths
+	cfg.ValuesFiles = valuesFiles
 	cfg.TLSExtraDNSNames = tlsExtraDNSNames
 	cfg.TLSExtraIPs = tlsExtraIPs
 
