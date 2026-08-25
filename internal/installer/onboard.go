@@ -71,6 +71,13 @@ func FinishInstall(ctx context.Context, cfg Config, deps Deps, tw *tableWriter, 
 		return PrintNextSteps(cfg, deps.Output)
 	}
 	if configured {
+		// An upstream already exists, so there is nothing to onboard. The
+		// client offer still belongs here: it is about this machine, not about
+		// the deployment, and a second machine reaches a server that is already
+		// set up.
+		if err := offerClientAccessToConfiguredDeployment(ctx, cfg, deps, tw); err != nil {
+			return err
+		}
 		return waitAndAnnounceReady(ctx, cfg, deps)
 	}
 

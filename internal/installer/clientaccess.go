@@ -56,7 +56,40 @@ func offerClientAccess(ctx context.Context, cfg Config, deps Deps, tw *tableWrit
 		tw.AppendRow("Client access", "no uplink token", "⚠ manual", false)
 		return nil
 	}
+	return runClientAccessOffer(ctx, cfg, deps, tw, true)
+}
 
+// offerClientAccessToConfiguredDeployment reaches the same offer on an install
+// that had nothing to onboard.
+//
+// The offer previously lived only inside first-time onboarding, so a deployment
+// that already had an upstream went straight to "Ready" and never mentioned it.
+// Anyone who declined it once, whose install failed partway, or who is setting
+// up a second machine had no route back: they reconstructed three environment
+// variables and a CA by hand from documentation.
+//
+// Nothing is written when this machine is already configured, or a working
+// setup would end every install with a prompt that has nothing to do. No fresh
+// token exists on this path and none is needed: the files name a command that
+// reads one, they never hold it.
+func offerClientAccessToConfiguredDeployment(ctx context.Context, cfg Config, deps Deps, tw *tableWriter) error {
+	if deps.IsTerminal == nil || !deps.IsTerminal() || deps.Input == nil {
+		return nil
+	}
+	root, err := clientConfigRoot()
+	if err != nil {
+		return nil
+	}
+	if _, statErr := os.Stat(filepath.Join(root, "env")); statErr == nil {
+		return nil
+	}
+	if _, statErr := os.Stat(filepath.Join(root, "mcp.json")); statErr == nil {
+		return nil
+	}
+	return runClientAccessOffer(ctx, cfg, deps, tw, false)
+}
+
+func runClientAccessOffer(ctx context.Context, cfg Config, deps Deps, tw *tableWriter, freshToken bool) error {
 	w := deps.Output
 	color := isColor(deps)
 
@@ -133,7 +166,7 @@ func offerClientAccess(ctx context.Context, cfg Config, deps Deps, tw *tableWrit
 		}
 	}
 
-	printClientAccessNotes(w, root, choice, tokenHint)
+	printClientAccessNotes(w, root, choice, tokenHint, freshToken)
 	return nil
 }
 
@@ -254,8 +287,16 @@ func displayPath(path string) string {
 	return "~" + strings.TrimPrefix(path, home)
 }
 
-func printClientAccessNotes(w io.Writer, root string, choice int, storeCommand string) {
-	_, _ = fmt.Fprintf(w, "\nStore the bearer token above where the config expects it:\n\n    %s\n", storeCommand)
+func printClientAccessNotes(w io.Writer, root string, choice int, storeCommand string, freshToken bool) {
+	if freshToken {
+		_, _ = fmt.Fprintf(w, "\nStore the bearer token above where the config expects it:\n\n    %s\n", storeCommand)
+	} else {
+		// No token was minted on this path, so the instruction is conditional:
+		// the configuration is inert until one is there, and saying nothing
+		// would leave a first command that fails for a reason nobody named.
+		_, _ = fmt.Fprintf(w,
+			"\nThis assumes an uplink token is already in your secret store. If not,\nregister an uplink and store what it prints:\n\n    %s\n", storeCommand)
+	}
 	if choice == clientAccessBoth || choice == clientAccessCLI {
 		_, _ = fmt.Fprintf(w, "\nThen:  . %s\n", displayPath(filepath.Join(root, "env")))
 	}
