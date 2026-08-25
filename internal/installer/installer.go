@@ -157,6 +157,14 @@ type Config struct {
 	// exact-path grants alongside the upstream/* wildcard. Populated from
 	// the approval table when the installer syncs the policy to OpenBao.
 	CredentialedSecretPaths []string
+
+	// ValuesFiles are helm values files applied to the Oberth release, in the
+	// order given, so a deployment can express its own settings at install time
+	// rather than reconciling afterwards with a second command. Applied before
+	// the installer's own --set flags, which therefore still win: a value this
+	// process computed, such as the address of the secret store it just
+	// created, must not be replaced by a stale one in a file.
+	ValuesFiles []string
 	// NetworkPolicy controls pipeline egress NetworkPolicy enforcement:
 	// "auto" (default) enables on all CNIs except k3s's built-in kube-router
 	// (which has a DNAT incompatibility), "true" forces on, "false" forces off.
@@ -1303,6 +1311,12 @@ func OberthHelmArgs(cfg Config, openbao OpenBaoResult, rekor RekorResult) []stri
 	args := []string{
 		"upgrade", "--install", "oberth", chart,
 		"-n", ns, "--create-namespace",
+	}
+	// Before every --set below, so the installer's own values take precedence,
+	// and in the order given, because helm resolves overlapping files by
+	// argument order and reordering them would invert an override.
+	for _, file := range cfg.ValuesFiles {
+		args = append(args, "-f", file)
 	}
 	if image := strings.TrimSpace(cfg.ImageRef); image != "" {
 		args = append(args, "--set-string", "image.ref="+image)
