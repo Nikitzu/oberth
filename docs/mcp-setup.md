@@ -30,6 +30,45 @@ The token is never stored or recoverable. If lost, create a new uplink.
 
 ## 2. Configure Claude Code
 
+`oberth install` offers to write this for you on an interactive install, right
+after it registers the uplink, into `~/.config/oberth/mcp.json`. What follows is
+the same thing by hand, and the explanation of why it is shaped the way it is.
+
+### Keep the token out of the file
+
+The obvious configuration puts the bearer token in a literal header, and then a
+credential lives in a file for as long as the file does. `headersHelper` names a
+command that prints the headers instead, run fresh on every connection:
+
+```json
+{
+  "mcpServers": {
+    "oberth": {
+      "type": "http",
+      "url": "https://oberth:30443/mcp",
+      "headersHelper": "printf '{\"Authorization\":\"Bearer %s\"}' \"$(security find-generic-password -s oberth-token -w)\""
+    }
+  }
+}
+```
+
+That is the same command `OBERTH_TOKEN_COMMAND` names for the CLI, so one
+secret source serves both clients and neither configuration file holds a
+credential. Substitute your own: `secret-tool lookup service oberth`,
+`pass show oberth/token`, `op read op://vault/oberth/credential`.
+
+Three things worth knowing before relying on it. The command runs in a shell
+with a ten second budget and its result is not cached, so a keychain read is
+comfortable and an interactive unlock may not be. A project- or local-scope
+server runs the helper only once the folder is trusted. And on a 401 or 403 the
+helper is re-run once and the call retried, so a rotated uplink token recovers
+without editing anything.
+
+`headersHelper` is Claude Code's rather than part of MCP. A client that does not
+implement it needs the literal header below.
+
+### With a literal token
+
 Add to `.claude/settings.local.json` (user-scoped, never committed) or user-level
 config. **Do not** place bearer tokens in `.claude/settings.json` — that file
 is typically checked into the repository.
@@ -56,8 +95,14 @@ proxy (an ingress, a Cloudflare Tunnel you operate), point the URL at that
 hostname instead; a publicly trusted certificate there removes the
 client-side trust step below.
 
-Direct access uses a self-signed certificate. The client must trust it.
-Export the certificate and add it to the system trust store:
+Direct access uses a self-signed certificate, and the chart issues it for
+in-cluster names only. Reaching the server on any other address is a hostname
+mismatch, which no amount of trust configuration repairs, so name the address
+first: `oberth install --tls-extra-dns-name <name>` (a macOS kind install adds
+`localhost` and `127.0.0.1` by itself). Only then is trusting the certificate
+the remaining problem.
+
+Export it and add it to the system trust store:
 
 ```bash
 kubectl get secret -n oberth oberth-tls \
@@ -92,7 +137,9 @@ curl --fail-with-body --silent \
   "https://oberth:30443/mcp"
 ```
 
-A successful response returns 21 tools. Behind an operator-run TLS-terminating
+A successful response lists the server's tools; `oberth version` and this
+server's own `status` tool are the authorities on how many it should be, since
+the count moves with the release. Behind an operator-run TLS-terminating
 proxy with a publicly trusted certificate, drop `--cacert` and `--resolve` and
 call the proxy hostname directly.
 

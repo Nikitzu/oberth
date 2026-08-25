@@ -6,6 +6,16 @@ machine you pushed from.
 
 ## Configuration
 
+`oberth install` offers to write this on an interactive install, right after it
+registers the uplink, into `~/.config/oberth/env`. Source it, or copy the three
+variables into your shell profile:
+
+```
+. ~/.config/oberth/env
+```
+
+The rest of this section is what that file contains and why.
+
 | Variable | Meaning |
 |---|---|
 | `OBERTH_BASE_URL` | The server's address. Setting it is what makes a command read the server |
@@ -82,8 +92,20 @@ client: the server's certificate does not cover "localhost"; it is issued for
 oberth, oberth.oberth, oberth.oberth.svc, oberth.oberth.svc.cluster.local
 ```
 
-The default chart issues a certificate for in-cluster names only, so a developer
-reaching the server on any other address will hit this. Either reach it by a
-name the certificate carries, or have whoever runs the server add the address
-they expect people to use. This is a deployment decision, not something the
-client should route around.
+The chart issues a certificate for the four in-cluster names, plus whatever the
+deployment adds with `tls.extraDNSNames` and `tls.extraIPs`
+(`oberth install --tls-extra-dns-name`, `--tls-extra-ip`). A macOS kind install
+names `localhost` and `127.0.0.1` by itself, since its NodePorts are bound to
+the loopback interface and both are therefore true of it.
+
+So a developer who hits this is looking at a deployment that has not named the
+address they are using. Either reach it by a name the certificate carries, or
+have whoever runs the server add the one they expect people to use. This is a
+deployment decision, not something the client should route around, and it is
+why the names are a chart value rather than a client flag.
+
+Changing those values on an existing release has no effect on its own: the TLS
+Secret is generated once and kept, so the certificate is re-issued only after
+that Secret is deleted. Re-issuing does not invalidate an uplink, which is keyed
+by SSH public-key fingerprint, but it does change the TLS fingerprint people
+compared out of band.
