@@ -10,7 +10,7 @@ const listPollMs = 4000;
 const slowPollMs = 10000;
 const livePollMs = 2000;
 const state = {
-  repos: [], runs: [], status: null,
+  repos: [], runs: [], repoRuns: [], status: null,
   timer: null, routeSeq: 0,
   filter: localStorage.getItem("oberth-filter") || "all",
   repo: localStorage.getItem("oberth-repo") || "all",
@@ -274,6 +274,15 @@ function setAuto(ms) {
 /* ---------- data loading ---------- */
 async function loadRepos() { state.repos = await api("/api/repos") || []; }
 async function loadRuns() { state.runs = await api("/api/runs?limit=100") || []; }
+async function loadRepoRuns() {
+  if (state.repo === "all") { state.repoRuns = []; return; }
+  try {
+    state.repoRuns = await api(`/api/runs?limit=100&repo=${enc(state.repo)}`) || [];
+  } catch (err) {
+    if (err.status === 404) { state.repo = "all"; localStorage.setItem("oberth-repo", "all"); state.repoRuns = []; return; }
+    throw err;
+  }
+}
 async function loadStatus() {
   state.status = await api("/api/status");
   setVersion(true, state.status?.version);
@@ -299,11 +308,13 @@ function runsTable(runs) {
 }
 async function renderRuns(seq) {
   setChrome("runs", "/ runs");
-  await Promise.all([loadRepos(), loadRuns()]);
+  await Promise.all([loadRepos(), loadRuns(), loadRepoRuns()]);
   if (!currentRoute(seq)) return;
   localStorage.setItem("oberth-filter", state.filter);
   localStorage.setItem("oberth-repo", state.repo);
-  const runs = state.runs, visible = runs.filter(runMatches), counts = repoCounts(runs);
+  const runs = state.runs, source = state.repo !== "all" ? state.repoRuns : runs;
+  const visible = source.filter(runMatches), counts = repoCounts(runs);
+  if (state.repo !== "all") counts.set(state.repo, state.repoRuns.length);
   const running = runs.filter(run => run.Status === "running").length;
   const queued = runs.filter(run => run.Status === "queued").length;
   const failed = runs.filter(run => run.Status === "failed").length;
@@ -637,7 +648,7 @@ function upstreamName(upstreamID) {
   return info ? info.name : (upstreamID ? "#" + upstreamID : "--");
 }
 function historyStrip(runs) {
-  return `<div class="history" aria-label="recent runs, oldest to newest">${runs.slice(0, 12).reverse().map(run => `<i class="${statusKind(run.Status)}" title="${esc(`${run.Ref} · ${statusLabel(run.Status)} · ${fmtTime(runWhen(run))}`)}"></i>`).join("") || '<span class="meta">--</span>'}</div>`;
+  return `<div class="history" aria-label="recent runs, oldest to newest">${runs.slice(0, 12).reverse().map(run => `<button type="button" class="hist ${statusKind(run.Status)}" data-run-id="${esc(run.ID)}" title="${esc(`${shortSha(run.SHA)} · ${run.RefKind === "tag" ? "tag" : "branch"} ${run.Ref} · ${statusLabel(run.Status)} · ${ago(runWhen(run))}`)}"></button>`).join("") || '<span class="meta">--</span>'}</div>`;
 }
 async function renderRepos(seq) {
   setChrome("repos", "/ repos");
@@ -855,6 +866,10 @@ app.addEventListener("click", event => {
     return;
   }
   if ((target = event.target.closest("[data-open-issue]"))) { openIssue(target.dataset.openIssue, target); return; }
+  /* data-run-id before data-repo-runs is load-bearing: history-strip buttons
+     carry data-run-id inside a repo row that carries data-repo-runs — reversing
+     the order would swallow the click and navigate to the filtered list instead
+     of the run detail page. */
   if ((target = event.target.closest("[data-run-id]"))) { go(`/runs/${enc(target.dataset.runId)}`); return; }
   if ((target = event.target.closest("[data-repo-runs]"))) { state.repo = target.dataset.repoRuns; go("/runs"); return; }
   if ((target = event.target.closest("[data-repo-filter]"))) { state.repo = target.dataset.repoFilter; route(); return; }
