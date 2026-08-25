@@ -18,6 +18,8 @@ const state = {
   logCache: new Map(),
   live: null, // assigned per-run by liveLogContent
   issueKind: "", issueState: "open", issueRepo: "", issueCursor: 0, issueCursorHistory: [],
+  issueItems: [], issueNext: 0, issueLoading: false,
+  logWrap: localStorage.getItem("oberth.logWrap") === "1",
   issuePage: null, issueOpener: null,
   lastList: "/runs",
   stream: localStorage.getItem("oberth-stream") || "needs",
@@ -760,15 +762,15 @@ async function renderRunDetailView(detail, seq) {
         }).join("")}</div></div>`;
       }).join("") || '<div class="empty">No step results recorded yet.</div>'}
     </div>
-    <div class="logp">
+    <div class="logp${state.logWrap ? " wrapping" : ""}">
       <div class="log-h">
         ${live ? '<span class="live"><span class="dot run"></span>live</span>' : ""}
         <span>${selected ? esc(stepKey(selected)) : "run summary"}</span>
         ${selected ? `<label class="logfilter"><input id="logFilter" type="search" autocomplete="off" placeholder="filter lines" value="${esc(state.logPattern)}"></label>` : ""}
         ${logMetaLabel()}
-        <div class="rt"><button class="copy-btn" data-copy-text="${esc(run.ID)}">copy run id</button></div>
+        <div class="rt"><button class="copy-btn" data-action="toggle-wrap" aria-pressed="${state.logWrap ? "true" : "false"}">${state.logWrap ? "no wrap" : "wrap"}</button><button class="copy-btn" data-copy-text="${esc(run.ID)}">copy run id</button></div>
       </div>
-      <div id="termBody" class="logbody">${terminal}</div>
+      <div id="termBody" class="logbody${state.logWrap ? " wrapped" : ""}">${terminal}</div>
       ${artifactStrip(run.ID, artifacts)}
     </div>
     </div>
@@ -898,7 +900,8 @@ function issueRow(issue) {
   // is. Counts and times carry no glyph because the column header names them.
   return `<button type="button" class="issue-cols issue-row" data-open-issue="${esc(issue.ID)}" aria-label="Open internal issue ${esc(issue.ID)}: ${esc(issue.Title)}"><span class="sha">#${esc(issue.ID)}</span>${pill(issue.State, issue.State === "open" ? "fail" : "pass")}<span class="clip">${esc(issue.RepoID ? repoName(issue.RepoID) : "workspace")}</span><span class="branch clip">${esc(issue.Branch || "--")}</span><span class="issue-title" title="${esc(issue.Title)}">${esc(issue.Title)}</span><span class="num" title="occurrences">${esc(issue.Occurrences || 1)}</span><span class="num" title="updated ${esc(fmtTime(issue.UpdatedAt))}">${esc(ago(issue.UpdatedAt))}</span></button>`;
 }
-async function renderIssues(seq) {
+async function renderIssues(seq, options) {
+  const append = Boolean(options && options.append);
   setChrome("issues");
   if (!state.repos.length) { try { await loadRepos(); } catch { /* names fall back */ } }
   let page;
@@ -911,7 +914,11 @@ async function renderIssues(seq) {
   }
   if (!currentRoute(seq)) return;
   state.issuePage = page;
-  const issues = page.Issues || [];
+  // Accumulate across pages. A fresh render replaces, an appended one extends,
+  // and the cursor for the next request lives beside the rows it follows.
+  state.issueItems = append ? state.issueItems.concat(page.Issues || []) : (page.Issues || []);
+  state.issueNext = page.NextBefore || 0;
+  const issues = state.issueItems;
   const kinds = [["", "all"], ["ci", "ci"], ["manual", "manual"]];
   const states = [["open", "open"], ["closed", "closed"], ["", "all"]];
   replaceApp(`
@@ -922,21 +929,53 @@ async function renderIssues(seq) {
       <span class="status-divider"></span>
       ${states.map(([value, label]) => `<button class="schip ${state.issueState === value ? "on" : ""}" data-issue-state="${esc(value)}">${esc(label)}</button>`).join("")}
       <label>repo <select data-action="issue-repo"><option value="">all</option>${state.repos.map(repo => `<option value="${esc(repo.Name)}" ${state.issueRepo === repo.Name ? "selected" : ""}>${esc(repo.Name)}</option>`).join("")}</select></label>
-      <span class="sstat">${issues.length} shown${state.issueCursorHistory.length ? ` · page ${state.issueCursorHistory.length + 1}` : ""}</span>
+      <span class="sstat">${issues.length} shown</span>
     </div>
     ${issues.length ? `<div class="panel"><div class="issue-cols issue-head" aria-hidden="true"><span>id</span><span>state</span><span>repo</span><span>branch</span><span>title</span><span class="num">seen</span><span class="num">updated</span></div>${issues.map(issueRow).join("")}
     <div class="issue-pager">
-      <button type="button" class="btn" data-action="issue-newer" ${state.issueCursorHistory.length ? "" : "disabled"}>&lsaquo; newer</button>
-      <button type="button" class="btn" data-action="issue-older" ${page.NextBefore ? "" : "disabled"}>older &rsaquo;</button>
+      ${page.NextBefore
+        ? `<button type="button" class="btn" data-action="issue-more" id="issueMore">load more</button>`
+        : `<span class="meta">end of the ledger</span>`}
     </div></div>` : '<div class="empty">No internal issues match these filters.</div>'}
   </section>`);
+  watchIssueTail();
   setAuto(slowPollMs);
 }
 function changeIssueFilter(patch) {
   Object.assign(state, patch);
   state.issueCursor = 0;
   state.issueCursorHistory = [];
+  state.issueItems = [];
+  state.issueNext = 0;
   route();
+}
+
+// Append the next page. Guarded against re-entry because the observer fires
+// again while the request is still in flight, which would ask for the same
+// cursor twice and duplicate every row.
+async function loadMoreIssues() {
+  if (state.issueLoading || !state.issueNext) return;
+  state.issueLoading = true;
+  const button = document.getElementById("issueMore");
+  if (button) { button.disabled = true; button.textContent = "loading"; }
+  try {
+    state.issueCursor = state.issueNext;
+    await renderIssues(state.seq, { append: true });
+  } finally {
+    state.issueLoading = false;
+  }
+}
+
+// Auto-load when the control scrolls into view. The button underneath is what
+// keyboard and screen-reader users reach, so this only saves a click; it never
+// becomes the only way forward.
+function watchIssueTail() {
+  const button = document.getElementById("issueMore");
+  if (!button || !("IntersectionObserver" in window)) return;
+  const observer = new IntersectionObserver(entries => {
+    if (entries.some(entry => entry.isIntersecting)) loadMoreIssues();
+  }, { rootMargin: "240px" });
+  observer.observe(button);
 }
 function openIssue(id, opener) {
   const issue = (state.issuePage?.Issues || []).find(item => String(item.ID) === String(id));
@@ -1055,13 +1094,19 @@ document.addEventListener("click", event => {
     case "submit-token": submitToken(); break;
     case "close-issue": closeIssue(); break;
     case "issue-retry": route(); break;
-    case "issue-older": {
-      const next = state.issuePage?.NextBefore;
-      if (next) { state.issueCursorHistory.push(state.issueCursor); state.issueCursor = next; route(); }
-      break;
-    }
-    case "issue-newer": {
-      if (state.issueCursorHistory.length) { state.issueCursor = state.issueCursorHistory.pop(); route(); }
+    case "issue-more": loadMoreIssues(); break;
+    case "toggle-wrap": {
+      state.logWrap = !state.logWrap;
+      localStorage.setItem("oberth.logWrap", state.logWrap ? "1" : "0");
+      const body = document.getElementById("termBody");
+      const pane = body && body.closest(".logp");
+      if (body) body.classList.toggle("wrapped", state.logWrap);
+      if (pane) pane.classList.toggle("wrapping", state.logWrap);
+      const button = target.closest("[data-action=toggle-wrap]");
+      if (button) {
+        button.textContent = state.logWrap ? "no wrap" : "wrap";
+        button.setAttribute("aria-pressed", state.logWrap ? "true" : "false");
+      }
       break;
     }
   }

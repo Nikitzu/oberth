@@ -75,7 +75,10 @@ a{color:inherit}
   border:1px solid var(--line2);line-height:1.5;font-family:var(--mono);color:var(--dim)}
 
 .main{min-width:0}
-.screen{max-width:1080px;margin:0 auto;padding:22px 20px 44px}
+.screen{max-width:1440px;margin:0 auto;padding:22px 20px 44px}
+/* Prose keeps a reading measure even when the page does not. Widening the
+   shell must not widen a paragraph to 1400px. */
+.screen p.meta,.screen .prose{max-width:76ch}
 .bar{display:flex;align-items:baseline;gap:12px;margin-bottom:18px}
 .bar h1{font-size:16px;margin:0;font-weight:600;letter-spacing:-.01em}
 .meta{font-size:11px;color:var(--dim)}
@@ -242,11 +245,21 @@ option{background:var(--panel);color:var(--fg)}
   border-bottom:1px solid var(--line);font-size:10.5px;color:var(--dim)}
 .log-h .live{display:flex;align-items:center;gap:6px;color:var(--run)}
 .log-h .rt{margin-left:auto;display:flex;gap:8px}
-.logbody{margin:0;padding:10px 0;overflow:auto;font-size:11.5px;color:var(--tfg);height:66vh}
+.logbody{margin:0;padding:10px 0;overflow:auto;font-size:11.5px;color:var(--tfg);
+  /* Header, filter row and page padding come off the viewport; the floor keeps
+     it usable on a short window. */
+  height:max(320px,calc(100vh - 260px))}
 .log-line{display:flex;gap:12px;padding:0 14px;white-space:pre;font-family:var(--mono)}
 .log-line:hover{background:var(--panel2)}
 .log-no{color:var(--tdim);text-align:right;width:44px;flex:none;user-select:none}
 .log-txt{flex:1;min-width:0}
+.logbody.wrapped .log-line{white-space:pre-wrap;overflow-wrap:anywhere}
+.logbody.wrapped .log-txt{white-space:pre-wrap}
+/* The fade sits on the pane, not the line, so it does not scroll away with
+   the text it is marking. */
+.logp{position:relative}
+.logp:not(.wrapping)::after{content:"";position:absolute;right:0;top:34px;bottom:0;width:52px;
+  pointer-events:none;background:linear-gradient(90deg,transparent,var(--tbg))}
 .log-line.err{background:var(--fail-bg)}
 .log-line.err .log-txt{color:var(--fail)}
 .log-line.ok .log-txt{color:var(--pass)}

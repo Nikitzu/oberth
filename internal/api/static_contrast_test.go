@@ -178,3 +178,42 @@ func luminance(t *testing.T, hex string) float64 {
 	}
 	return 0.2126*channels[0] + 0.7152*channels[1] + 0.0722*channels[2]
 }
+
+// TestIssuePaginationCannotDoubleLoad guards the append path.
+//
+// The observer fires again while a request is still in flight, so without a
+// re-entry guard the same cursor is requested twice and every row in that page
+// appears twice. Nothing in the UI would look broken; the list would just
+// quietly repeat itself.
+func TestIssuePaginationCannotDoubleLoad(t *testing.T) {
+	script := string(staticAssets["app.js"].body)
+	body := regexp.MustCompile(`async function loadMoreIssues\(\)[\s\S]*?\n}`).FindString(script)
+	if body == "" {
+		t.Fatal("loadMoreIssues not found in app.js")
+	}
+	// Assert the flag gates the early return, not merely that it is mentioned.
+	// A first draft of this test checked only that "state.issueLoading" appeared
+	// somewhere in the function, which stayed true when the guard was deleted
+	// from the condition and left as an assignment.
+	guard := regexp.MustCompile(`if \([^)]*state\.issueLoading[^)]*\)\s*return`)
+	if !guard.MatchString(body) {
+		t.Fatal("state.issueLoading does not gate an early return, so a second scroll event duplicates a page")
+	}
+	if !strings.Contains(body, "finally") {
+		t.Fatal("the in-flight guard is not released in a finally, so one failed request wedges the list forever")
+	}
+}
+
+// TestTheIssueListKeepsAKeyboardPath is why this is append-on-scroll rather
+// than infinite scroll. An observer is a convenience for a pointer; the button
+// is what a keyboard or screen reader reaches, and removing it would strand
+// them at the first page.
+func TestTheIssueListKeepsAKeyboardPath(t *testing.T) {
+	script := string(staticAssets["app.js"].body)
+	if !strings.Contains(script, `data-action="issue-more"`) {
+		t.Fatal("no load-more button; scrolling would be the only way to reach later pages")
+	}
+	if !strings.Contains(script, "IntersectionObserver") {
+		t.Fatal("no observer; the button is the only path and scrolling does nothing")
+	}
+}
