@@ -1,9 +1,52 @@
 package installer
 
 import (
+	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
+	"math/big"
+	"net"
 	"strings"
 	"testing"
+	"time"
+
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes/fake"
 )
+
+// secretWithCertificate builds the Secret the chart would have written, with a
+// real certificate carrying the given names, so the assertions are about what a
+// client verifies rather than about a fixture string.
+func secretWithCertificate(t *testing.T, dnsNames []string, ips []string) *corev1.Secret {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	template := &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject:      pkix.Name{CommonName: "oberth"},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(time.Hour),
+		DNSNames:     dnsNames,
+	}
+	for _, address := range ips {
+		template.IPAddresses = append(template.IPAddresses, net.ParseIP(address))
+	}
+	der, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "oberth-tls", Namespace: "oberth"},
+		Data:       map[string][]byte{"tls.crt": pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})},
+	}
+}
 
 // A deployment reached on an address its certificate does not carry fails TLS
 // with a hostname mismatch, and no trust anchor repairs that. The installer is
@@ -84,4 +127,57 @@ func countOf(values []string, want string) int {
 		}
 	}
 	return total
+}
+
+// Naming an address on an existing release does nothing on its own: the TLS
+// Secret is generated once and kept, and the template renders nothing when it
+// is already there. Emitting helm values that will not take effect, and saying
+// nothing, is how an operator concludes the flag is broken. The installer holds
+// the Secret and can simply look.
+func TestExistingCertificateMissingNamesIsReported(t *testing.T) {
+	t.Parallel()
+
+	deps := Deps{KubeClient: fake.NewSimpleClientset(secretWithCertificate(t, []string{"oberth"}, nil))}
+	missing := certificateNamesNotYetIssued(context.Background(), Config{
+		TLSExtraDNSNames: []string{"localhost", "oberth.example.internal"},
+		TLSExtraIPs:      []string{"127.0.0.1"},
+	}, deps)
+
+	for _, want := range []string{"localhost", "oberth.example.internal", "127.0.0.1"} {
+		if !contains(missing, want) {
+			t.Errorf("%q is not covered by the existing certificate but was not reported: %v", want, missing)
+		}
+	}
+}
+
+// A certificate that already carries the names must produce no warning, or the
+// warning fires on every re-run of a kind install and stops being read.
+func TestExistingCertificateThatAlreadyCoversTheNamesIsSilent(t *testing.T) {
+	t.Parallel()
+
+	deps := Deps{KubeClient: fake.NewSimpleClientset(
+		secretWithCertificate(t, []string{"oberth", "localhost"}, []string{"127.0.0.1"}))}
+	missing := certificateNamesNotYetIssued(context.Background(), Config{
+		TLSExtraDNSNames: []string{"localhost"},
+		TLSExtraIPs:      []string{"127.0.0.1"},
+	}, deps)
+
+	if len(missing) != 0 {
+		t.Errorf("a certificate that already covers the names produced a warning: %v", missing)
+	}
+}
+
+// A fresh install has no Secret yet and is about to get exactly what it asked
+// for, so there is nothing to warn about.
+func TestFreshInstallReportsNothingMissing(t *testing.T) {
+	t.Parallel()
+
+	deps := Deps{KubeClient: fake.NewSimpleClientset()}
+	missing := certificateNamesNotYetIssued(context.Background(), Config{
+		TLSExtraDNSNames: []string{"localhost"},
+	}, deps)
+
+	if len(missing) != 0 {
+		t.Errorf("a fresh install warned about a certificate that does not exist yet: %v", missing)
+	}
 }

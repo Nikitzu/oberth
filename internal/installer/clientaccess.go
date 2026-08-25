@@ -2,13 +2,18 @@ package installer
 
 import (
 	"context"
+	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"fmt"
+	"io"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -241,7 +246,7 @@ func displayPath(path string) string {
 	return "~" + strings.TrimPrefix(path, home)
 }
 
-func printClientAccessNotes(w interface{ Write([]byte) (int, error) }, root string, choice int, storeCommand string) {
+func printClientAccessNotes(w io.Writer, root string, choice int, storeCommand string) {
 	_, _ = fmt.Fprintf(w, "\nStore the bearer token above where the config expects it:\n\n    %s\n", storeCommand)
 	if choice == clientAccessBoth || choice == clientAccessCLI {
 		_, _ = fmt.Fprintf(w, "\nThen:  . %s\n", displayPath(filepath.Join(root, "env")))
@@ -253,4 +258,81 @@ func printClientAccessNotes(w interface{ Write([]byte) (int, error) }, root stri
 				"\"Authorization\": \"Bearer <token>\" header instead.\n",
 			displayPath(filepath.Join(root, "mcp.json")))
 	}
+}
+
+// certificateNamesNotYetIssued reports the addresses a deployment has asked its
+// certificate to carry that the certificate it already has does not.
+//
+// The TLS Secret is generated once and kept, and the template renders nothing
+// when it is already present, so tls.extraDNSNames on an existing release has
+// no effect until that Secret is deleted. Emitting the values silently and
+// letting the operator discover it as a hostname mismatch weeks later is the
+// failure this prevents: the installer holds a cluster client and the Secret is
+// right there, so it can simply look.
+//
+// Returns nothing for a fresh install, where there is no certificate yet and
+// the values are about to be honoured, and nothing when the existing
+// certificate already covers the names, so a repeated install stays quiet.
+func certificateNamesNotYetIssued(ctx context.Context, cfg Config, deps Deps) []string {
+	if len(cfg.TLSExtraDNSNames) == 0 && len(cfg.TLSExtraIPs) == 0 {
+		return nil
+	}
+	pemBytes, err := serverCACertificate(ctx, cfg, deps)
+	if err != nil {
+		return nil // no certificate yet: a fresh install gets what it asked for
+	}
+	block, _ := pem.Decode(pemBytes)
+	if block == nil {
+		return nil
+	}
+	certificate, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return nil
+	}
+
+	var missing []string
+	for _, name := range cfg.TLSExtraDNSNames {
+		if !slices.Contains(certificate.DNSNames, name) {
+			missing = append(missing, name)
+		}
+	}
+	for _, address := range cfg.TLSExtraIPs {
+		if !slices.ContainsFunc(certificate.IPAddresses, func(held net.IP) bool {
+			return held.String() == address
+		}) {
+			missing = append(missing, address)
+		}
+	}
+	return missing
+}
+
+// warnCertificateNamesWillNotTakeEffect names the remedy rather than only the
+// problem. Deleting a Secret holding a private key is the operator's decision,
+// so it is printed rather than performed.
+func warnCertificateNamesWillNotTakeEffect(w io.Writer, cfg Config, missing []string) {
+	if len(missing) == 0 {
+		return
+	}
+	ns := cfg.Namespace
+	if ns == "" {
+		ns = DefaultNamespace
+	}
+	_, _ = fmt.Fprintf(w,
+		"\nWARNING: this deployment's certificate does not cover %s, and will not\n"+
+			"gain them: the TLS Secret is kept across upgrades and re-issued only when\n"+
+			"absent. Clients reaching the server by those names will fail verification.\n"+
+			"To re-issue, after which the TLS fingerprint changes but uplinks do not:\n\n"+
+			"    kubectl delete secret -n %s oberth-tls && oberth install%s\n\n",
+		strings.Join(missing, ", "), ns, reinstallFlagsFor(cfg))
+}
+
+func reinstallFlagsFor(cfg Config) string {
+	var flags strings.Builder
+	for _, name := range cfg.TLSExtraDNSNames {
+		flags.WriteString(" --tls-extra-dns-name " + name)
+	}
+	for _, address := range cfg.TLSExtraIPs {
+		flags.WriteString(" --tls-extra-ip " + address)
+	}
+	return flags.String()
 }

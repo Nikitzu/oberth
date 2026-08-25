@@ -548,6 +548,12 @@ func Run(ctx context.Context, cfg Config, deps Deps) error {
 		return printDryRunPlan(cfg, deps.Output, cluster)
 	}
 
+	// Before anything is installed: naming an address the kept TLS Secret will
+	// not gain is silent otherwise, and surfaces weeks later as a hostname
+	// mismatch nobody connects back to this run.
+	warnCertificateNamesWillNotTakeEffect(deps.Output, cfg,
+		certificateNamesNotYetIssued(ctx, cfg, deps))
+
 	w := deps.Output
 	color := isColor(deps)
 
