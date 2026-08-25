@@ -210,7 +210,7 @@ SELECT COUNT(*) FROM promotions WHERE repo_id = ? AND status = 'pending'`,
 	// and trusted_applies will fail the deletion if any immutable history exists.
 	if _, err := tx.ExecContext(ctx, `DELETE FROM repositories WHERE id = ?`, repoID); err != nil {
 		if strings.Contains(err.Error(), "FOREIGN KEY constraint failed") {
-			return RemovedRepository{}, fmt.Errorf("repository %s has immutable CI history; removal is not supported once runs exist", name)
+			return RemovedRepository{}, fmt.Errorf("%w: repository %s has immutable CI history; removal is not supported once runs exist", ErrInvalidState, name)
 		}
 		return RemovedRepository{}, fmt.Errorf("remove repository: %w", err)
 	}

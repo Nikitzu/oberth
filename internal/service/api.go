@@ -1488,14 +1488,19 @@ func (service *API) repoRemove(ctx context.Context, actor api.Actor, repo string
 	if err != nil {
 		return nil, err
 	}
-	// Best-effort git cache cleanup.
+	response := map[string]string{"removed": removed.Name, "upstream": removed.UpstreamName}
+	// Best-effort git cache cleanup: the mapping is already gone, a stale
+	// directory is inert, and the next push's Ensure recreates it. A failure
+	// is still surfaced to the (admin) caller rather than swallowed, so an
+	// operator knows a manual sweep is needed instead of discovering a stale
+	// directory later. The cache path derives from the store's registered
+	// name, never from raw tool input.
 	if service.removeGitCache != nil {
 		if cacheErr := service.removeGitCache(removed.Name); cacheErr != nil {
-			// Cache cleanup is advisory; the database record is already gone.
-			_ = cacheErr
+			response["cache_warning"] = cacheErr.Error()
 		}
 	}
-	return map[string]string{"removed": removed.Name, "upstream": removed.UpstreamName}, nil
+	return response, nil
 }
 
 func wireAccessGrant(grant store.SecretAccessGrant) api.AccessGrantResponse {
