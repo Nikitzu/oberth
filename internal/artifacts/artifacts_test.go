@@ -79,7 +79,7 @@ func TestExtractStoresRegularFiles(t *testing.T) {
 		member{name: "surefire/TEST-a.xml", body: "<testsuite/>"},
 		member{name: "coverage/index.html", body: "<html></html>"},
 	)
-	manifest, err := store.Extract("run-abc", archive, 1<<20)
+	manifest, err := store.Extract("run-abc", archive, 1<<20, DefaultScanPatterns)
 	if err != nil {
 		t.Fatalf("Extract: %v", err)
 	}
@@ -118,7 +118,7 @@ func TestExtractRefusesHostileMembers(t *testing.T) {
 		t.Run(label, func(t *testing.T) {
 			t.Parallel()
 			store, root := newStore(t)
-			_, err := store.Extract("run-abc", archiveOf(t, entry), 1<<20)
+			_, err := store.Extract("run-abc", archiveOf(t, entry), 1<<20, DefaultScanPatterns)
 			if err == nil {
 				t.Fatalf("Extract admitted %q", entry.name)
 			}
@@ -161,7 +161,7 @@ func TestExtractWritesNothingWhenALaterMemberIsHostile(t *testing.T) {
 		member{name: "good/report.xml", body: "fine"},
 		member{name: "../escape", body: "bad"},
 	)
-	if _, err := store.Extract("run-abc", archive, 1<<20); err == nil {
+	if _, err := store.Extract("run-abc", archive, 1<<20, DefaultScanPatterns); err == nil {
 		t.Fatal("Extract admitted an archive whose second member escapes")
 	}
 	assertNothingWritten(t, root)
@@ -186,7 +186,7 @@ func TestExtractRefusesAnArchiveOverTheLimit(t *testing.T) {
 	t.Parallel()
 	store, root := newStore(t)
 	archive := archiveOf(t, member{name: "big", body: strings.Repeat("x", 5000)})
-	_, err := store.Extract("run-abc", archive, 1000)
+	_, err := store.Extract("run-abc", archive, 1000, DefaultScanPatterns)
 	if err == nil {
 		t.Fatal("Extract admitted an archive over the caller's limit")
 	}
@@ -207,7 +207,7 @@ func TestExtractLimitsDecompressedBytesNotArchiveBytes(t *testing.T) {
 	if len(compressed) >= 1<<20 {
 		t.Fatalf("fixture compressed to %d bytes, too big to prove the point", len(compressed))
 	}
-	_, err = store.Extract("run-abc", bytes.NewReader(compressed), 1<<20)
+	_, err = store.Extract("run-abc", bytes.NewReader(compressed), 1<<20, DefaultScanPatterns)
 	if err == nil {
 		t.Fatalf("a %d byte archive expanding to 4 MiB was admitted against a 1 MiB limit", len(compressed))
 	}
@@ -218,7 +218,7 @@ func TestExtractRefusesAnInvalidRunID(t *testing.T) {
 	t.Parallel()
 	store, _ := newStore(t)
 	for _, runID := range []string{"", "../escape", "/absolute", ".hidden", strings.Repeat("x", 81)} {
-		if _, err := store.Extract(runID, archiveOf(t, member{name: "a", body: "b"}), 1<<20); err == nil {
+		if _, err := store.Extract(runID, archiveOf(t, member{name: "a", body: "b"}), 1<<20, DefaultScanPatterns); err == nil {
 			t.Fatalf("Extract admitted run ID %q", runID)
 		}
 	}
@@ -227,10 +227,10 @@ func TestExtractRefusesAnInvalidRunID(t *testing.T) {
 func TestExtractReplacesAnEarlierCollection(t *testing.T) {
 	t.Parallel()
 	store, _ := newStore(t)
-	if _, err := store.Extract("run-abc", archiveOf(t, member{name: "first", body: "1"}), 1<<20); err != nil {
+	if _, err := store.Extract("run-abc", archiveOf(t, member{name: "first", body: "1"}), 1<<20, DefaultScanPatterns); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.Extract("run-abc", archiveOf(t, member{name: "second", body: "2"}), 1<<20); err != nil {
+	if _, err := store.Extract("run-abc", archiveOf(t, member{name: "second", body: "2"}), 1<<20, DefaultScanPatterns); err != nil {
 		t.Fatal(err)
 	}
 	entries, err := store.List("run-abc")
@@ -248,7 +248,7 @@ func TestListReportsNameSizeAndTime(t *testing.T) {
 	if _, err := store.Extract("run-abc", archiveOf(t,
 		member{name: "b/second.txt", body: "22"},
 		member{name: "a/first.txt", body: "1"},
-	), 1<<20); err != nil {
+	), 1<<20, DefaultScanPatterns); err != nil {
 		t.Fatal(err)
 	}
 	entries, err := store.List("run-abc")
@@ -284,7 +284,7 @@ func TestListOfAnUncollectedRunIsEmptyNotAnError(t *testing.T) {
 func TestReadRefusesTraversalOnTheReadSide(t *testing.T) {
 	t.Parallel()
 	store, root := newStore(t)
-	if _, err := store.Extract("run-abc", archiveOf(t, member{name: "ok.txt", body: "fine"}), 1<<20); err != nil {
+	if _, err := store.Extract("run-abc", archiveOf(t, member{name: "ok.txt", body: "fine"}), 1<<20, DefaultScanPatterns); err != nil {
 		t.Fatal(err)
 	}
 	secret := filepath.Join(filepath.Dir(root), "outside.txt")
@@ -308,7 +308,7 @@ func TestReadRefusesTraversalOnTheReadSide(t *testing.T) {
 func TestExtractRefusesAnEmptyArchiveWithoutCreatingARunDirectory(t *testing.T) {
 	t.Parallel()
 	store, _ := newStore(t)
-	manifest, err := store.Extract("run-abc", archiveOf(t), 1<<20)
+	manifest, err := store.Extract("run-abc", archiveOf(t), 1<<20, DefaultScanPatterns)
 	if err != nil {
 		t.Fatalf("an empty archive should collect nothing, not fail: %v", err)
 	}
@@ -340,7 +340,7 @@ func FuzzExtract(f *testing.F) {
 		if err != nil {
 			t.Skip()
 		}
-		_, _ = store.Extract("run-fuzz", bytes.NewReader(raw), 1<<16)
+		_, _ = store.Extract("run-fuzz", bytes.NewReader(raw), 1<<16, DefaultScanPatterns)
 	})
 }
 
@@ -352,11 +352,67 @@ func TestExtractAcceptsAnArchiveWrittenByTarDashC(t *testing.T) {
 		member{name: "./surefire/", typeflag: tar.TypeDir},
 		member{name: "./surefire/TEST-Report.xml", body: "<testsuite/>"},
 	)
-	manifest, err := store.Extract("run-abc", archive, 1<<20)
+	manifest, err := store.Extract("run-abc", archive, 1<<20, DefaultScanPatterns)
 	if err != nil {
 		t.Fatalf("the shape `tar -czf - -C dir .` actually produces was refused: %v", err)
 	}
 	if len(manifest.Entries) != 1 || manifest.Entries[0].Name != "surefire/TEST-Report.xml" {
 		t.Fatalf("entries = %+v", manifest.Entries)
+	}
+}
+
+func TestExtractRefusesSecretMaterialBeforeWriting(t *testing.T) {
+	t.Parallel()
+	store, err := Open(filepath.Join(t.TempDir(), "artifacts"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	archive := archiveOf(t,
+		member{name: "report.txt", body: "all tests passed"},
+		member{name: "debug/dump.txt", body: "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaA==\n-----END OPENSSH PRIVATE KEY-----"},
+	)
+
+	_, err = store.Extract("run-abc", archive, 1<<20, DefaultScanPatterns)
+	if !errors.Is(err, ErrSecretDetected) {
+		t.Fatalf("secret material was not refused: %v", err)
+	}
+	if !strings.Contains(err.Error(), "debug/dump.txt") {
+		t.Fatalf("refusal does not name the member: %v", err)
+	}
+	if strings.Contains(err.Error(), "b3BlbnNzaA") {
+		t.Fatalf("refusal leaks matched content: %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(store.directory, "run-abc")); !os.IsNotExist(statErr) {
+		t.Fatal("a refused collection left files on disk; the scan must run before any write")
+	}
+}
+
+func TestDefaultScanPatternsCatchAnEmbeddedServiceAccountKey(t *testing.T) {
+	t.Parallel()
+	store, err := Open(filepath.Join(t.TempDir(), "artifacts"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A GCP service-account JSON is one long line embedding the PEM header
+	// verbatim with escaped newlines — the line-oriented scan must still see it.
+	serviceAccount := `{"type":"service_account","private_key":"-----BEGIN PRIVATE KEY-----\nMIIEvA==\n-----END PRIVATE KEY-----\n","client_email":"x@y.iam.gserviceaccount.com"}`
+	archive := archiveOf(t, member{name: "ci-env.json", body: serviceAccount})
+
+	if _, err := store.Extract("run-abc", archive, 1<<20, DefaultScanPatterns); !errors.Is(err, ErrSecretDetected) {
+		t.Fatalf("embedded service-account key was not refused: %v", err)
+	}
+}
+
+func TestExtractWithoutPatternsStillExtracts(t *testing.T) {
+	t.Parallel()
+	// nil patterns disable the scan (the redact package's documented empty-list
+	// contract); the persisting call site always passes DefaultScanPatterns —
+	// this exists to pin the empty-list semantics rather than to encourage it.
+	store, err := Open(filepath.Join(t.TempDir(), "artifacts"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Extract("run-abc", archiveOf(t, member{name: "a.txt", body: "clean"}), 1<<20, nil); err != nil {
+		t.Fatalf("nil-pattern extract failed: %v", err)
 	}
 }

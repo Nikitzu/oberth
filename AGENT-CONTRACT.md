@@ -485,6 +485,13 @@ implementation detail disagree.
   rejected at admission to prevent collision with the server's own source claim.
   volumeClaimTemplate specs must not declare `dataSource`, `dataSourceRef`,
   `selector`, `finalizers`, or `ownerReferences`.
+- Run artifact collection (`$OBERTH_ARTIFACTS`) is CI-tier only: credentialed
+  triggers (release, plan, apply) never have their artifact directory collected
+  or persisted, preserving the memory-only contract for secret material. Every
+  collected member is scanned against the structural secret set
+  (`internal/artifacts.DefaultScanPatterns`, PEM private-key headers) during
+  the whole-archive judgment pass; one match refuses the entire collection
+  fail-closed with the member named and no content echoed.
 - Each run mounts one PersistentVolumeClaim: a per-run source claim the server
   creates in the pipeline namespace and fills with the exact pushed revision
   before submission, mounted read-only. A Pod may only mount claims in its own

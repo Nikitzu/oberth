@@ -81,6 +81,23 @@ any member is written: absolute paths, `..` traversal, symlinks, hardlinks,
 device nodes and anything that is not a regular file are refused by name, and a
 refused archive leaves nothing behind.
 
+The same judgment pass scans every member for structural secret material —
+PEM private-key headers, which appear verbatim both in raw key files and
+embedded inside JSON service-account keys. One match refuses the entire
+collection, fail-closed, with the member named and the content never echoed.
+The refusal is recorded as the run's artifact failure. A test-fixture key will
+trip this gate; that is a bounded, honest false positive, preferred over
+persisting real key material to the server's disk.
+
+## Collection is CI-tier only
+
+Only CI-trigger (branch) runs collect artifacts. Credentialed tiers — release,
+plan, apply — are excluded: their steps hold secret material under the
+memory-only contract, and a credential accidentally written into
+`$OBERTH_ARTIFACTS` must never be copied onto the server's `/data` volume.
+For those runs the directory still exists and is writable, but its contents
+are reclaimed with the run's claim and never collected.
+
 ## Redaction does not cover artifacts
 
 Oberth redacts secrets write-side, by wrapping a step's stdout and stderr. A
@@ -89,8 +106,9 @@ into an artifact is stored unredacted.**
 
 This is a real limitation, not an oversight. It is why artifacts require the
 same authorisation as the run's logs and are never a more public surface than
-the run itself. Treat an artifact as you would treat the working tree of the
-build that produced it.
+the run itself, why collection is CI-tier only, and why the extraction pass
+refuses structural key material outright. Treat an artifact as you would treat
+the working tree of the build that produced it.
 
 ## Serving is deliberately inert
 
