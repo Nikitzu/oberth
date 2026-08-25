@@ -371,3 +371,40 @@ func TestAuditGateBlocksMCPMutationAndSchedulerClaim(t *testing.T) {
 		t.Fatalf("scheduler mutation gate error = %v, want errMutationBlocked", err)
 	}
 }
+
+func TestLogToolsAcceptEveryParameterTheirSchemaAdvertises(t *testing.T) {
+	t.Parallel()
+	store := timeoutRunStore{
+		repo: model.Repository{ID: 1, Name: "oberth"},
+		run: model.Run{ID: "run-1", RepoID: 1, RefKind: model.RefBranch, Ref: "feature/fab",
+			SHA: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", TestedSHA: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Status: model.RunPassed},
+	}
+	control, err := NewAPI(APIConfig{Runs: store, Signals: NewSignals()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	actor := api.Actor{Identity: "agent@host"}
+	requests := map[string]string{
+		"logs":     `{"repo":"oberth","sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","step":"test","pattern":"FAIL","context":2,"offset":1,"limit":10,"tail":true}`,
+		"run_logs": `{"id":"run-1","burn":"test","step":"unit","pattern":"FAIL","context":2,"offset":1,"limit":10,"tail":true}`,
+	}
+	for name, arguments := range requests {
+		if _, err := control.CallTool(context.Background(), actor, name, json.RawMessage(arguments)); err != nil && strings.Contains(err.Error(), "unknown field") {
+			t.Errorf("%s advertises a filter parameter its handler rejects: %v", name, err)
+		}
+	}
+}
+
+func TestLogToolsRejectNegativeFilterValues(t *testing.T) {
+	t.Parallel()
+	control, err := NewAPI(APIConfig{Runs: timeoutRunStore{}, Signals: NewSignals()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	actor := api.Actor{Identity: "agent@host"}
+	_, err = control.CallTool(context.Background(), actor, "run_logs",
+		json.RawMessage(`{"id":"run-1","burn":"test","step":"unit","offset":-5}`))
+	if err == nil || !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("negative offset error = %v, want ErrInvalidInput", err)
+	}
+}

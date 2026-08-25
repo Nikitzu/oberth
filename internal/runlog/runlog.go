@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"sort"
 	"strings"
@@ -21,9 +22,13 @@ const (
 	maxMarkerBytes   = 64 << 10
 	maxReadBytes     = 4 << 20
 	maxProgressBytes = 1 << 20
+	maxPatternBytes  = 512
+	maxContextLines  = 50
 )
 
 var ErrLogSliceTooLarge = errors.New("run log slice exceeds response limit")
+
+var ErrInvalidPattern = errors.New("invalid log pattern")
 
 type Range struct {
 	Burn  string `json:"burn"`
@@ -36,6 +41,23 @@ type Index struct {
 	RunID  string  `json:"run_id"`
 	Size   int64   `json:"size"`
 	Ranges []Range `json:"ranges"`
+}
+
+type Filter struct {
+	Pattern string
+	Context int
+	Offset  int
+	Limit   int
+	Tail    bool
+}
+
+type Meta struct {
+	TotalLines    int   `json:"total_lines"`
+	MatchedLines  int   `json:"matched_lines"`
+	ReturnedLines int   `json:"returned_lines"`
+	Truncated     bool  `json:"truncated"`
+	Bytes         int64 `json:"bytes"`
+	LineNumbers   []int `json:"line_numbers,omitempty"`
 }
 
 type Store struct {
@@ -89,9 +111,20 @@ func (store *Store) BuildIndex(runID string) (Index, error) {
 }
 
 func (store *Store) Read(runID, burn, step string) ([]byte, error) {
-	index, err := store.loadIndex(runID)
+	body, meta, err := store.ReadFiltered(runID, burn, step, Filter{})
 	if err != nil {
 		return nil, err
+	}
+	if meta.Truncated {
+		return nil, ErrLogSliceTooLarge
+	}
+	return body, nil
+}
+
+func (store *Store) ReadFiltered(runID, burn, step string, filter Filter) ([]byte, Meta, error) {
+	index, err := store.loadIndex(runID)
+	if err != nil {
+		return nil, Meta{}, err
 	}
 	var selected []Range
 	var total int64
@@ -100,35 +133,23 @@ func (store *Store) Read(runID, burn, step string) ([]byte, error) {
 			continue
 		}
 		length := candidate.End - candidate.Start
-		if length < 0 || length > maxReadBytes || total > maxReadBytes-length {
-			return nil, ErrLogSliceTooLarge
+		if length < 0 {
+			continue
 		}
 		total += length
 		selected = append(selected, candidate)
 	}
 	if len(selected) == 0 {
-		return nil, fmt.Errorf("log slice %s/%s: %w", burn, step, os.ErrNotExist)
+		return nil, Meta{}, fmt.Errorf("log slice %s/%s: %w", burn, step, os.ErrNotExist)
 	}
 	path, _ := store.logPath(runID)
 	// logPath validated the owner ID and confined this path to the log root.
 	file, err := os.Open(path) //nolint:gosec
 	if err != nil {
-		return nil, fmt.Errorf("open run log: %w", err)
+		return nil, Meta{}, fmt.Errorf("open run log: %w", err)
 	}
 	defer func() { _ = file.Close() }()
-	body := make([]byte, int(total))
-	var offset int
-	for _, wanted := range selected {
-		if _, err := file.Seek(wanted.Start, io.SeekStart); err != nil {
-			return nil, err
-		}
-		length := int(wanted.End - wanted.Start)
-		if _, err := io.ReadFull(file, body[offset:offset+length]); err != nil {
-			return nil, err
-		}
-		offset += length
-	}
-	return body, nil
+	return filterRanges(file, selected, total, filter)
 }
 
 // ReadActive returns the most recent bounded bytes for one step from a run's
@@ -159,6 +180,35 @@ func (store *Store) ReadActive(runID, burn, step string) ([]byte, error) {
 		return nil, fmt.Errorf("active log slice %s/%s: %w", burn, step, os.ErrNotExist)
 	}
 	return readRangeTail(file, ranges, maxReadBytes)
+}
+
+func (store *Store) ReadActiveFiltered(runID, burn, step string, filter Filter) ([]byte, Meta, error) {
+	path, err := store.logPath(runID)
+	if err != nil {
+		return nil, Meta{}, err
+	}
+	// logPath validated the run ID and confined this path to the log root.
+	file, err := os.Open(path) //nolint:gosec
+	if err != nil {
+		return nil, Meta{}, fmt.Errorf("open active run log: %w", err)
+	}
+	defer func() { _ = file.Close() }()
+	index, err := indexReader(runID, file)
+	if err != nil {
+		return nil, Meta{}, fmt.Errorf("index active run log: %w", err)
+	}
+	ranges := make([]Range, 0)
+	var total int64
+	for _, candidate := range index.Ranges {
+		if candidate.Burn == burn && candidate.Step == step {
+			ranges = append(ranges, candidate)
+			total += candidate.End - candidate.Start
+		}
+	}
+	if len(ranges) == 0 {
+		return nil, Meta{}, fmt.Errorf("active log slice %s/%s: %w", burn, step, os.ErrNotExist)
+	}
+	return filterRanges(file, ranges, total, filter)
 }
 
 func readRangeTail(file *os.File, ranges []Range, maximum int64) ([]byte, error) {
@@ -656,4 +706,289 @@ func safeID(value string) bool {
 		return false
 	}
 	return true
+}
+
+func stepContent(line string) string {
+	if !strings.HasPrefix(line, "[") {
+		return line
+	}
+	close := strings.Index(line, "] ")
+	if close < 0 {
+		return line
+	}
+	return line[close+2:]
+}
+
+func compilePattern(pattern string) (*regexp.Regexp, error) {
+	if pattern == "" {
+		return nil, nil
+	}
+	if len(pattern) > maxPatternBytes {
+		return nil, fmt.Errorf("%w: exceeds %d bytes", ErrInvalidPattern, maxPatternBytes)
+	}
+	compiled, err := regexp.Compile(pattern)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrInvalidPattern, err)
+	}
+	return compiled, nil
+}
+
+type numberedLine struct {
+	number int
+	text   string
+}
+
+func filterRanges(file *os.File, ranges []Range, total int64, filter Filter) ([]byte, Meta, error) {
+	meta := Meta{Bytes: total}
+	if filter.Context < 0 || filter.Context > maxContextLines {
+		return nil, Meta{}, fmt.Errorf("%w: context must be between 0 and %d", ErrInvalidPattern, maxContextLines)
+	}
+	pattern, err := compilePattern(filter.Pattern)
+	if err != nil {
+		return nil, Meta{}, err
+	}
+	collector := newCollector(pattern, filter)
+	number := 0
+	for _, wanted := range ranges {
+		if _, err := file.Seek(wanted.Start, io.SeekStart); err != nil {
+			return nil, Meta{}, err
+		}
+		reader := bufio.NewReader(io.LimitReader(file, wanted.End-wanted.Start))
+		for {
+			line, readErr := reader.ReadString('\n')
+			if line != "" {
+				number++
+				meta.TotalLines++
+				collector.offer(numberedLine{number: number, text: line})
+			}
+			if readErr != nil {
+				break
+			}
+		}
+	}
+	collector.close()
+	meta.MatchedLines = collector.matched
+	if pattern == nil {
+		meta.MatchedLines = meta.TotalLines
+	}
+	out, numbers, truncatedByBytes := collector.bytes(maxReadBytes)
+	meta.ReturnedLines = len(numbers)
+	meta.LineNumbers = numbers
+	meta.Truncated = truncatedByBytes || collector.withheld()
+	return out, meta, nil
+}
+
+type collector struct {
+	pattern  *regexp.Regexp
+	context  int
+	offset   int
+	limit    int
+	tail     bool
+	budget   int64
+	retained int64
+	ring     []numberedLine
+	groups   [][]numberedLine
+	open     []numberedLine
+	trail    int
+	matched  int
+	taken    int
+	lastKept int
+	dropped  bool
+}
+
+func newCollector(pattern *regexp.Regexp, filter Filter) *collector {
+	return &collector{
+		pattern: pattern, context: filter.Context, offset: filter.Offset,
+		limit: filter.Limit, tail: filter.Tail, budget: maxReadBytes,
+	}
+}
+
+func (c *collector) offer(line numberedLine) {
+	if c.pattern == nil {
+		c.offerPlain(line)
+		return
+	}
+	matches := c.pattern.MatchString(stepContent(line.text))
+	if matches {
+		c.matched++
+		if c.selects() {
+			c.startOrExtend(line)
+			c.appendLine(line)
+			c.trail = c.context
+			c.taken++
+			c.push(line)
+			return
+		}
+		c.dropped = true
+		c.closeOpen()
+		c.push(line)
+		return
+	}
+	if len(c.open) > 0 && c.trail > 0 {
+		c.appendLine(line)
+		c.trail--
+		c.push(line)
+		return
+	}
+	c.closeOpen()
+	c.push(line)
+}
+
+func (c *collector) selects() bool {
+	if c.matched <= c.offset {
+		return false
+	}
+	if c.tail {
+		return true
+	}
+	return c.limit <= 0 || c.taken < c.limit
+}
+
+func (c *collector) startOrExtend(line numberedLine) {
+	if len(c.open) == 0 {
+		for _, candidate := range c.ring {
+			if candidate.number > c.lastKept {
+				c.appendLine(candidate)
+			}
+		}
+	}
+}
+
+func (c *collector) appendLine(line numberedLine) {
+	if line.number <= c.lastKept {
+		return
+	}
+	if c.retained+int64(len(line.text)) > c.budget {
+		c.dropped = true
+		return
+	}
+	c.open = append(c.open, line)
+	c.retained += int64(len(line.text))
+	c.lastKept = line.number
+}
+
+func (c *collector) push(line numberedLine) {
+	if c.context == 0 {
+		return
+	}
+	c.ring = append(c.ring, line)
+	if len(c.ring) > c.context {
+		c.ring = c.ring[len(c.ring)-c.context:]
+	}
+}
+
+func (c *collector) closeOpen() {
+	if len(c.open) == 0 {
+		return
+	}
+	c.groups = append(c.groups, c.open)
+	c.open = nil
+	if c.tail && c.limit > 0 && len(c.groups) > c.limit {
+		for _, evicted := range c.groups[:len(c.groups)-c.limit] {
+			for _, line := range evicted {
+				c.retained -= int64(len(line.text))
+			}
+		}
+		c.groups = c.groups[len(c.groups)-c.limit:]
+		c.dropped = true
+	}
+}
+
+func (c *collector) close() {
+	c.closeOpen()
+}
+
+func (c *collector) offerPlain(line numberedLine) {
+	limit := c.limit
+	lineBytes := int64(len(line.text))
+	if limit <= 0 {
+		if line.number <= c.offset {
+			return
+		}
+		if c.tail {
+			c.open = append(c.open, line)
+			c.retained += lineBytes
+			for c.retained > c.budget && len(c.open) > 1 {
+				c.retained -= int64(len(c.open[0].text))
+				c.open = c.open[1:]
+				c.dropped = true
+			}
+			return
+		}
+		if c.retained+lineBytes > c.budget {
+			c.dropped = true
+			return
+		}
+		c.open = append(c.open, line)
+		c.retained += lineBytes
+		return
+	}
+	if line.number <= c.offset {
+		return
+	}
+	if c.tail {
+		c.open = append(c.open, line)
+		c.retained += lineBytes
+		if len(c.open) > limit {
+			c.retained -= int64(len(c.open[0].text))
+			c.open = c.open[len(c.open)-limit:]
+			c.dropped = true
+		}
+		for c.retained > c.budget && len(c.open) > 1 {
+			c.retained -= int64(len(c.open[0].text))
+			c.open = c.open[1:]
+			c.dropped = true
+		}
+		return
+	}
+	if len(c.open) < limit && c.retained+lineBytes <= c.budget {
+		c.open = append(c.open, line)
+		c.retained += lineBytes
+		return
+	}
+	c.dropped = true
+}
+
+func (c *collector) withheld() bool {
+	return c.dropped
+}
+
+func (c *collector) bytes(budget int64) ([]byte, []int, bool) {
+	flat := make([]numberedLine, 0)
+	for _, group := range c.groups {
+		flat = append(flat, group...)
+	}
+	if c.tail {
+		return takeFromEnd(flat, budget)
+	}
+	return takeFromStart(flat, budget)
+}
+
+func takeFromStart(lines []numberedLine, budget int64) ([]byte, []int, bool) {
+	var out []byte
+	var numbers []int
+	var used int64
+	for _, line := range lines {
+		if used+int64(len(line.text)) > budget {
+			return out, numbers, true
+		}
+		used += int64(len(line.text))
+		out = append(out, line.text...)
+		numbers = append(numbers, line.number)
+	}
+	return out, numbers, false
+}
+
+func takeFromEnd(lines []numberedLine, budget int64) ([]byte, []int, bool) {
+	var used int64
+	first := len(lines)
+	for index := len(lines) - 1; index >= 0; index-- {
+		if used+int64(len(lines[index].text)) > budget {
+			break
+		}
+		used += int64(len(lines[index].text))
+		first = index
+	}
+	out, numbers, _ := takeFromStart(lines[first:], budget)
+	return out, numbers, first > 0
 }

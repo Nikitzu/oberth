@@ -15,6 +15,7 @@ import (
 
 	"github.com/oberthci/oberth/internal/api"
 	"github.com/oberthci/oberth/internal/model"
+	"github.com/oberthci/oberth/internal/runlog"
 	"github.com/oberthci/oberth/internal/runprogress"
 	"github.com/oberthci/oberth/internal/store"
 )
@@ -133,14 +134,23 @@ func (service *API) CallTool(ctx context.Context, actor api.Actor, name string, 
 		return service.status(ctx, arguments.Repo, arguments.Ref, actor.Identity)
 	case "logs":
 		var arguments struct {
-			Repo string `json:"repo"`
-			SHA  string `json:"sha"`
-			Step string `json:"step"`
+			Repo    string `json:"repo"`
+			SHA     string `json:"sha"`
+			Step    string `json:"step"`
+			Pattern string `json:"pattern"`
+			Context int    `json:"context"`
+			Offset  int    `json:"offset"`
+			Limit   int    `json:"limit"`
+			Tail    bool   `json:"tail"`
 		}
 		if err := decodeTool(raw, &arguments); err != nil {
 			return nil, err
 		}
-		return service.logsFor(ctx, arguments.Repo, arguments.SHA, arguments.Step)
+		filter, err := toolLogFilter(arguments.Pattern, arguments.Context, arguments.Offset, arguments.Limit, arguments.Tail)
+		if err != nil {
+			return nil, err
+		}
+		return service.logsFor(ctx, arguments.Repo, arguments.SHA, arguments.Step, filter)
 	case "run_get":
 		var arguments struct {
 			ID string `json:"id"`
@@ -154,9 +164,14 @@ func (service *API) CallTool(ctx context.Context, actor api.Actor, name string, 
 		return service.Run(ctx, actor, arguments.ID)
 	case "run_logs":
 		var arguments struct {
-			ID   string `json:"id"`
-			Burn string `json:"burn"`
-			Step string `json:"step"`
+			ID      string `json:"id"`
+			Burn    string `json:"burn"`
+			Step    string `json:"step"`
+			Pattern string `json:"pattern"`
+			Context int    `json:"context"`
+			Offset  int    `json:"offset"`
+			Limit   int    `json:"limit"`
+			Tail    bool   `json:"tail"`
 		}
 		if err := decodeTool(raw, &arguments); err != nil {
 			return nil, err
@@ -164,7 +179,11 @@ func (service *API) CallTool(ctx context.Context, actor api.Actor, name string, 
 		if strings.TrimSpace(arguments.ID) == "" || strings.TrimSpace(arguments.Burn) == "" || strings.TrimSpace(arguments.Step) == "" {
 			return nil, fmt.Errorf("%w: run ID, burn, and step are required", ErrInvalidInput)
 		}
-		return service.RunLog(ctx, actor, arguments.ID, arguments.Burn, arguments.Step)
+		filter, err := toolLogFilter(arguments.Pattern, arguments.Context, arguments.Offset, arguments.Limit, arguments.Tail)
+		if err != nil {
+			return nil, err
+		}
+		return service.RunLogFiltered(ctx, actor, arguments.ID, arguments.Burn, arguments.Step, filter)
 	case "wait":
 		var arguments struct {
 			Repo    string `json:"repo"`
@@ -412,7 +431,11 @@ func (service *API) Run(ctx context.Context, _ api.Actor, id string) (any, error
 // log. Active runs authorize against their progress journal and read an
 // in-memory index snapshot; terminal runs authorize against durable results
 // and their finalized retained-log index.
-func (service *API) RunLog(ctx context.Context, _ api.Actor, id, burn, step string) (any, error) {
+func (service *API) RunLog(ctx context.Context, actor api.Actor, id, burn, step string) (any, error) {
+	return service.RunLogFiltered(ctx, actor, id, burn, step, runlog.Filter{})
+}
+
+func (service *API) RunLogFiltered(ctx context.Context, _ api.Actor, id, burn, step string, filter runlog.Filter) (any, error) {
 	if service.logs == nil || service.history == nil {
 		return nil, fmt.Errorf("%w: logs", ErrUnavailable)
 	}
@@ -437,11 +460,11 @@ func (service *API) RunLog(ctx context.Context, _ api.Actor, id, burn, step stri
 	if !recorded {
 		return nil, fmt.Errorf("service: no log range for burn %q step %q", burn, step)
 	}
-	body, err := service.readStepLog(run, burn, step)
+	body, meta, err := service.readStepLogFiltered(run, burn, step, filter)
 	if err != nil {
 		return nil, fmt.Errorf("read bounded run log: %w", err)
 	}
-	return LogResponse{RunID: run.ID, Burn: burn, Step: step, Output: string(body)}, nil
+	return newLogResponse(run.ID, burn, step, body, meta), nil
 }
 
 // maxLiveLogChunk bounds one live-log poll response. 256 KiB keeps a fast
@@ -813,7 +836,14 @@ func progressStepResult(runID string, event runprogress.Event) model.StepResult 
 	}
 }
 
-func (service *API) logsFor(ctx context.Context, repositoryName, selector, wanted string) (LogResponse, error) {
+func toolLogFilter(pattern string, context, offset, limit int, tail bool) (runlog.Filter, error) {
+	if context < 0 || offset < 0 || limit < 0 {
+		return runlog.Filter{}, fmt.Errorf("%w: log context, offset, and limit must not be negative", ErrInvalidInput)
+	}
+	return runlog.Filter{Pattern: pattern, Context: context, Offset: offset, Limit: limit, Tail: tail}, nil
+}
+
+func (service *API) logsFor(ctx context.Context, repositoryName, selector, wanted string, filter runlog.Filter) (LogResponse, error) {
 	if service.logs == nil || service.history == nil {
 		return LogResponse{}, fmt.Errorf("%w: logs", ErrUnavailable)
 	}
@@ -832,22 +862,26 @@ func (service *API) logsFor(ctx context.Context, repositoryName, selector, wante
 	if err != nil {
 		return LogResponse{}, err
 	}
-	body, err := service.readStepLog(run, burn, step)
+	body, meta, err := service.readStepLogFiltered(run, burn, step, filter)
 	if err != nil {
 		return LogResponse{}, fmt.Errorf("read bounded run log: %w", err)
 	}
-	return LogResponse{RunID: run.ID, Burn: burn, Step: step, Output: string(body)}, nil
+	return newLogResponse(run.ID, burn, step, body, meta), nil
 }
 
-func (service *API) readStepLog(run model.Run, burn, step string) ([]byte, error) {
-	if run.Status.Active() {
-		body, err := service.logs.ReadActive(run.ID, burn, step)
-		if errors.Is(err, os.ErrNotExist) {
-			return []byte{}, nil
-		}
-		return body, err
+func newLogResponse(runID, burn, step string, body []byte, meta runlog.Meta) LogResponse {
+	return LogResponse{
+		RunID: runID, Burn: burn, Step: step, Output: string(body),
+		TotalLines: meta.TotalLines, MatchedLines: meta.MatchedLines,
+		ReturnedLines: meta.ReturnedLines, Truncated: meta.Truncated, Bytes: meta.Bytes,
 	}
-	return service.logs.Read(run.ID, burn, step)
+}
+
+func (service *API) readStepLogFiltered(run model.Run, burn, step string, filter runlog.Filter) ([]byte, runlog.Meta, error) {
+	if run.Status.Active() {
+		return service.logs.ReadActiveFiltered(run.ID, burn, step, filter)
+	}
+	return service.logs.ReadFiltered(run.ID, burn, step, filter)
 }
 
 func selectLogRange(results []model.StepResult, wanted string) (string, string, error) {
