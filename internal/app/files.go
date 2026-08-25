@@ -70,6 +70,24 @@ func (loader *GitFileLoader) Load(ctx context.Context, ref argoworkflow.FileRef)
 	if err != nil {
 		return argoworkflow.SeededFile{}, fmt.Errorf("app: file dependency %s: %w", ref, err)
 	}
+	// Reachability gate, the same one #213 added for fragments and for the
+	// same reason. A tag is creation-only but unconstrained in what it points
+	// at, so without this a tag on a commit that never went through
+	// green-and-publish could feed unreviewed content into a consuming
+	// repository's pipeline. A registry that decides whether a claim is real
+	// is exactly the file worth pointing a tag at.
+	//
+	// Enforced on every trigger tier: the read below serves another
+	// repository's bytes into this run regardless of what triggered it.
+	reachable, err := loader.blobs.ReachableFromUpstreamDefault(ctx, ref.Repo, sha)
+	if err != nil {
+		return argoworkflow.SeededFile{}, fmt.Errorf("app: file dependency %s: %w", ref, err)
+	}
+	if !reachable {
+		return argoworkflow.SeededFile{}, fmt.Errorf(
+			"app: file dependency %s resolves to commit %s, which is not reachable from its repository's upstream default branch; only published versions may be read",
+			ref, sha)
+	}
 	bytes, err := loader.blobs.ReadBlob(ctx, ref.Repo, sha, ref.Path, argoworkflow.MaxFileBytes)
 	if err != nil {
 		return argoworkflow.SeededFile{}, fmt.Errorf("app: file dependency %s: %w", ref, err)

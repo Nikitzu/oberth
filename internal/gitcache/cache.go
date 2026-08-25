@@ -179,6 +179,21 @@ case "$ref" in
   refs/heads/*)
     branch=${ref#refs/heads/}
     validate_public_name branch "$branch"
+    # Reject non-fast-forward pushes to the default branch. Feature branches
+    # may force-push; the default branch is the promotion target and the
+    # release reachability anchor — a rebase silently invalidates promotion
+    # evidence, tag ancestry, and issue-close criteria (#222).
+    if ! is_zero_oid "$old" && ! is_zero_oid "$new"; then
+      default_ref=$(git symbolic-ref --quiet HEAD) || true
+      case "$default_ref" in
+        refs/heads/*)
+          if [ "$ref" = "$default_ref" ]; then
+            git merge-base --is-ancestor "$old" "$new" ||
+              reject branch "non-fast-forward push to default branch (old $old is not an ancestor of new $new)"
+          fi
+          ;;
+      esac
+    fi
     ;;
   refs/tags/*)
     tag=${ref#refs/tags/}
@@ -372,6 +387,12 @@ func (c *Cache) ensureLockedMayRecover(ctx context.Context, input, repo, path st
 		return Repository{}, err
 	}
 	if err := c.fetchTracking(ctx, temporary); err != nil {
+		// Log the fetch failure so it is visible in the server's structured log
+		// even though no receive event, audit action, or CI issue is created at
+		// this point — the fetch fails before any reservation exists (issue #212
+		// part 4). The error now includes the forge's stderr (part 1), so the
+		// operator sees the actual reason rather than a bare exit code.
+		c.logger.Printf("initial upstream fetch failed for %s: %v", repo, err)
 		return Repository{}, fmt.Errorf("initial upstream fetch for %s: %w", repo, err)
 	}
 	if err := c.materialize(ctx, temporary, nil); err != nil {

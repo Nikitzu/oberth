@@ -10,9 +10,12 @@ import (
 )
 
 type stubBlobs struct {
-	shas  map[string]string
-	blobs map[string][]byte
-	limit int
+	unreachable bool
+	reachAsked  bool
+	reachErr    error
+	shas        map[string]string
+	blobs       map[string][]byte
+	limit       int
 }
 
 func (stub *stubBlobs) TagSHA(_ context.Context, input, tag string) (string, error) {
@@ -21,6 +24,11 @@ func (stub *stubBlobs) TagSHA(_ context.Context, input, tag string) (string, err
 		return "", errors.New("tag " + tag + " not found in " + input)
 	}
 	return sha, nil
+}
+
+func (stub *stubBlobs) ReachableFromUpstreamDefault(_ context.Context, _, _ string) (bool, error) {
+	stub.reachAsked = true
+	return !stub.unreachable, stub.reachErr
 }
 
 func (stub *stubBlobs) ReadBlob(_ context.Context, input, sha, file string, limit int) ([]byte, error) {
@@ -156,5 +164,43 @@ func TestLoadFilesIsEmptyWithoutADeclaration(t *testing.T) {
 		filesDocument, "    oberth.ci/files: tzmem@v1:graph/repos.yml\n", "", 1)))
 	if err != nil || files != nil {
 		t.Fatalf("loadFiles on a document declaring none = %+v, %v", files, err)
+	}
+}
+
+// TestFileLoaderConsultsReachabilityBeforeReading is the file-dependency half
+// of #213.
+//
+// A tag is creation-only but unconstrained in what it points at, so resolving
+// one straight to a blob read lets a tag on an unreviewed commit feed content
+// into a consuming repository's pipeline. The fragment loader was fixed
+// upstream; this loader shares its interface and had the same hole.
+func TestFileLoaderConsultsReachabilityBeforeReading(t *testing.T) {
+	loader, blobs := testFileLoader(t)
+	if _, err := loader.Load(context.Background(), testRef); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !blobs.reachAsked {
+		t.Fatal("the loader read a blob without asking whether its commit is reachable")
+	}
+}
+
+func TestFileLoaderRefusesAnUnreachableTagCommit(t *testing.T) {
+	loader, blobs := testFileLoader(t)
+	blobs.unreachable = true
+	_, err := loader.Load(context.Background(), testRef)
+	if err == nil {
+		t.Fatal("Load accepted a tag pointing at an unpublished commit")
+	}
+	if !strings.Contains(err.Error(), "not reachable") {
+		t.Fatalf("error %v does not say why", err)
+	}
+}
+
+// Fail closed: an error deciding reachability must refuse, not read.
+func TestFileLoaderFailsClosedWhenReachabilityErrors(t *testing.T) {
+	loader, blobs := testFileLoader(t)
+	blobs.reachErr = errors.New("cache unavailable")
+	if _, err := loader.Load(context.Background(), testRef); err == nil {
+		t.Fatal("Load read a blob despite being unable to decide reachability")
 	}
 }

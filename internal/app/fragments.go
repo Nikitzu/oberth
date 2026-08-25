@@ -15,6 +15,13 @@ type FragmentLoader interface {
 
 type FragmentBlobs interface {
 	TagSHA(ctx context.Context, input, tag string) (string, error)
+	// ReachableFromUpstreamDefault is the fragment reachability gate (#213):
+	// a fragment tag's commit must be an ancestor of its source repository's
+	// upstream default branch before any pipeline may inline it. A tag is
+	// creation-only but may point at a commit that never went through
+	// green-and-publish; without this gate such a tag would inject unreviewed,
+	// never-published templates into a consuming repository's pipeline.
+	ReachableFromUpstreamDefault(ctx context.Context, input, commit string) (bool, error)
 	ReadBlob(ctx context.Context, input, sha, file string, limit int) ([]byte, error)
 }
 
@@ -64,6 +71,20 @@ func (loader *GitFragmentLoader) Load(ctx context.Context, key argoworkflow.Frag
 	sha, err := loader.blobs.TagSHA(ctx, key.Repo, key.Version)
 	if err != nil {
 		return argoworkflow.Fragment{}, fmt.Errorf("app: fragment %s: %w", key, err)
+	}
+	// Reachability gate (#213). Enforced for every trigger tier: the read
+	// below serves template content into another repository's pipeline, so
+	// the source commit must meet the same bar release admission applies to
+	// the consumer's own code — reachable from the upstream default branch,
+	// meaning it went through green-and-publish on its own repository.
+	reachable, err := loader.blobs.ReachableFromUpstreamDefault(ctx, key.Repo, sha)
+	if err != nil {
+		return argoworkflow.Fragment{}, fmt.Errorf("app: fragment %s: %w", key, err)
+	}
+	if !reachable {
+		return argoworkflow.Fragment{}, fmt.Errorf(
+			"app: fragment %s resolves to commit %s, which is not reachable from its repository's upstream default branch; only published versions may be inlined",
+			key, sha)
 	}
 	source, err := loader.blobs.ReadBlob(ctx, key.Repo, sha, argoworkflow.FragmentFile, argoworkflow.MaxSourceBytes)
 	if err != nil {

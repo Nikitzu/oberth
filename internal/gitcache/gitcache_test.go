@@ -959,6 +959,93 @@ func TestLegacyOverflowRecoversMaterializationNotBricked(t *testing.T) {
 	}
 }
 
+func TestReachableFromUpstreamDefaultReachableCommit(t *testing.T) {
+	t.Parallel()
+	repository := newTestRepository(t)
+	cache := newTestCache(t, repository.upstream)
+	if _, err := cache.Ensure(context.Background(), "example"); err != nil {
+		t.Fatal(err)
+	}
+	// The initial commit should be reachable from the upstream default branch.
+	reachable, err := cache.ReachableFromUpstreamDefault(context.Background(), "example", repository.initialSHA)
+	if err != nil {
+		t.Fatalf("ReachableFromUpstreamDefault: %v", err)
+	}
+	if !reachable {
+		t.Fatal("initial commit should be reachable from upstream default branch")
+	}
+}
+
+func TestReachableFromUpstreamDefaultUnreachableCommit(t *testing.T) {
+	t.Parallel()
+	repository := newTestRepository(t)
+	cache := newTestCache(t, repository.upstream)
+	ready, err := cache.Ensure(context.Background(), "example")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Create a commit on a feature branch that is not on main.
+	featureSHA := repository.featureCommit(t, "feature/unreachable", "unreachable\n")
+	// Seed the object into the cache so it exists but is not on main.
+	seedCacheObject(t, repository.work, ready.Path, featureSHA)
+
+	reachable, err := cache.ReachableFromUpstreamDefault(context.Background(), "example", featureSHA)
+	if err != nil {
+		t.Fatalf("ReachableFromUpstreamDefault: %v", err)
+	}
+	if reachable {
+		t.Fatal("feature-only commit should not be reachable from upstream default branch")
+	}
+}
+
+func TestReachableFromUpstreamDefaultMissingCommit(t *testing.T) {
+	t.Parallel()
+	repository := newTestRepository(t)
+	cache := newTestCache(t, repository.upstream)
+	if _, err := cache.Ensure(context.Background(), "example"); err != nil {
+		t.Fatal(err)
+	}
+	// A SHA that does not exist in the cache should return an error.
+	_, err := cache.ReachableFromUpstreamDefault(context.Background(), "example", "0000000000000000000000000000000000000000")
+	if err == nil {
+		t.Fatal("expected error for missing commit")
+	}
+}
+
+func TestLsRemoteHeadsSucceedsForReachableUpstream(t *testing.T) {
+	t.Parallel()
+	repository := newTestRepository(t)
+	cache := newTestCache(t, repository.upstream)
+	if _, err := cache.Ensure(context.Background(), "example"); err != nil {
+		t.Fatal(err)
+	}
+	count, err := cache.LsRemoteHeads(context.Background(), "example")
+	if err != nil {
+		t.Fatalf("LsRemoteHeads: %v", err)
+	}
+	if count < 1 {
+		t.Fatalf("expected at least 1 branch, got %d", count)
+	}
+}
+
+func TestLsRemoteHeadsFailsForUnreachableUpstream(t *testing.T) {
+	t.Parallel()
+	cache, err := New(Config{
+		Root:           t.TempDir(),
+		CommandTimeout: 5 * time.Second,
+		Upstream: func(repo string) (string, error) {
+			return "/nonexistent/upstream/" + repo + ".git", nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = cache.LsRemoteHeads(context.Background(), "example")
+	if err == nil {
+		t.Fatal("expected error for unreachable upstream")
+	}
+}
+
 type testLogger struct{ writer *bytes.Buffer }
 
 func (l testLogger) Printf(format string, args ...any) {

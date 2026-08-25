@@ -215,6 +215,33 @@ func TestBuildStampsServerOwnedIdentity(t *testing.T) {
 	}
 }
 
+func TestBuildSetsTierLabelOnWorkflowAndPods(t *testing.T) {
+	for _, test := range []struct {
+		trigger  periapsis.Trigger
+		wantTier string
+	}{
+		{periapsis.TriggerCI, "ci"},
+		{periapsis.TriggerRelease, "release"},
+	} {
+		t.Run(string(test.trigger), func(t *testing.T) {
+			request := testRequest(test.trigger, greedyDocument)
+			built, err := Build(testConfig(), request)
+			if err != nil {
+				t.Fatalf("build: %v", err)
+			}
+			if got := built.Labels[tierLabel]; got != test.wantTier {
+				t.Fatalf("workflow tier label = %q, want %q", got, test.wantTier)
+			}
+			if built.Spec.PodMetadata == nil || built.Spec.PodMetadata.Labels == nil {
+				t.Fatal("pod metadata labels are nil")
+			}
+			if got := built.Spec.PodMetadata.Labels[tierLabel]; got != test.wantTier {
+				t.Fatalf("pod tier label = %q, want %q", got, test.wantTier)
+			}
+		})
+	}
+}
+
 // TestBuildIsDeterministic proves the spec digest is stable, which is what
 // makes an ambiguous create safely retryable.
 func TestBuildIsDeterministic(t *testing.T) {

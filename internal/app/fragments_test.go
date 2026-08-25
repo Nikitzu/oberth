@@ -10,10 +10,13 @@ import (
 )
 
 type fakeFragmentBlobs struct {
-	tags     map[string]string
-	blobs    map[string]string
-	tagCalls int
-	readArgs []string
+	tags        map[string]string
+	blobs       map[string]string
+	unreachable map[string]bool
+	tagCalls    int
+	reachCalls  int
+	reachErr    error
+	readArgs    []string
 }
 
 func (f *fakeFragmentBlobs) TagSHA(_ context.Context, input, tag string) (string, error) {
@@ -23,6 +26,14 @@ func (f *fakeFragmentBlobs) TagSHA(_ context.Context, input, tag string) (string
 		return "", errors.New("tag not found")
 	}
 	return sha, nil
+}
+
+func (f *fakeFragmentBlobs) ReachableFromUpstreamDefault(_ context.Context, input, commit string) (bool, error) {
+	f.reachCalls++
+	if f.reachErr != nil {
+		return false, f.reachErr
+	}
+	return !f.unreachable[input+"@"+commit], nil
 }
 
 func (f *fakeFragmentBlobs) ReadBlob(_ context.Context, input, sha, file string, limit int) ([]byte, error) {
@@ -125,6 +136,53 @@ func TestFragmentLoaderRefusesAnUnknownTag(t *testing.T) {
 
 	if _, err := loader.Load(context.Background(), key); err == nil {
 		t.Fatal("an unknown tag resolved")
+	}
+}
+
+func TestFragmentLoaderRefusesAnUnreachableTagCommit(t *testing.T) {
+	t.Parallel()
+	loader, blobs := testLoader(t, nil)
+	blobs.unreachable = map[string]bool{
+		"transferz/maven-verify@" + strings.Repeat("a", 40): true,
+	}
+	key := argoworkflow.FragmentKey{Repo: "transferz/maven-verify", Version: "v3"}
+
+	_, err := loader.Load(context.Background(), key)
+	if err == nil {
+		t.Fatal("a tag on a commit unreachable from the upstream default branch resolved as a fragment (#213)")
+	}
+	if !strings.Contains(err.Error(), "not reachable") {
+		t.Fatalf("refusal does not name reachability: %v", err)
+	}
+	if len(blobs.readArgs) != 0 {
+		t.Fatal("the fragment blob was read despite the reachability refusal; the gate must run before the read")
+	}
+}
+
+func TestFragmentLoaderFailsClosedWhenReachabilityErrors(t *testing.T) {
+	t.Parallel()
+	loader, blobs := testLoader(t, nil)
+	blobs.reachErr = errors.New("cache unavailable")
+	key := argoworkflow.FragmentKey{Repo: "transferz/maven-verify", Version: "v3"}
+
+	if _, err := loader.Load(context.Background(), key); err == nil {
+		t.Fatal("a reachability-check error did not refuse the fragment")
+	}
+	if len(blobs.readArgs) != 0 {
+		t.Fatal("the fragment blob was read despite the reachability error")
+	}
+}
+
+func TestFragmentLoaderConsultsReachabilityBeforeReading(t *testing.T) {
+	t.Parallel()
+	loader, blobs := testLoader(t, nil)
+	key := argoworkflow.FragmentKey{Repo: "transferz/maven-verify", Version: "v3"}
+
+	if _, err := loader.Load(context.Background(), key); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if blobs.reachCalls != 1 {
+		t.Fatalf("reachability gate consulted %d times, want exactly once per load (#213)", blobs.reachCalls)
 	}
 }
 

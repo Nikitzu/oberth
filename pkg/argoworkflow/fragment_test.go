@@ -14,7 +14,7 @@ func anyTemplateRef(value reflect.Value, path string, found *[]string) {
 		return
 	}
 	switch value.Kind() {
-	case reflect.Ptr, reflect.Interface:
+	case reflect.Pointer, reflect.Interface:
 		if value.IsNil() {
 			return
 		}

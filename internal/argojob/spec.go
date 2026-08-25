@@ -45,6 +45,11 @@ const (
 	secretPathsAnnotation = "oberth.ci/declared-secret-paths"
 	FragmentsAnnotation   = "oberth.ci/fragments"
 
+	// tierLabel classifies pipeline pods by trust tier so network policy,
+	// monitoring, and RBAC can scope rules to branch-tier (untrusted) or
+	// release-tier (credentialed) pods without inspecting identities.
+	tierLabel = "oberth.ci/tier"
+
 	defaultWorkflowTimeout = 12 * time.Hour
 	defaultTTLSeconds      = int32(3600)
 
@@ -768,6 +773,21 @@ func (config Config) vaultRoleFor(trigger periapsis.Trigger) string {
 	}
 }
 
+// tierFor maps a trigger to its trust-tier label value. The tier is the
+// network-policy-visible classification that scopes egress rules: branch
+// (ci) pods must never be able to reach release (credentialed) pods even
+// when in-namespace egress is enabled (#207).
+func tierFor(trigger periapsis.Trigger) string {
+	switch trigger {
+	case periapsis.TriggerCI:
+		return "ci"
+	case periapsis.TriggerRelease:
+		return "release"
+	default:
+		return string(trigger)
+	}
+}
+
 func applyServerMetadata(workflow *wfv1.Workflow, config Config, request Request,
 	declaredPaths []string, fragmentLock argoworkflow.Lock, fileLock argoworkflow.FileLock) error {
 	workflow.APIVersion = argoworkflow.APIVersion
@@ -783,6 +803,7 @@ func applyServerMetadata(workflow *wfv1.Workflow, config Config, request Request
 	workflow.Labels["oberth.ci/run"] = labelValue(request.RunID)
 	workflow.Labels["oberth.ci/sha"] = labelValue(request.SHA)
 	workflow.Labels["oberth.ci/trigger"] = string(request.Trigger)
+	workflow.Labels[tierLabel] = tierFor(request.Trigger)
 	workflow.Labels["oberth.ci/engine"] = "argo"
 	if workflow.Annotations == nil {
 		workflow.Annotations = map[string]string{}
@@ -833,6 +854,7 @@ func applyServerMetadata(workflow *wfv1.Workflow, config Config, request Request
 	}
 	workflow.Spec.PodMetadata.Labels["oberth.ci/run"] = labelValue(request.RunID)
 	workflow.Spec.PodMetadata.Labels["oberth.ci/trigger"] = string(request.Trigger)
+	workflow.Spec.PodMetadata.Labels[tierLabel] = tierFor(request.Trigger)
 	return nil
 }
 
