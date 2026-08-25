@@ -188,6 +188,24 @@ func runRuns(ctx context.Context, arguments []string, output io.Writer) error {
 	return nil
 }
 
+// resolveRemoteRunID expands the abbreviation the push banner prints into the
+// identifier the API indexes by. Only a value that looks abbreviated costs a
+// request; a whole identifier goes straight through.
+func resolveRemoteRunID(ctx context.Context, api *client.Client, given string) (string, error) {
+	if !looksAbbreviated(given) {
+		return given, nil
+	}
+	var runs []remoteRun
+	if err := api.Get(ctx, "/api/runs", map[string]string{"limit": "200"}, &runs); err != nil {
+		return "", err
+	}
+	known := make([]string, 0, len(runs))
+	for _, run := range runs {
+		known = append(known, run.ID)
+	}
+	return resolveRunIDPrefix(given, known)
+}
+
 func runRunDetail(ctx context.Context, arguments []string, output io.Writer) error {
 	flags, asJSON, err := remoteFlags("run", arguments, output)
 	if err != nil || flags == nil {
@@ -201,7 +219,11 @@ func runRunDetail(ctx context.Context, arguments []string, output io.Writer) err
 		return err
 	}
 	reportMode("server")
-	path := "/api/runs/" + flags.Arg(0)
+	runID, err := resolveRemoteRunID(ctx, api, flags.Arg(0))
+	if err != nil {
+		return err
+	}
+	path := "/api/runs/" + runID
 	if *asJSON {
 		return emitJSON(ctx, api, path, nil, output)
 	}
