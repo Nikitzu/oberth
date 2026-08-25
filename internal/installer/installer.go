@@ -162,6 +162,15 @@ type Config struct {
 	// policy, and a Vault role (via ConfigurePerRepoIdentities). The
 	// installer populates this from the repo registry + approval table.
 	PerRepoIdentities []PerRepoIdentity
+
+	// TLSExtraDNSNames and TLSExtraIPs are addresses the generated server
+	// certificate must carry beyond the four in-cluster names. A client
+	// reaching the server on any other address gets a hostname mismatch, which
+	// is the one TLS failure no trust anchor can repair, so naming the address
+	// is a deployment decision rather than something a client works around.
+	// Ignored when the chart adopts an existing TLS Secret.
+	TLSExtraDNSNames []string
+	TLSExtraIPs      []string
 	// NetworkPolicy controls pipeline egress NetworkPolicy enforcement:
 	// "auto" (default) enables on all CNIs except k3s's built-in kube-router
 	// (which has a DNAT incompatibility), "true" forces on, "false" forces off.
@@ -1316,6 +1325,15 @@ func OberthHelmArgs(cfg Config, openbao OpenBaoResult, rekor RekorResult) []stri
 	}
 	if image := strings.TrimSpace(cfg.ImageRef); image != "" {
 		args = append(args, "--set-string", "image.ref="+image)
+	}
+	// Indexed --set-string rather than --set name={a,b}: brace list syntax
+	// splits on commas inside the value, and a name is not worth losing to
+	// quoting rules.
+	for index, name := range cfg.TLSExtraDNSNames {
+		args = append(args, "--set-string", fmt.Sprintf("tls.extraDNSNames[%d]=%s", index, name))
+	}
+	for index, address := range cfg.TLSExtraIPs {
+		args = append(args, "--set-string", fmt.Sprintf("tls.extraIPs[%d]=%s", index, address))
 	}
 	args = append(args, argoOberthHelmValues(cfg, openbao)...)
 	if cfg.wantsSecretStore() {

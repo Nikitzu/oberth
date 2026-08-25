@@ -65,6 +65,16 @@ func runInstall(ctx context.Context, arguments []string, input io.Reader, output
 			"`oberth access allow` records, e.g. oberth/data/release/cosign-secret); synced into the "+
 			"RELEASE-tier credentialed Vault policy as an exact read grant when --install-secretstore "+
 			"reconciles the store — the branch-tier ci-secrets policy never receives grants")
+	var tlsExtraDNSNames stringList
+	flags.Var(&tlsExtraDNSNames, "tls-extra-dns-name",
+		"additional DNS name the generated server certificate is issued for (repeatable), beyond the "+
+			"in-cluster names; a client reaching the server on any other name hits a hostname mismatch "+
+			"that no trust anchor can fix. A macOS kind install adds localhost automatically")
+	var tlsExtraIPs stringList
+	flags.Var(&tlsExtraIPs, "tls-extra-ip",
+		"additional IP address the generated server certificate is issued for (repeatable); an address "+
+			"reached as an IP needs an IP SAN, because a DNS name never matches one. A macOS kind "+
+			"install adds 127.0.0.1 automatically")
 	timeout := flags.Duration("timeout", 5*time.Minute, "wait timeout for pod readiness")
 
 	if err := flags.Parse(arguments); err != nil {
@@ -83,6 +93,8 @@ func runInstall(ctx context.Context, arguments []string, input io.Reader, output
 	cfg.BinaryVersion = version
 	cfg.SecretStoreUndecided = !cfg.InstallSecretStore && !cfg.InstallSecretStoreDev
 	cfg.CredentialedSecretPaths = credentialedSecretPaths
+	cfg.TLSExtraDNSNames = tlsExtraDNSNames
+	cfg.TLSExtraIPs = tlsExtraIPs
 
 	return installer.Execute(ctx, cfg, installer.InstallDeps{
 		Output: output,

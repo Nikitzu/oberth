@@ -110,6 +110,7 @@ func Execute(ctx context.Context, cfg Config, deps InstallDeps) error {
 	kindClusterName := ""
 	if deps.GOOS == "darwin" {
 		kindClusterName = KindClusterName
+		cfg.TLSExtraDNSNames, cfg.TLSExtraIPs = certificateNamesForKind(cfg.TLSExtraDNSNames, cfg.TLSExtraIPs)
 		cacheRoot, err := deps.UserCacheDir()
 		if err != nil {
 			return fmt.Errorf("find macOS cache directory: %w", err)
@@ -226,6 +227,25 @@ type kindPortMapping struct {
 type kindMount struct {
 	HostPath      string `json:"hostPath"`
 	ContainerPath string `json:"containerPath"`
+}
+
+// certificateNamesForKind adds the addresses a kind install is always reached
+// on to whatever the operator named. The chart publishes fixed NodePorts bound
+// to the loopback interface, so localhost and 127.0.0.1 are true of every kind
+// install; naming them on the certificate is what lets the read-only CLI and an
+// MCP client verify TLS without an /etc/hosts entry pointing a covered name at
+// the loopback. Existing entries are preserved and never duplicated.
+func certificateNamesForKind(dnsNames, ips []string) ([]string, []string) {
+	return appendMissing(dnsNames, "localhost"), appendMissing(ips, "127.0.0.1")
+}
+
+func appendMissing(values []string, want string) []string {
+	for _, value := range values {
+		if value == want {
+			return values
+		}
+	}
+	return append(values, want)
 }
 
 func kindClusterConfig(userCacheDir string) ([]byte, []string, error) {
