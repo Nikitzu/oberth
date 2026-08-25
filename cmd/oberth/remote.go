@@ -15,13 +15,18 @@ import (
 )
 
 type remoteRun struct {
-	ID         string
-	RepoID     int64
-	Ref        string
-	SHA        string
-	Actor      string
-	Trigger    string
-	Status     string
+	ID      string
+	RepoID  int64
+	Ref     string
+	SHA     string
+	Actor   string
+	Trigger string
+	Status  string
+	// Phase and Error carry why a run failed. Without them the client decodes
+	// a failed run into a struct that says only "failed", which is the one
+	// thing the reader already knows.
+	Phase      string
+	Error      string
 	FailedBurn string
 	FailedStep string
 	QueuedAt   time.Time
@@ -65,7 +70,7 @@ func remoteFlags(name string, arguments []string, output io.Writer) (*flag.FlagS
 	flags := flag.NewFlagSet(name, flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	asJSON := flags.Bool("json", false, "emit the server's payload unchanged")
-	if err := flags.Parse(arguments); err != nil {
+	if err := flags.Parse(permuteFlagsFirst(arguments)); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			flags.SetOutput(output)
 			flags.Usage()
@@ -74,6 +79,52 @@ func remoteFlags(name string, arguments []string, output io.Writer) (*flag.FlagS
 		return nil, nil, fmt.Errorf("%w: %w", errUsage, err)
 	}
 	return flags, asJSON, nil
+}
+
+// permuteFlagsFirst moves flags ahead of positional arguments.
+//
+// Go's flag package stops parsing at the first non-flag argument, so
+// `oberth run <id> --json` reads --json as a second positional and fails with
+// a usage error that says nothing about flag order. The documentation promises
+// --json on every command without qualifying where it goes, and the natural
+// place to type it is at the end.
+//
+// Everything after a bare "--" is left alone, so a positional that begins with
+// a dash can still be passed.
+func permuteFlagsFirst(arguments []string) []string {
+	var flagsSeen, positional []string
+	for index := 0; index < len(arguments); index++ {
+		argument := arguments[index]
+		if argument == "--" {
+			positional = append(positional, arguments[index+1:]...)
+			break
+		}
+		if strings.HasPrefix(argument, "-") && argument != "-" {
+			flagsSeen = append(flagsSeen, argument)
+			// A flag that takes a value consumes the next argument, unless the
+			// value was already joined with "=".
+			if !strings.Contains(argument, "=") && index+1 < len(arguments) &&
+				flagTakesValue(argument) {
+				index++
+				flagsSeen = append(flagsSeen, arguments[index])
+			}
+			continue
+		}
+		positional = append(positional, argument)
+	}
+	return append(flagsSeen, positional...)
+}
+
+// flagTakesValue reports whether a remote-command flag consumes the argument
+// after it. Booleans must not, or they would swallow the run ID.
+func flagTakesValue(argument string) bool {
+	name := strings.TrimLeft(argument, "-")
+	switch name {
+	case "json", "tail", "raw":
+		return false
+	default:
+		return true
+	}
 }
 
 func emitJSON(ctx context.Context, api *client.Client, path string, query map[string]string, output io.Writer) error {
@@ -162,6 +213,18 @@ func runRunDetail(ctx context.Context, arguments []string, output io.Writer) err
 	}
 	if detail.Repository.Name != "" {
 		if _, err := fmt.Fprintf(output, "repository: %s\n", detail.Repository.Name); err != nil {
+			return err
+		}
+	}
+	// The reason first, before the step list: a failed run is read to find out
+	// what went wrong, and burying it under timings makes the reader scroll
+	// past the answer.
+	if reason := strings.TrimSpace(detail.Run.Error); reason != "" {
+		phase := detail.Run.Phase
+		if phase == "" {
+			phase = "unknown"
+		}
+		if _, err := fmt.Fprintf(output, "failed in %s: %s\n", phase, reason); err != nil {
 			return err
 		}
 	}
