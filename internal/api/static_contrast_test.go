@@ -115,13 +115,39 @@ func themeBlock(t *testing.T, css, marker string) string {
 	return css[start : start+end]
 }
 
+// token resolves a custom property to a literal colour, following one level of
+// var() indirection. A fork names its brand palette once and refers to it, so
+// --pass:var(--tz-green-ink) is the normal shape and a test that only reads
+// hex would report the tokens missing rather than checking them.
 func token(t *testing.T, block, name string) string {
 	t.Helper()
-	match := regexp.MustCompile(regexp.QuoteMeta(name) + `: *(#[0-9a-fA-F]{6,8})`).FindStringSubmatch(block)
-	if match == nil {
-		t.Fatalf("token %s not found", name)
+	value := rawToken(t, block, name, true)
+	if strings.HasPrefix(value, "#") {
+		return value
 	}
-	return match[1]
+	reference := regexp.MustCompile(`var\((--[a-zA-Z0-9-]+)\)`).FindStringSubmatch(value)
+	if reference == nil {
+		t.Fatalf("token %s is %q, neither a colour nor a var() reference", name, value)
+	}
+	// Palette entries live outside the theme block, so search the whole sheet.
+	resolved := rawToken(t, string(staticAssets["app.css"].body)+
+		string(staticAssets["theme.css"].body), reference[1], true)
+	if !strings.HasPrefix(resolved, "#") {
+		t.Fatalf("token %s resolves to %q, which is not a colour", name, resolved)
+	}
+	return resolved
+}
+
+func rawToken(t *testing.T, source, name string, required bool) string {
+	t.Helper()
+	match := regexp.MustCompile(regexp.QuoteMeta(name) + `: *([^;}]+)`).FindStringSubmatch(source)
+	if match == nil {
+		if required {
+			t.Fatalf("token %s not found", name)
+		}
+		return ""
+	}
+	return strings.TrimSpace(match[1])
 }
 
 // composite flattens an eight-digit hex (colour plus alpha) onto an opaque
