@@ -69,6 +69,12 @@ type Client struct {
 	base  *url.URL
 	token string
 	http  *http.Client
+	// download shares the same transport but carries no whole-request
+	// timeout: http.Client.Timeout covers reading the entire body, and an
+	// artifact download bounded only by the server's ceiling (256 MiB per
+	// run by default) can legitimately outlive the 30 seconds that are
+	// right for an API call. Cancellation still works through the context.
+	download *http.Client
 }
 
 func New(ctx context.Context, config Config) (*Client, error) {
@@ -97,9 +103,10 @@ func New(ctx context.Context, config Config) (*Client, error) {
 		return nil, err
 	}
 	return &Client{
-		base:  base,
-		token: token,
-		http:  &http.Client{Timeout: requestTimeout, Transport: transport},
+		base:     base,
+		token:    token,
+		http:     &http.Client{Timeout: requestTimeout, Transport: transport},
+		download: &http.Client{Transport: transport},
 	}, nil
 }
 
@@ -139,7 +146,10 @@ func newTransport(caCert string) (http.RoundTripper, error) {
 	return cloned, nil
 }
 
-func (client *Client) Get(ctx context.Context, path string, query map[string]string, into any) error {
+// newGetRequest builds an authenticated GET for path. Every request path
+// shares it so the Authorization header can never diverge between the JSON
+// and the raw-download reads.
+func (client *Client) newGetRequest(ctx context.Context, path string, query map[string]string) (*http.Request, error) {
 	target := *client.base
 	target.Path = strings.TrimRight(target.Path, "/") + path
 	if len(query) > 0 {
@@ -153,9 +163,17 @@ func (client *Client) Get(ctx context.Context, path string, query map[string]str
 	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, target.String(), nil)
 	if err != nil {
-		return fmt.Errorf("client: build request for %s: %w", path, err)
+		return nil, fmt.Errorf("client: build request for %s: %w", path, err)
 	}
 	request.Header.Set("Authorization", "Bearer "+client.token)
+	return request, nil
+}
+
+func (client *Client) Get(ctx context.Context, path string, query map[string]string, into any) error {
+	request, err := client.newGetRequest(ctx, path, query)
+	if err != nil {
+		return err
+	}
 	request.Header.Set("Accept", "application/json")
 
 	response, err := client.http.Do(request)
@@ -188,41 +206,31 @@ func (client *Client) GetRaw(ctx context.Context, path string, query map[string]
 	return raw, nil
 }
 
-// GetBytes reads the response body as raw bytes without JSON decoding,
-// for payloads like artifact downloads where the server sends
-// application/octet-stream.
-func (client *Client) GetBytes(ctx context.Context, path string, query map[string]string) ([]byte, error) {
-	target := *client.base
-	target.Path = strings.TrimRight(target.Path, "/") + path
-	if len(query) > 0 {
-		values := url.Values{}
-		for name, value := range query {
-			if value != "" {
-				values.Set(name, value)
-			}
-		}
-		target.RawQuery = values.Encode()
-	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, target.String(), nil)
+// GetTo streams the response body into output without JSON decoding and
+// without maxResponseSize: that cap exists to bound JSON decoding in
+// memory, but an artifact is served as application/octet-stream and the
+// server's default per-run artifact ceiling is 256 MiB, so capping the
+// read at 8 MiB silently truncated every larger download (#237). The
+// transfer is bounded by the server's own artifact limits and cancelled
+// through ctx; nothing is buffered beyond io.Copy's window.
+func (client *Client) GetTo(ctx context.Context, path string, query map[string]string, output io.Writer) error {
+	request, err := client.newGetRequest(ctx, path, query)
 	if err != nil {
-		return nil, fmt.Errorf("client: build request for %s: %w", path, err)
+		return err
 	}
-	request.Header.Set("Authorization", "Bearer "+client.token)
-
-	response, err := client.http.Do(request)
+	response, err := client.download.Do(request)
 	if err != nil {
-		return nil, classifyTransport(path, err)
+		return classifyTransport(path, err)
 	}
 	defer func() { _ = response.Body.Close() }()
 
 	if response.StatusCode != http.StatusOK {
-		return nil, statusError(path, response)
+		return statusError(path, response)
 	}
-	body, err := io.ReadAll(io.LimitReader(response.Body, maxResponseSize))
-	if err != nil {
-		return nil, fmt.Errorf("client: read %s: %w", path, err)
+	if _, err := io.Copy(output, response.Body); err != nil {
+		return fmt.Errorf("client: read %s: %w", path, err)
 	}
-	return body, nil
+	return nil
 }
 
 func classifyTransport(path string, err error) error {

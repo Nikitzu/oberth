@@ -437,12 +437,7 @@ func remoteArtifacts(ctx context.Context, config client.Config, rest []string, o
 	}
 	reportMode("server")
 	if len(rest) == 2 {
-		body, readErr := api.GetBytes(ctx, "/api/runs/"+rest[0]+"/artifacts/"+rest[1], nil)
-		if readErr != nil {
-			return readErr
-		}
-		_, writeErr := output.Write(body)
-		return writeErr
+		return api.GetTo(ctx, "/api/runs/"+rest[0]+"/artifacts/"+rest[1], nil, output)
 	}
 	var listing remoteArtifactList
 	if err := api.Get(ctx, "/api/runs/"+rest[0]+"/artifacts", nil, &listing); err != nil {
