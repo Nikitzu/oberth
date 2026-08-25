@@ -32,6 +32,19 @@ const (
 	maximumReceiveSnapshotRefs = maximumPublicRefs + maximumReceiveRefUpdates
 )
 
+// ReservedUpstreamNames may not be used as upstream names because they would
+// alias an existing security or structural namespace. For example, an upstream
+// named "release" would overlap the release secret boundary
+// (oberth/data/release/*); "data" would overlap the KV mount; "upstream" would
+// overlap the hierarchical path prefix (oberth/upstream/*); "sys" would overlap
+// potential system paths.
+var ReservedUpstreamNames = map[string]bool{
+	"release":  true,
+	"data":     true,
+	"upstream": true,
+	"sys":      true,
+}
+
 // NormalizeRepo accepts the canonical SSH spellings /repo and repo.git while
 // refusing owner prefixes, traversal, and filesystem syntax. Repository-to-org
 // mapping belongs in the configured upstream resolver, never in a client path.
@@ -50,41 +63,90 @@ func NormalizeRepo(value string) (string, error) {
 	return value, nil
 }
 
-// ParseRepoPath accepts both bare repository names ("repo") and org-qualified
-// paths ("org/repo"). It returns the optional org prefix and the validated bare
-// repository name. The org prefix is matched against upstream base URLs during
-// resolution; it is never stored as part of the repository identity.
-func ParseRepoPath(value string) (org, repo string, err error) {
+// ValidateSegment validates a single path segment (upstream name, org, or repo)
+// against repoPattern and rejects traversal values. It is the common validator
+// for all segments of a repository path.
+func ValidateSegment(kind, value string) error {
+	if !repoPattern.MatchString(value) || value == "." || value == ".." || strings.Contains(value, "..") {
+		return fmt.Errorf("invalid %s %q in repository path", kind, value)
+	}
+	return nil
+}
+
+// ParseRepoPath accepts bare repository names ("repo"), org-qualified paths
+// ("org/repo"), and upstream-qualified paths ("upstream/org/repo"). It returns
+// the optional upstream name, optional org prefix, and the validated bare
+// repository name. Resolution of the returned upstream/org against registered
+// upstreams happens at a higher layer; this function performs only syntactic
+// validation.
+//
+// Forms:
+//   - 1 segment ("repo")              → upstream="", org="", repo
+//   - 2 segments ("org/repo")         → upstream="", org, repo
+//   - 3 segments ("upstream/org/repo") → upstream, org, repo
+func ParseRepoPath(value string) (upstream, org, repo string, err error) {
 	if strings.ContainsAny(value, "\x00\r\n\\") {
-		return "", "", errors.New("repository path contains forbidden characters")
+		return "", "", "", errors.New("repository path contains forbidden characters")
 	}
 	value = strings.TrimPrefix(value, "/")
 	value = strings.TrimSuffix(value, ".git")
 
-	parts := strings.SplitN(value, "/", 3)
-	if len(parts) == 2 && parts[0] != "" && parts[1] != "" {
-		org = parts[0]
-		repo = parts[1]
-		if !repoPattern.MatchString(org) || org == "." || org == ".." || strings.Contains(org, "..") {
-			return "", "", fmt.Errorf("invalid organization %q in repository path", org)
-		}
-		if !repoPattern.MatchString(repo) || repo == "." || repo == ".." || strings.Contains(repo, "..") {
-			return "", "", fmt.Errorf("invalid repository %q in org-qualified path", repo)
-		}
-		return org, repo, nil
-	}
+	parts := strings.SplitN(value, "/", 4)
 
-	// More than one slash means nested paths — reject.
-	if len(parts) > 2 {
-		return "", "", fmt.Errorf("repository path %q must not contain nested directories", value)
-	}
+	switch len(parts) {
+	case 3:
+		// upstream/org/repo — canonical 3-segment form.
+		if parts[0] == "" || parts[1] == "" || parts[2] == "" {
+			return "", "", "", fmt.Errorf("repository path %q has empty segments", value)
+		}
+		if err := ValidateSegment("upstream", parts[0]); err != nil {
+			return "", "", "", err
+		}
+		if err := ValidateSegment("organization", parts[1]); err != nil {
+			return "", "", "", err
+		}
+		if err := ValidateSegment("repository", parts[2]); err != nil {
+			return "", "", "", err
+		}
+		return parts[0], parts[1], parts[2], nil
 
-	// Bare repo name.
-	repo, err = NormalizeRepo(value)
-	if err != nil {
-		return "", "", err
+	case 2:
+		// org/repo — shorthand.
+		if parts[0] == "" || parts[1] == "" {
+			return "", "", "", fmt.Errorf("repository path %q has empty segments", value)
+		}
+		if err := ValidateSegment("organization", parts[0]); err != nil {
+			return "", "", "", err
+		}
+		if err := ValidateSegment("repository", parts[1]); err != nil {
+			return "", "", "", err
+		}
+		return "", parts[0], parts[1], nil
+
+	case 1:
+		// Bare repo name.
+		repo, err = NormalizeRepo(value)
+		if err != nil {
+			return "", "", "", err
+		}
+		return "", "", repo, nil
+
+	default:
+		// 4+ segments — reject.
+		return "", "", "", fmt.Errorf("repository path %q has too many segments (maximum 3: upstream/org/repo)", value)
 	}
-	return "", repo, nil
+}
+
+// ValidateUpstreamName checks that a name is valid for use as a registered
+// upstream name: it must match repoPattern, and must not be a reserved name.
+func ValidateUpstreamName(name string) error {
+	if err := ValidateSegment("upstream name", name); err != nil {
+		return err
+	}
+	if ReservedUpstreamNames[strings.ToLower(name)] {
+		return fmt.Errorf("upstream name %q is reserved; reserved names: release, data, upstream, sys", name)
+	}
+	return nil
 }
 
 // ValidateSHA requires the exact SHA-1 object IDs used by the configured

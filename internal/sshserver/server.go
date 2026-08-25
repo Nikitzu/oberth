@@ -431,14 +431,19 @@ func (s *Server) ReplayPending(ctx context.Context) error {
 }
 
 type gitCommand struct {
-	service gitcache.Service
-	org     string
-	repo    string
+	service  gitcache.Service
+	upstream string
+	org      string
+	repo     string
 }
 
 // input returns the qualified repository path used for upstream resolution.
-// When org is set, it returns "org/repo"; otherwise the bare repo name.
+// When the full upstream/org/repo path is set, it returns the canonical form.
+// When only org is set, it returns "org/repo"; otherwise the bare repo name.
 func (c gitCommand) input() string {
+	if c.upstream != "" {
+		return c.upstream + "/" + c.org + "/" + c.repo
+	}
 	if c.org != "" {
 		return c.org + "/" + c.repo
 	}
@@ -454,8 +459,9 @@ func parseExecPayload(payload []byte) (gitCommand, error) {
 }
 
 // ParseCommand accepts exactly the argv-free command shape emitted by Git's
-// SSH transport. It accepts both bare repository names ("repo") and
-// org-qualified paths ("org/repo"). It is deliberately not a shell parser.
+// SSH transport. It accepts bare repository names ("repo"), org-qualified
+// paths ("org/repo"), and upstream-qualified paths ("upstream/org/repo").
+// It is deliberately not a shell parser.
 func ParseCommand(value string) (gitCommand, error) {
 	if strings.ContainsAny(value, "\x00\r\n") {
 		return gitCommand{}, errors.New("malformed Git command")
@@ -472,11 +478,11 @@ func ParseCommand(value string) (gitCommand, error) {
 	if len(quoted) < 3 || quoted[0] != '\'' || quoted[len(quoted)-1] != '\'' || strings.Contains(quoted[1:len(quoted)-1], "'") {
 		return gitCommand{}, errors.New("repository path must be one single-quoted argument")
 	}
-	org, repo, err := gitcache.ParseRepoPath(quoted[1 : len(quoted)-1])
+	upstream, org, repo, err := gitcache.ParseRepoPath(quoted[1 : len(quoted)-1])
 	if err != nil {
 		return gitCommand{}, err
 	}
-	return gitCommand{service: service, org: org, repo: repo}, nil
+	return gitCommand{service: service, upstream: upstream, org: org, repo: repo}, nil
 }
 
 func parseProtocolEnv(payload []byte, result *string) bool {

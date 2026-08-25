@@ -7,7 +7,7 @@ type migration struct {
 }
 
 const (
-	latestMigrationVersion = 9
+	latestMigrationVersion = 10
 	// oberthSchemaIdentity is a compatibility-frozen opaque literal: every
 	// deployed database carries this exact identity row and a CHECK constraint
 	// on it. Renaming it is a breaking schema migration, not a string cleanup.
@@ -682,5 +682,26 @@ CREATE UNIQUE INDEX secret_access_active
     outcome TEXT NOT NULL,
     PRIMARY KEY (repo, entry)
 ) WITHOUT ROWID;`,
+	},
+	{
+		version: 10,
+		sql: `-- Phase 1 of org-qualified identity (#245): compound unique constraint
+-- on (upstream_id, name) replaces the single-column unique on name. This
+-- allows the same repository name under different upstreams (e.g.,
+-- codeberg/acme/terraform and github/acme/terraform).
+--
+-- SQLite cannot ALTER a UNIQUE constraint, so we rebuild the table.
+CREATE TABLE repositories_new (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    upstream_id INTEGER NOT NULL REFERENCES upstreams(id),
+    default_branch TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    UNIQUE(upstream_id, name)
+);
+INSERT INTO repositories_new SELECT * FROM repositories;
+DROP TABLE repositories;
+ALTER TABLE repositories_new RENAME TO repositories;`,
 	},
 }

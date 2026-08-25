@@ -890,16 +890,32 @@ func (c *Cache) isBare(ctx context.Context, path string) bool {
 }
 
 func (c *Cache) path(input string) (string, string, error) {
-	_, repo, err := ParseRepoPath(input)
+	upstream, org, repo, err := ParseRepoPath(input)
 	if err != nil {
 		return "", "", err
 	}
-	path := filepath.Join(c.root, repo+".git")
-	relative, err := filepath.Rel(c.root, path)
+	// Build the cache directory path. The canonical form
+	// upstream/org/repo.git nests under the cache root; shorter forms
+	// (org/repo, bare repo) use fewer directory levels for backwards
+	// compatibility with existing single-upstream deployments.
+	var cachePath string
+	var identity string
+	switch {
+	case upstream != "" && org != "":
+		cachePath = filepath.Join(c.root, upstream, org, repo+".git")
+		identity = upstream + "/" + org + "/" + repo
+	case org != "":
+		cachePath = filepath.Join(c.root, org, repo+".git")
+		identity = org + "/" + repo
+	default:
+		cachePath = filepath.Join(c.root, repo+".git")
+		identity = repo
+	}
+	relative, err := filepath.Rel(c.root, cachePath)
 	if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
 		return "", "", fmt.Errorf("repository path escapes cache root")
 	}
-	return repo, path, nil
+	return identity, cachePath, nil
 }
 
 func (c *Cache) repoLock(repo string) *sync.Mutex {

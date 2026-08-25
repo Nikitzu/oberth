@@ -29,31 +29,35 @@ const (
 func TestParseCommandStrictlyAllowsGitServices(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
-		value   string
-		service gitcache.Service
-		org     string
-		repo    string
+		value    string
+		service  gitcache.Service
+		upstream string
+		org      string
+		repo     string
 	}{
-		{"git-upload-pack '/example.git'", gitcache.UploadPack, "", "example"},
-		{"git-receive-pack 'example.git'", gitcache.ReceivePack, "", "example"},
-		{"git-upload-pack 'owner/example.git'", gitcache.UploadPack, "owner", "example"},
-		{"git-upload-pack '/oberthci/oberth.git'", gitcache.UploadPack, "oberthci", "oberth"},
-		{"git-receive-pack 'cloudtaser/operator'", gitcache.ReceivePack, "cloudtaser", "operator"},
+		{"git-upload-pack '/example.git'", gitcache.UploadPack, "", "", "example"},
+		{"git-receive-pack 'example.git'", gitcache.ReceivePack, "", "", "example"},
+		{"git-upload-pack 'owner/example.git'", gitcache.UploadPack, "", "owner", "example"},
+		{"git-upload-pack '/oberthci/oberth.git'", gitcache.UploadPack, "", "oberthci", "oberth"},
+		{"git-receive-pack 'cloudtaser/operator'", gitcache.ReceivePack, "", "cloudtaser", "operator"},
+		// 3-segment upstream/org/repo paths.
+		{"git-upload-pack 'codeberg/cloudtaser/terraform.git'", gitcache.UploadPack, "codeberg", "cloudtaser", "terraform"},
+		{"git-receive-pack 'github/oberthci/oberth'", gitcache.ReceivePack, "github", "oberthci", "oberth"},
 	}
 	for _, test := range tests {
 		command, err := ParseCommand(test.value)
 		if err != nil {
 			t.Fatalf("ParseCommand(%q): %v", test.value, err)
 		}
-		if command.service != test.service || command.org != test.org || command.repo != test.repo {
-			t.Fatalf("ParseCommand(%q) = {service: %q, org: %q, repo: %q}, want {service: %q, org: %q, repo: %q}",
-				test.value, command.service, command.org, command.repo, test.service, test.org, test.repo)
+		if command.service != test.service || command.upstream != test.upstream || command.org != test.org || command.repo != test.repo {
+			t.Fatalf("ParseCommand(%q) = {service: %q, upstream: %q, org: %q, repo: %q}, want {service: %q, upstream: %q, org: %q, repo: %q}",
+				test.value, command.service, command.upstream, command.org, command.repo, test.service, test.upstream, test.org, test.repo)
 		}
 	}
 	for _, value := range []string{
 		"git-upload-pack /example.git",
 		"git-upload-pack '../../secret'",
-		"git-upload-pack 'a/b/c.git'",
+		"git-upload-pack 'a/b/c/d.git'",
 		"git-upload-pack 'example.git'; id",
 		"git-receive-pack 'example.git' extra",
 		"sh -c 'git-upload-pack example.git'",
@@ -728,7 +732,7 @@ func (f *fakeGit) Ensure(_ context.Context, input string) (gitcache.Repository, 
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.ensureCalls++
-	_, repo, _ := gitcache.ParseRepoPath(input)
+	_, _, repo, _ := gitcache.ParseRepoPath(input)
 	if repo != "example" {
 		return gitcache.Repository{}, fmt.Errorf("unknown repository %s", input)
 	}
@@ -747,7 +751,7 @@ func (f *fakeGit) SnapshotRefs(context.Context, string) (map[string]string, erro
 
 func (f *fakeGit) Serve(_ context.Context, input string, service gitcache.Service, protocol string, _ io.Reader, _, _ io.Writer) error {
 	f.mu.Lock()
-	_, repo, _ := gitcache.ParseRepoPath(input)
+	_, _, repo, _ := gitcache.ParseRepoPath(input)
 	f.repo = repo
 	f.service = service
 	f.protocol = protocol
@@ -770,7 +774,7 @@ func (f *fakeGit) Serve(_ context.Context, input string, service gitcache.Servic
 
 func (f *fakeGit) Receive(ctx context.Context, input, actor, protocol string, _ io.Reader, _, _ io.Writer, handler gitcache.ReceiveHandler) error {
 	f.mu.Lock()
-	_, repo, _ := gitcache.ParseRepoPath(input)
+	_, _, repo, _ := gitcache.ParseRepoPath(input)
 	f.repo = repo
 	f.service = gitcache.ReceivePack
 	f.protocol = protocol

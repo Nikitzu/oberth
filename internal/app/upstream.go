@@ -39,13 +39,13 @@ func (upstreams Upstreams) Remote(input string) (string, error) {
 	if upstreams.Catalog == nil {
 		return "", errors.New("app: upstream catalog is required")
 	}
-	org, repositoryName, err := gitcache.ParseRepoPath(input)
+	upstreamName, org, repositoryName, err := gitcache.ParseRepoPath(input)
 	if err != nil {
 		return "", err
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), upstreams.timeout())
 	defer cancel()
-	upstream, err := upstreams.selectUpstream(ctx, org, repositoryName)
+	upstream, err := upstreams.selectUpstream(ctx, upstreamName, org, repositoryName)
 	if err != nil {
 		return "", err
 	}
@@ -62,23 +62,27 @@ func (upstreams Upstreams) DiscoverRepository(ctx context.Context, input string)
 	if upstreams.Catalog == nil {
 		return model.RepositorySpec{}, errors.New("app: upstream catalog is required")
 	}
-	org, repositoryName, err := gitcache.ParseRepoPath(input)
+	upstreamName, org, repositoryName, err := gitcache.ParseRepoPath(input)
 	if err != nil {
 		return model.RepositorySpec{}, err
 	}
-	upstream, err := upstreams.selectUpstream(ctx, org, repositoryName)
+	upstream, err := upstreams.selectUpstream(ctx, upstreamName, org, repositoryName)
 	if err != nil {
 		return model.RepositorySpec{}, err
 	}
 	return model.RepositorySpec{Name: repositoryName, UpstreamID: upstream.ID}, nil
 }
 
-func (upstreams Upstreams) selectUpstream(ctx context.Context, org, repositoryName string) (model.Upstream, error) {
+func (upstreams Upstreams) selectUpstream(ctx context.Context, upstreamName, org, repositoryName string) (model.Upstream, error) {
 	repository, err := upstreams.Catalog.RepositoryByName(ctx, repositoryName)
 	if err == nil {
 		upstream, lookupErr := upstreams.Catalog.Upstream(ctx, repository.UpstreamID)
 		if lookupErr != nil {
 			return model.Upstream{}, fmt.Errorf("app: load repository upstream: %w", lookupErr)
+		}
+		// When an upstream name is provided, it must match the registered upstream.
+		if upstreamName != "" && !strings.EqualFold(upstream.Name, upstreamName) {
+			return model.Upstream{}, fmt.Errorf("app: repository %s is registered under upstream %q, not %q", repositoryName, upstream.Name, upstreamName)
 		}
 		if org != "" && !upstreamMatchesOrg(upstream, org) {
 			return model.Upstream{}, fmt.Errorf("app: repository %s is registered under upstream %q, not %q", repositoryName, upstream.Name, org)
@@ -94,6 +98,16 @@ func (upstreams Upstreams) selectUpstream(ctx context.Context, org, repositoryNa
 	}
 	if len(values) == 0 {
 		return model.Upstream{}, errors.New("app: no upstream is configured")
+	}
+
+	// When an upstream name is provided (3-segment path), match by name.
+	if upstreamName != "" {
+		for _, u := range values {
+			if strings.EqualFold(u.Name, upstreamName) {
+				return u, nil
+			}
+		}
+		return model.Upstream{}, fmt.Errorf("app: no upstream registered with name %q; available: %s", upstreamName, formatUpstreams(values))
 	}
 
 	// When an org prefix is provided, match it against upstream base URLs.
@@ -121,7 +135,7 @@ func (upstreams Upstreams) selectUpstream(ctx context.Context, org, repositoryNa
 
 	// No org — require exactly one upstream for implicit discovery.
 	if len(values) != 1 {
-		return model.Upstream{}, fmt.Errorf("app: repository %s has no mapping and %d upstreams are configured; use org/repo format (available: %s)", repositoryName, len(values), formatUpstreams(values))
+		return model.Upstream{}, fmt.Errorf("app: repository %s has no mapping and %d upstreams are configured; use upstream/org/repo or org/repo format (available: %s)", repositoryName, len(values), formatUpstreams(values))
 	}
 	return values[0], nil
 }

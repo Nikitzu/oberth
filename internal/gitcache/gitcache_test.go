@@ -16,37 +16,49 @@ import (
 func TestParseRepoPathAcceptsOrgQualifiedAndBare(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
-		input    string
-		wantOrg  string
-		wantRepo string
+		input        string
+		wantUpstream string
+		wantOrg      string
+		wantRepo     string
 	}{
-		{"example", "", "example"},
-		{"/example.git", "", "example"},
-		{"acme/example", "acme", "example"},
-		{"/acme/example.git", "acme", "example"},
-		{"oberthci/oberth", "oberthci", "oberth"},
-		{"cloud-taser/my_repo.git", "cloud-taser", "my_repo"},
+		// 1-segment: bare repo name.
+		{"example", "", "", "example"},
+		{"/example.git", "", "", "example"},
+		// 2-segment: org/repo shorthand.
+		{"acme/example", "", "acme", "example"},
+		{"/acme/example.git", "", "acme", "example"},
+		{"oberthci/oberth", "", "oberthci", "oberth"},
+		{"cloud-taser/my_repo.git", "", "cloud-taser", "my_repo"},
+		// 3-segment: upstream/org/repo canonical form.
+		{"codeberg/cloudtaser/terraform", "codeberg", "cloudtaser", "terraform"},
+		{"/codeberg/cloudtaser/terraform.git", "codeberg", "cloudtaser", "terraform"},
+		{"github/oberthci/oberth", "github", "oberthci", "oberth"},
 	}
 	for _, test := range tests {
-		org, repo, err := ParseRepoPath(test.input)
+		upstream, org, repo, err := ParseRepoPath(test.input)
 		if err != nil {
 			t.Fatalf("ParseRepoPath(%q): %v", test.input, err)
 		}
-		if org != test.wantOrg || repo != test.wantRepo {
-			t.Fatalf("ParseRepoPath(%q) = (%q, %q), want (%q, %q)", test.input, org, repo, test.wantOrg, test.wantRepo)
+		if upstream != test.wantUpstream || org != test.wantOrg || repo != test.wantRepo {
+			t.Fatalf("ParseRepoPath(%q) = (%q, %q, %q), want (%q, %q, %q)",
+				test.input, upstream, org, repo, test.wantUpstream, test.wantOrg, test.wantRepo)
 		}
 	}
 	for _, value := range []string{
 		"../secret",
-		"a/b/c",
 		"owner/../../secret",
 		"org/repo\nother",
 		"-bad/repo",
 		"org/-bad",
 		".git",
 		"",
+		"a/b/c/d",            // 4 segments — too many
+		"-upstream/org/repo", // invalid upstream segment
+		"up/../../secret",    // traversal in 3-segment
+		"up/-bad/repo",       // invalid org segment
+		"up/org/-bad",        // invalid repo segment
 	} {
-		if _, _, err := ParseRepoPath(value); err == nil {
+		if _, _, _, err := ParseRepoPath(value); err == nil {
 			t.Fatalf("ParseRepoPath(%q) unexpectedly succeeded", value)
 		}
 	}
