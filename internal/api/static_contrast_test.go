@@ -23,8 +23,16 @@ const (
 )
 
 func TestLightThemeStatusInkClearsAA(t *testing.T) {
+	// theme.css is the fork seam: it is empty upstream and a deployment
+	// replaces it to retheme without editing app.css. A fork that redefines
+	// these tokens has to clear AA too, and a brand colour chosen for a logo
+	// is exactly the kind that does not. Reading whichever file actually
+	// defines them means this test follows the tokens rather than the file.
 	css := string(staticAssets["app.css"].body)
-	light := themeBlock(t, css, "body.light{")
+	if theme := string(staticAssets["theme.css"].body); strings.Contains(theme, "--pass-bg") {
+		css = theme
+	}
+	light := themeBlock(t, css, "light{")
 	const white = "#ffffff"
 
 	for _, status := range []string{"pass", "fail", "run"} {
