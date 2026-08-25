@@ -40,14 +40,14 @@ func FromEnv() Config {
 
 func (config Config) Configured() bool { return config.BaseURL != "" }
 
-func (config Config) resolveToken() (string, error) {
+func (config Config) resolveToken(ctx context.Context) (string, error) {
 	if config.Token != "" {
 		return config.Token, nil
 	}
 	if config.TokenCommand == "" {
 		return "", errors.New("client: set OBERTH_TOKEN, or OBERTH_TOKEN_COMMAND naming a command that prints one")
 	}
-	command := exec.Command("/bin/sh", "-c", config.TokenCommand) // #nosec G204 -- the operator's own command, from their environment.
+	command := exec.CommandContext(ctx, "/bin/sh", "-c", config.TokenCommand) // #nosec G204 -- the operator's own command, from their environment.
 	var stderr strings.Builder
 	command.Stderr = &stderr
 	out, err := command.Output()
@@ -71,7 +71,7 @@ type Client struct {
 	http  *http.Client
 }
 
-func New(config Config) (*Client, error) {
+func New(ctx context.Context, config Config) (*Client, error) {
 	if config.BaseURL == "" {
 		return nil, errors.New("client: set OBERTH_BASE_URL to the server's https address")
 	}
@@ -85,7 +85,7 @@ func New(config Config) (*Client, error) {
 	if base.Host == "" {
 		return nil, errors.New("client: OBERTH_BASE_URL has no host")
 	}
-	token, err := config.resolveToken()
+	token, err := config.resolveToken(ctx)
 	if err != nil {
 		return nil, err
 	}

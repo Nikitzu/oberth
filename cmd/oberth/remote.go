@@ -54,12 +54,12 @@ type remoteRunDetail struct {
 	Repository remoteRepository
 }
 
-func remoteClient() (*client.Client, error) {
+func remoteClient(ctx context.Context) (*client.Client, error) {
 	config := client.FromEnv()
 	if !config.Configured() {
 		return nil, errors.New("set OBERTH_BASE_URL to the server's address to read it from here")
 	}
-	return client.New(config)
+	return client.New(ctx, config)
 }
 
 func reportMode(mode string) {
@@ -157,7 +157,7 @@ func runRuns(ctx context.Context, arguments []string, output io.Writer) error {
 		}
 		return fmt.Errorf("%w: %w", errUsage, err)
 	}
-	api, err := remoteClient()
+	api, err := remoteClient(ctx)
 	if err != nil {
 		return err
 	}
@@ -194,7 +194,7 @@ func runRunDetail(ctx context.Context, arguments []string, output io.Writer) err
 	if flags.NArg() != 1 {
 		return fmt.Errorf("%w: run <run-id>", errUsage)
 	}
-	api, err := remoteClient()
+	api, err := remoteClient(ctx)
 	if err != nil {
 		return err
 	}
@@ -284,7 +284,7 @@ func runRemoteLog(ctx context.Context, arguments []string, output io.Writer) err
 	if strings.TrimSpace(*burn) == "" || strings.TrimSpace(*step) == "" {
 		return fmt.Errorf("%w: --burn and --step are required; oberth run <id> lists them", errUsage)
 	}
-	api, err := remoteClient()
+	api, err := remoteClient(ctx)
 	if err != nil {
 		return err
 	}
@@ -344,7 +344,7 @@ func runRepos(ctx context.Context, arguments []string, output io.Writer) error {
 	if err != nil || flags == nil {
 		return err
 	}
-	api, err := remoteClient()
+	api, err := remoteClient(ctx)
 	if err != nil {
 		return err
 	}
@@ -369,7 +369,7 @@ func runRemoteStatus(ctx context.Context, arguments []string, output io.Writer) 
 	if err != nil || flags == nil {
 		return err
 	}
-	api, err := remoteClient()
+	api, err := remoteClient(ctx)
 	if err != nil {
 		return err
 	}
@@ -383,7 +383,7 @@ func runIssues(ctx context.Context, arguments []string, output io.Writer) error 
 	if err != nil || flags == nil {
 		return err
 	}
-	api, err := remoteClient()
+	api, err := remoteClient(ctx)
 	if err != nil {
 		return err
 	}
@@ -429,7 +429,7 @@ type remoteArtifactList struct {
 }
 
 func remoteArtifacts(ctx context.Context, config client.Config, rest []string, output io.Writer) error {
-	api, err := client.New(config)
+	api, err := client.New(ctx, config)
 	if err != nil {
 		return err
 	}

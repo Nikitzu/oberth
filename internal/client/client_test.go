@@ -34,7 +34,7 @@ func TestConfiguredReportsWhetherAServerIsSet(t *testing.T) {
 func TestTokenComesFromTheEnvironment(t *testing.T) {
 	clearEnv(t)
 	t.Setenv("OBERTH_TOKEN", secret)
-	got, err := FromEnv().resolveToken()
+	got, err := FromEnv().resolveToken(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -46,7 +46,7 @@ func TestTokenComesFromTheEnvironment(t *testing.T) {
 func TestTokenCommandStdoutIsTrimmed(t *testing.T) {
 	clearEnv(t)
 	t.Setenv("OBERTH_TOKEN_COMMAND", "printf '"+secret+"\\n\\n'")
-	got, err := FromEnv().resolveToken()
+	got, err := FromEnv().resolveToken(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -58,7 +58,7 @@ func TestTokenCommandStdoutIsTrimmed(t *testing.T) {
 func TestTokenCommandFailureSurfacesItsOwnStderr(t *testing.T) {
 	clearEnv(t)
 	t.Setenv("OBERTH_TOKEN_COMMAND", "echo 'vault is locked' >&2; exit 3")
-	_, err := FromEnv().resolveToken()
+	_, err := FromEnv().resolveToken(t.Context())
 	if err == nil {
 		t.Fatal("a failing token command succeeded")
 	}
@@ -69,7 +69,7 @@ func TestTokenCommandFailureSurfacesItsOwnStderr(t *testing.T) {
 
 func TestAMissingTokenNamesTheEnvironmentVariable(t *testing.T) {
 	clearEnv(t)
-	_, err := FromEnv().resolveToken()
+	_, err := FromEnv().resolveToken(t.Context())
 	if err == nil {
 		t.Fatal("no token was accepted")
 	}
@@ -83,7 +83,7 @@ func newClient(t *testing.T, server *httptest.Server) *Client {
 	clearEnv(t)
 	t.Setenv("OBERTH_BASE_URL", server.URL)
 	t.Setenv("OBERTH_TOKEN", secret)
-	client, err := New(FromEnv())
+	client, err := New(t.Context(), FromEnv())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -207,7 +207,7 @@ func TestNoFailurePathEverEchoesTheToken(t *testing.T) {
 	clearEnv(t)
 	t.Setenv("OBERTH_BASE_URL", "https://127.0.0.1:1")
 	t.Setenv("OBERTH_TOKEN", secret)
-	client, err := New(FromEnv())
+	client, err := New(t.Context(), FromEnv())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -228,7 +228,7 @@ func TestAnUntrustedCertificateIsRefusedUntilItsAnchorIsSupplied(t *testing.T) {
 	clearEnv(t)
 	t.Setenv("OBERTH_BASE_URL", server.URL)
 	t.Setenv("OBERTH_TOKEN", secret)
-	client, err := New(FromEnv())
+	client, err := New(t.Context(), FromEnv())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -248,7 +248,7 @@ func TestAnUntrustedCertificateIsRefusedUntilItsAnchorIsSupplied(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("OBERTH_CA_CERT", anchor)
-	trusted, err := New(FromEnv())
+	trusted, err := New(t.Context(), FromEnv())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -291,7 +291,7 @@ func TestNewRefusesAMalformedBaseURL(t *testing.T) {
 	t.Setenv("OBERTH_TOKEN", secret)
 	for _, base := range []string{"", "not a url", "ftp://oberth.example", "://broken"} {
 		t.Setenv("OBERTH_BASE_URL", base)
-		if _, err := New(FromEnv()); err == nil {
+		if _, err := New(t.Context(), FromEnv()); err == nil {
 			t.Fatalf("base URL %q was accepted", base)
 		}
 	}
@@ -314,7 +314,7 @@ func TestAHostnameMismatchNamesTheAddressesTheCertificateCovers(t *testing.T) {
 	t.Setenv("OBERTH_BASE_URL", address)
 	t.Setenv("OBERTH_TOKEN", secret)
 	t.Setenv("OBERTH_CA_CERT", anchor)
-	api, err := New(FromEnv())
+	api, err := New(t.Context(), FromEnv())
 	if err != nil {
 		t.Fatal(err)
 	}
