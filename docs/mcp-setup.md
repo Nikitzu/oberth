@@ -119,6 +119,7 @@ call the proxy hostname directly.
 | `access_allow` | Grant a step access to a secret path (admin-only) |
 | `access_revoke` | Revoke a step's access to a secret path (admin-only) |
 | `repo_list` | List registered repositories with upstream and probe state |
+| `repo_remove` | Remove a repository mapping and its Git cache (admin-only) |
 | `run_list` | List recent runs with optional repo/ref filter (bounded page) |
 | `system_status` | System health: database, upstreams, cluster, audit, version |
 

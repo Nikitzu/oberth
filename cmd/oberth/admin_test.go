@@ -1959,3 +1959,126 @@ func TestHostModeExecPassesThroughFlags(t *testing.T) {
 		}
 	}
 }
+
+func TestRepoRemoveDeletesMappingAndCleansCacheDirectory(t *testing.T) {
+	t.Parallel()
+	directory := t.TempDir()
+	databasePath := filepath.Join(directory, "oberth.sqlite")
+	registerTestUpstream(t, databasePath, "github", "ssh://git@github.com/acme")
+	if err := runRepoWithDependencies(context.Background(), []string{
+		"add", "--database", databasePath, "widget", "github",
+	}, io.Discard, repoDependencies{mutationGate: allowTestMutation}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create a fake git cache directory.
+	gitCacheRoot := filepath.Join(directory, "git")
+	cachePath := filepath.Join(gitCacheRoot, "widget.git")
+	if err := os.MkdirAll(cachePath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cachePath, "HEAD"), []byte("ref: refs/heads/main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var output bytes.Buffer
+	if err := runRepoWithDependencies(context.Background(), []string{
+		"remove", "--database", databasePath, "--git-cache-root", gitCacheRoot, "widget",
+	}, &output, repoDependencies{mutationGate: allowTestMutation}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(output.String(), "removed repository widget") || !strings.Contains(output.String(), "was upstream github") {
+		t.Fatalf("repo remove output = %q", output.String())
+	}
+
+	// Verify the repository is gone from the database.
+	database, err := store.OpenAdminClient(context.Background(), databasePath, store.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, repoErr := database.RepositoryByName(context.Background(), "widget")
+	closeErr := database.Close()
+	if closeErr != nil {
+		t.Fatal(closeErr)
+	}
+	if !errors.Is(repoErr, store.ErrNotFound) {
+		t.Fatalf("repository still exists after removal: %v", repoErr)
+	}
+
+	// Verify the git cache directory was cleaned up.
+	if _, err := os.Stat(cachePath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("git cache directory still exists: %v", err)
+	}
+}
+
+func TestRepoRemoveRefusesInFlightRuns(t *testing.T) {
+	t.Parallel()
+	databasePath := filepath.Join(t.TempDir(), "oberth.sqlite")
+	registerTestUpstream(t, databasePath, "github", "ssh://git@github.com/acme")
+	if err := runRepoWithDependencies(context.Background(), []string{
+		"add", "--database", databasePath, "widget", "github",
+	}, io.Discard, repoDependencies{mutationGate: allowTestMutation}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create an in-flight run.
+	database, err := store.OpenAdminClient(context.Background(), databasePath, store.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository, err := database.RepositoryByName(context.Background(), "widget")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.EnqueueRun(context.Background(), model.RunSpec{
+		RepoID: repository.ID, RefKind: model.RefBranch, Ref: "main",
+		SHA: strings.Repeat("a", 40), Actor: "test@host", Trigger: "push",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	err = runRepoWithDependencies(context.Background(), []string{
+		"remove", "--database", databasePath, "widget",
+	}, io.Discard, repoDependencies{mutationGate: allowTestMutation})
+	if err == nil || !strings.Contains(err.Error(), "in-flight") {
+		t.Fatalf("expected in-flight run rejection, got %v", err)
+	}
+}
+
+func TestRepoRemoveRefusesNonexistentRepository(t *testing.T) {
+	t.Parallel()
+	databasePath := filepath.Join(t.TempDir(), "oberth.sqlite")
+	registerTestUpstream(t, databasePath, "github", "ssh://git@github.com/acme")
+
+	err := runRepoWithDependencies(context.Background(), []string{
+		"remove", "--database", databasePath, "nonexistent",
+	}, io.Discard, repoDependencies{mutationGate: allowTestMutation})
+	if !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("expected ErrNotFound, got %v", err)
+	}
+}
+
+func TestRepoRemoveFailsClosedWhenAuditGateRejects(t *testing.T) {
+	t.Parallel()
+	databasePath := filepath.Join(t.TempDir(), "oberth.sqlite")
+	err := runRepoWithDependencies(context.Background(), []string{
+		"remove", "--database", databasePath, "widget",
+	}, io.Discard, repoDependencies{mutationGate: func(context.Context, string, string) error {
+		return errors.New("injected external audit failure")
+	}})
+	if err == nil || !strings.Contains(err.Error(), "injected external audit failure") {
+		t.Fatalf("gate rejection error = %v", err)
+	}
+}
+
+func TestRepoRemoveHelpReturnsNil(t *testing.T) {
+	t.Parallel()
+	var output bytes.Buffer
+	err := runRepoWithDependencies(context.Background(), []string{"remove", "--help"}, &output, repoDependencies{mutationGate: allowTestMutation})
+	if err != nil {
+		t.Fatalf("repo remove --help = %v", err)
+	}
+}

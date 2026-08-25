@@ -268,6 +268,7 @@ func toolDefinitions() []map[string]any {
 		tool("access_allow", "Grant a step access to a secret path. Requires admin uplink.", object(map[string]any{"repo": stringProperty("Repository name"), "step": stringProperty("Step/template name"), "secret": stringProperty("Short secret path (e.g. terraform/credentials)")}, "repo", "step", "secret")),
 		tool("access_revoke", "Revoke a step's access to a secret path. Requires admin uplink.", object(map[string]any{"repo": stringProperty("Repository name"), "step": stringProperty("Step/template name"), "secret": stringProperty("Short secret path (e.g. terraform/credentials)")}, "repo", "step", "secret")),
 		tool("repo_list", "List registered repositories with their upstream and probe state.", object(map[string]any{})),
+		tool("repo_remove", "Remove a repository mapping and its Git cache. Requires admin uplink. Refuses if runs are in-flight or promotions are pending.", object(map[string]any{"repo": stringProperty("Repository name")}, "repo")),
 		tool("run_list", "List recent runs with optional repository and ref filters, bounded page.", object(map[string]any{
 			"repo":  stringProperty("Filter by repository name"),
 			"ref":   stringProperty("Filter by branch or tag ref"),
