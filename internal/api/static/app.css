@@ -39,7 +39,73 @@ button:disabled{cursor:not-allowed;opacity:.45}
 :focus-visible{outline:2px solid var(--acc-line);outline-offset:2px}
 a{color:inherit}
 
-.app{min-height:100vh;display:grid;grid-template-rows:auto 1fr}
+.app{min-height:100vh;display:grid;grid-template-columns:208px minmax(0,1fr)}
+body.rail-collapsed .app{grid-template-columns:52px minmax(0,1fr)}
+.work{display:grid;grid-template-rows:auto 1fr;min-width:0}
+
+/* The rail is a distinct surface from the workspace, not the same panel with a
+   border. Light mode steps down to --panel3 because --panel2 against a white
+   main area is a 3% lightness difference, which reads as a rendering artefact
+   rather than as structure. */
+.side{display:flex;flex-direction:column;background:var(--panel2);
+  border-right:1px solid var(--line);position:sticky;top:0;height:100vh;
+  overflow:hidden;z-index:21}
+body.light .side{background:var(--panel3)}
+.side-head{display:flex;align-items:center;gap:6px;height:52px;padding:0 10px 0 14px;
+  border-bottom:1px solid var(--line)}
+.railbtn{display:grid;place-items:center;width:26px;height:26px;flex:none;margin-left:auto;
+  border-radius:var(--rs);color:var(--dim)}
+.railbtn:hover{background:var(--panel3);color:var(--fg)}
+body.light .railbtn:hover{background:var(--panel)}
+body.rail-collapsed .railbtn svg{transform:rotate(180deg)}
+
+.side-foot{margin-top:auto;border-top:1px solid var(--line);padding:9px 10px;
+  display:flex;flex-direction:column;gap:8px}
+.side-actions{display:flex;flex-direction:column;gap:2px}
+
+/* Footer actions carry their label when there is room and collapse to the icon
+   alone when there is not, so the rail reads the same either way: one row per
+   action, aligned to the nav above it. */
+.sidebtn{display:flex;align-items:center;gap:10px;height:31px;padding:0 9px;
+  border-radius:var(--rs);font-size:11.5px;color:var(--dim);white-space:nowrap}
+.sidebtn:hover{background:var(--panel3);color:var(--fg)}
+body.light .sidebtn:hover{background:var(--panel)}
+.sidebtn:active{transform:scale(.97)}
+.sidebtn-ico{display:grid;place-items:center;width:15px;height:15px;flex:none}
+/* The theme button names the mode it switches to, so the icon and the label
+   both flip with the body class rather than being rewritten from script. */
+.ico-dark,.lbl-dark{display:none}
+body.light .ico-light,body.light .lbl-light{display:none}
+body.light .ico-dark{display:grid}
+body.light .lbl-dark{display:inline}
+
+body.rail-collapsed .side-head{padding:0;justify-content:center}
+body.rail-collapsed .brand{justify-content:center}
+body.rail-collapsed .railbtn{position:absolute;top:13px;right:13px;margin-left:0}
+body.rail-collapsed .brand-name,
+body.rail-collapsed .nav2 a span,
+body.rail-collapsed .conn-text,
+body.rail-collapsed #versionStatus{display:none}
+body.rail-collapsed .nav2 a{justify-content:center;padding:0}
+body.rail-collapsed .side-foot{align-items:center;padding:9px 0}
+body.rail-collapsed .top-status{padding:0}
+body.rail-collapsed .sidebtn-label{display:none}
+body.rail-collapsed .sidebtn{justify-content:center;padding:0;width:31px}
+
+/* Phone widths only. The rail's expanded state is a stored preference and is
+   deliberately not written back here: this presents it collapsed without
+   changing what the user chose on a wider screen. */
+@media (max-width:700px){
+  .app,body.rail-collapsed .app{grid-template-columns:52px minmax(0,1fr)}
+  .brand-name,.nav2 a span,.conn-text,#versionStatus{display:none}
+  .nav2 a{justify-content:center;padding:0}
+  .side-head{padding:0;justify-content:center}
+  .railbtn{display:none}
+  .side-foot{align-items:center;padding:9px 0}
+  .top-status{padding:0}
+  .sidebtn-label{display:none}
+  .sidebtn{justify-content:center;padding:0;width:31px}
+}
 
 .top{display:flex;align-items:center;gap:10px;height:52px;padding:0 20px;
   background:var(--panel);border-bottom:1px solid var(--line);position:sticky;top:0;z-index:20}
@@ -49,7 +115,7 @@ a{color:inherit}
 .bref{color:var(--fg)}
 .sha,.branch{color:var(--acc)}
 .brand .sub{color:var(--dim);font-weight:400;font-size:11.5px}
-.ask{display:flex;align-items:center;gap:9px;flex:1;max-width:400px;height:31px;padding:0 12px;
+.ask{display:flex;align-items:center;gap:9px;flex:1;max-width:520px;height:31px;padding:0 12px;
   border-radius:var(--r);border:1px solid var(--line2);background:var(--bg)}
 .ask:focus-within{border-color:var(--acc-line)}
 .ask input{flex:1;min-width:0;border:0;background:none;padding:0;color:var(--fg);
@@ -57,12 +123,17 @@ a{color:inherit}
 .ask input::placeholder{color:var(--dim)}
 .ask input:focus{outline:none}
 .ask input::-webkit-search-cancel-button{-webkit-appearance:none}
-.nav2{display:flex;align-items:center;gap:2px}
-.nav2 a{padding:5px 10px;border-radius:var(--rs);font-size:11.5px;color:var(--dim);
+.nav2{display:flex;flex-direction:column;gap:2px;padding:9px 10px;overflow-y:auto}
+.nav2 a{display:flex;align-items:center;gap:10px;height:31px;padding:0 9px;
+  border-radius:var(--rs);font-size:11.5px;color:var(--dim);
   text-decoration:none;cursor:pointer;white-space:nowrap}
-.nav2 a:hover,.nav2 a.on{color:var(--fg);background:var(--panel2)}
-.top-right{margin-left:auto;display:flex;align-items:center;gap:10px}
-.top-status{display:flex;align-items:center;gap:7px;font-size:11.5px;color:var(--muted)}
+.nav2 a svg{flex:none}
+.nav2 a:hover,.nav2 a.on{color:var(--fg);background:var(--panel3)}
+body.light .nav2 a:hover,body.light .nav2 a.on{background:var(--panel)}
+.nav2 a.on{box-shadow:inset 2px 0 0 var(--acc)}
+.nav2 a:active{transform:scale(.97)}
+.top-status{display:flex;align-items:center;gap:7px;font-size:11.5px;color:var(--muted);padding:0 9px}
+.status-segment{display:inline-flex;align-items:center;gap:8px;min-width:0}
 .led{width:7px;height:7px;border-radius:50%;background:var(--idle);display:inline-block}
 .backend.ok .led,.led.ok{background:var(--pass)}
 .backend.err .led,.led.err,.led.bad{background:var(--fail)}
@@ -70,7 +141,9 @@ a{color:inherit}
 .status-divider{width:1px;height:12px;background:var(--line2)}
 .version-mode.unknown{color:var(--dim)}
 .iconbtn{display:grid;place-items:center;width:29px;height:29px;border-radius:var(--rs);color:var(--dim)}
-.iconbtn:hover{background:var(--panel2);color:var(--fg)}
+.iconbtn:hover{background:var(--panel3);color:var(--fg)}
+body.light .iconbtn:hover{background:var(--panel)}
+.iconbtn:active,.railbtn:active{transform:scale(.95)}
 .kb{font-size:9.5px;padding:1px 5px;border-radius:3px;background:var(--acc-bg);
   border:1px solid var(--line2);line-height:1.5;font-family:var(--mono);color:var(--dim)}
 

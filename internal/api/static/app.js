@@ -204,6 +204,29 @@ function setVersion(ok, version) {
   }
 }
 function initTheme() { if (localStorage.getItem("oberth-theme") === "light") document.body.classList.add("light"); }
+/* The rail's collapsed state is a stored preference, like the theme. Both read
+   from localStorage before first paint so neither flashes the wrong state. */
+function initRail() {
+  if (localStorage.getItem("oberth-rail") === "collapsed") document.body.classList.add("rail-collapsed");
+  syncRail();
+}
+function toggleRail() {
+  document.body.classList.toggle("rail-collapsed");
+  localStorage.setItem("oberth-rail", document.body.classList.contains("rail-collapsed") ? "collapsed" : "expanded");
+  syncRail();
+}
+/* Collapsing hides each item's label, which removes it from the accessibility
+   tree, so the button's own name has to say which direction it goes and the
+   links carry their own aria-label in the markup. */
+function syncRail() {
+  const button = document.querySelector('[data-action="toggle-rail"]');
+  if (!button) return;
+  const collapsed = document.body.classList.contains("rail-collapsed");
+  const label = collapsed ? "Expand sidebar" : "Collapse sidebar";
+  button.setAttribute("aria-expanded", String(!collapsed));
+  button.setAttribute("aria-label", label);
+  button.title = label;
+}
 function toggleTheme() {
   document.body.classList.toggle("light");
   localStorage.setItem("oberth-theme", document.body.classList.contains("light") ? "light" : "dark");
@@ -1098,6 +1121,7 @@ document.addEventListener("click", event => {
   if (target.dataset.route) { go(target.dataset.route); return; }
   switch (target.dataset.action) {
     case "toggle-theme": toggleTheme(); break;
+    case "toggle-rail": toggleRail(); break;
     case "refresh": state.logCache.clear(); route(); break;
     case "clear-token": clearToken(); break;
     case "submit-token": submitToken(); break;
@@ -1202,5 +1226,6 @@ issueDialog?.addEventListener("click", event => { if (event.target === issueDial
 
 /* ---------- boot ---------- */
 initTheme();
+initRail();
 setVersion(false, document.body.dataset.version);
 route();
