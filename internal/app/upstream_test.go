@@ -172,8 +172,11 @@ func TestOrgQualifiedValidatesAgainstMappedUpstream(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for wrong org on mapped repository")
 	}
-	if !strings.Contains(err.Error(), "registered under upstream") {
-		t.Fatalf("error = %q, want mismatch explanation", err.Error())
+	// Assert on the two values the reader needs, rather than on the sentence
+	// they arrive in: the org the repository does belong to, and the one that
+	// was asked for.
+	if !strings.Contains(err.Error(), `"oberthci"`) || !strings.Contains(err.Error(), `"cloudtaser"`) {
+		t.Fatalf("error = %q, want it to name both the registered org and the requested one", err.Error())
 	}
 }
 
