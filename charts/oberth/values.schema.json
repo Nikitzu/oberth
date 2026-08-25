@@ -227,6 +227,20 @@
       "properties": {
         "existingSecret": {
           "type": "string"
+        },
+        "extraDNSNames": {
+          "type": "array",
+          "description": "Additional DNS names the generated server certificate is issued for, beyond the in-cluster ones. A client reaching the server on any other name hits a hostname mismatch, which no trust anchor can fix. Ignored when tls.existingSecret is set, and applied only when the certificate is generated.",
+          "items": {
+            "type": "string"
+          }
+        },
+        "extraIPs": {
+          "type": "array",
+          "description": "Additional IP addresses the generated server certificate is issued for. An address reached as an IP needs an IP SAN; a DNS name will not match it.",
+          "items": {
+            "type": "string"
+          }
         }
       }
     },

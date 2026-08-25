@@ -105,6 +105,19 @@ persistence:
 
 tls:
   existingSecret: ""
+  # Names the generated certificate is issued for, beyond the four in-cluster
+  # ones. The certificate covers oberth, oberth.<namespace>, and the two svc
+  # forms; anything reaching the server on another address -- a NodePort on
+  # localhost, an ingress hostname -- gets a hostname mismatch, and that is the
+  # one TLS failure no trust anchor can repair. Name the address people use.
+  #
+  # An address reached as an IP needs extraIPs: a DNS SAN never matches an IP.
+  #
+  # Both are ignored when existingSecret is set, and the Secret is generated
+  # once and kept, so changing these on an existing release has no effect until
+  # the Secret is deleted.
+  extraDNSNames: []
+  extraIPs: []
 
 # The SSH host key is the durable identity of this deployment: Git clients pin
 # it AND the external audit witness identity is derived from it. By default the
