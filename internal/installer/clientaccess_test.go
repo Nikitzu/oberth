@@ -3,6 +3,8 @@ package installer
 import (
 	"bytes"
 	"context"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -26,6 +28,14 @@ func clientAccessDeps(t *testing.T, input string) (Deps, *bytes.Buffer, string) 
 		Output:     &out,
 		Input:      strings.NewReader(input),
 		IsTerminal: func() bool { return true },
+		// Deny every host binary by default. Without this the tests find the
+		// real `claude` on the developer's PATH and register a server in their
+		// own configuration, which is a test suite editing the machine it runs
+		// on. A test that wants that path stubs LookPath itself.
+		LookPath: func(string) (string, error) { return "", errors.New("not found in test") },
+		RunCommand: func(_ context.Context, _ []byte, name string, args ...string) ([]byte, error) {
+			return nil, fmt.Errorf("test ran an unstubbed command: %s %s", name, strings.Join(args, " "))
+		},
 		KubeClient: fake.NewSimpleClientset(&corev1.Secret{
 			ObjectMeta: metav1.ObjectMeta{Name: "oberth-tls", Namespace: "oberth"},
 			Data:       map[string][]byte{"tls.crt": []byte("-----BEGIN CERTIFICATE-----\ntest\n-----END CERTIFICATE-----\n")},
@@ -138,5 +148,61 @@ func assertExists(t *testing.T, path string, want bool) {
 		t.Errorf("%s was not written", filepath.Base(path))
 	case !want && err == nil:
 		t.Errorf("%s was written but not asked for", filepath.Base(path))
+	}
+}
+
+// Writing ~/.config/oberth/mcp.json configures nothing: no client reads that
+// path. Claude Code has a documented command for registering a server, so the
+// install offers to run it rather than leaving the operator to merge JSON into
+// a file by hand.
+func TestClientAccessRegistersWithClaudeCodeWhenItIsPresent(t *testing.T) {
+	deps, _, _ := clientAccessDeps(t, "\n")
+	var ran [][]string
+	deps.LookPath = func(name string) (string, error) { return "/usr/local/bin/" + name, nil }
+	deps.RunCommand = func(_ context.Context, _ []byte, name string, args ...string) ([]byte, error) {
+		ran = append(ran, append([]string{name}, args...))
+		return nil, nil
+	}
+	tw := newTableWriter(deps.Output, false)
+
+	if err := offerClientAccess(context.Background(), Config{}, deps, tw, testToken); err != nil {
+		t.Fatal(err)
+	}
+
+	var registered []string
+	for _, command := range ran {
+		if len(command) > 2 && command[0] == "claude" && command[1] == "mcp" {
+			registered = command
+		}
+	}
+	if registered == nil {
+		t.Fatalf("claude is on PATH but the server was never registered; commands run: %v", ran)
+	}
+	joined := strings.Join(registered, " ")
+	if !strings.Contains(joined, "add-json") || !strings.Contains(joined, "oberth") {
+		t.Errorf("registration command is not an add-json for oberth: %s", joined)
+	}
+	if strings.Contains(joined, testToken) {
+		t.Error("the registration command carries the token in its arguments")
+	}
+}
+
+// Without the client installed there is nothing to register, and the written
+// file plus the printed instruction are the whole answer.
+func TestClientAccessDoesNotInventAClientThatIsNotInstalled(t *testing.T) {
+	deps, _, _ := clientAccessDeps(t, "\n")
+	deps.LookPath = func(string) (string, error) { return "", errors.New("not found") }
+	var ran int
+	deps.RunCommand = func(context.Context, []byte, string, ...string) ([]byte, error) {
+		ran++
+		return nil, nil
+	}
+	tw := newTableWriter(deps.Output, false)
+
+	if err := offerClientAccess(context.Background(), Config{}, deps, tw, testToken); err != nil {
+		t.Fatal(err)
+	}
+	if ran != 0 {
+		t.Errorf("ran %d commands with no client installed", ran)
 	}
 }
