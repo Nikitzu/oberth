@@ -45,9 +45,9 @@ func TestBuildPerUpstreamSSHCommandUsesProjectedKeyFiles(t *testing.T) {
 	defer func() { _ = database.Close() }()
 	for _, spec := range []model.UpstreamSpec{
 		{Name: "codeberg", Kind: "ssh", BaseURL: "ssh://git@codeberg.org/acme", KeyName: "id_ed25519-codeberg"},
-		{Name: "github", Kind: "ssh", BaseURL: "ssh://git@github.com/acme"},
-		{Name: "hostile", Kind: "ssh", BaseURL: "ssh://git@hostile.example/acme", KeyName: "../../../etc/passwd"},
-		{Name: "unprojected", Kind: "ssh", BaseURL: "ssh://git@pending.example/acme", KeyName: "id_ed25519-unprojected"},
+		{Name: "github", Kind: "ssh", BaseURL: "ssh://git@github.com/octocat"},
+		{Name: "hostile", Kind: "ssh", BaseURL: "ssh://git@hostile.example/intruder", KeyName: "../../../etc/passwd"},
+		{Name: "unprojected", Kind: "ssh", BaseURL: "ssh://git@pending.example/pending-org", KeyName: "id_ed25519-unprojected"},
 	} {
 		if _, err := database.RegisterUpstream(ctx, "admin@test", spec); err != nil {
 			t.Fatal(err)

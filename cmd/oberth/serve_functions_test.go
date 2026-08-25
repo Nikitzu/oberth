@@ -9,9 +9,11 @@ import (
 	"crypto/x509"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"math/big"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -19,6 +21,8 @@ import (
 	"time"
 
 	"github.com/oberthci/oberth/internal/secretstore"
+	"github.com/oberthci/oberth/internal/service"
+	"github.com/oberthci/oberth/internal/store"
 )
 
 func TestPathWithinAcceptsChildAndRejectsSibling(t *testing.T) {
@@ -39,6 +43,52 @@ func TestPathWithinAcceptsChildAndRejectsSibling(t *testing.T) {
 	for _, test := range tests {
 		if got := pathWithin(test.root, test.path); got != test.want {
 			t.Errorf("pathWithin(%q, %q) = %v, want %v", test.root, test.path, got, test.want)
+		}
+	}
+}
+
+func TestClassifyViewErrorMapsSentinelsAndMasksUnknown(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name        string
+		err         error
+		wantCode    int
+		wantMessage string
+	}{
+		{
+			name: "invalid input keeps message", err: fmt.Errorf("%w: repo is required", service.ErrInvalidInput),
+			wantCode: http.StatusBadRequest, wantMessage: "service: invalid input: repo is required",
+		},
+		{
+			name: "forbidden masks detail", err: fmt.Errorf("%w: repo_remove requires an admin uplink", service.ErrForbidden),
+			wantCode: http.StatusForbidden, wantMessage: "forbidden",
+		},
+		{
+			name: "not found masks detail", err: fmt.Errorf("%w: repository", store.ErrNotFound),
+			wantCode: http.StatusNotFound, wantMessage: "not found",
+		},
+		{
+			// State-based refusals are actionable answers for the caller:
+			// an admin refused a repo_remove for in-flight runs or immutable
+			// history must see the reason, not an opaque reference ID.
+			name: "invalid state keeps message", err: fmt.Errorf("%w: repository x has 2 in-flight run(s)", store.ErrInvalidState),
+			wantCode: http.StatusConflict, wantMessage: "store: invalid state transition: repository x has 2 in-flight run(s)",
+		},
+		{
+			name: "unavailable masks detail", err: fmt.Errorf("%w: repository removal", service.ErrUnavailable),
+			wantCode: http.StatusServiceUnavailable, wantMessage: "service unavailable",
+		},
+		{
+			// Unknown errors must never carry internals (paths, SQL state)
+			// to the client; they collapse to a generic internal error.
+			name: "unknown collapses to internal", err: errors.New("sqlite: disk I/O error at /data/oberth.sqlite"),
+			wantCode: http.StatusInternalServerError, wantMessage: "internal error",
+		},
+	}
+	for _, test := range tests {
+		code, message := classifyViewError(test.err)
+		if code != test.wantCode || message != test.wantMessage {
+			t.Errorf("%s: classifyViewError = (%d, %q), want (%d, %q)", test.name, code, message, test.wantCode, test.wantMessage)
 		}
 	}
 }

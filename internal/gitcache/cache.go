@@ -895,6 +895,31 @@ func (c *Cache) receiveLock(repo string) *sync.Mutex {
 	return value.(*sync.Mutex)
 }
 
+// RemoveRepository deletes the bare cache directory for one repository,
+// serializing with any in-flight receive or refresh on the same repository
+// through the same locks those paths hold (receiveLock outer, repoLock
+// inner — the receive lifecycle's own ordering). The input is re-validated
+// and the resulting path is confined to the cache root by c.path before
+// anything is removed; a name that fails validation removes nothing. A
+// missing directory is success: removal is idempotent, and the next push's
+// Ensure recreates the cache from the upstream.
+func (c *Cache) RemoveRepository(input string) error {
+	repo, path, err := c.path(input)
+	if err != nil {
+		return err
+	}
+	receiveLock := c.receiveLock(repo)
+	receiveLock.Lock()
+	defer receiveLock.Unlock()
+	lock := c.repoLock(repo)
+	lock.Lock()
+	defer lock.Unlock()
+	if err := os.RemoveAll(path); err != nil {
+		return fmt.Errorf("remove repository cache: %w", err)
+	}
+	return nil
+}
+
 // RefSHA resolves a branch to its commit SHA in the cached bare repository
 // without contacting the upstream. Returns an error if the cache does not
 // exist or the branch is not present.

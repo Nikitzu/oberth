@@ -972,19 +972,31 @@ func runRepo(ctx context.Context, arguments []string, output io.Writer) error {
 	return runRepoWithDependencies(ctx, arguments, output, repoDependencies{mutationGate: requestLiveAdminMutationGate})
 }
 
-// runRepoWithDependencies maps one repository name to a configured upstream.
-// Push-time discovery performs this mapping automatically only while exactly
-// one upstream is configured; with several upstreams an unmapped push fails
-// closed, and this command is the explicit administrative mapping step.
+// runRepoWithDependencies dispatches repository administration subcommands.
 func runRepoWithDependencies(ctx context.Context, arguments []string, output io.Writer, dependencies repoDependencies) error {
-	if len(arguments) == 0 || arguments[0] != "add" {
-		return fmt.Errorf("%w: repo add [--database PATH] [--default-branch NAME] <repository> <upstream-name>", errUsage)
+	if len(arguments) == 0 {
+		return fmt.Errorf("%w: repo add|remove", errUsage)
 	}
+	switch arguments[0] {
+	case "add":
+		return runRepoAdd(ctx, arguments[1:], output, dependencies)
+	case "remove":
+		return runRepoRemove(ctx, arguments[1:], output, dependencies)
+	default:
+		return fmt.Errorf("%w: repo add [--database PATH] [--default-branch NAME] <repository> <upstream-name> | repo remove [--database PATH] [--git-cache-root PATH] <repository>", errUsage)
+	}
+}
+
+// runRepoAdd maps one repository name to a configured upstream. Push-time
+// discovery performs this mapping automatically only while exactly one
+// upstream is configured; with several upstreams an unmapped push fails
+// closed, and this command is the explicit administrative mapping step.
+func runRepoAdd(ctx context.Context, arguments []string, output io.Writer, dependencies repoDependencies) error {
 	flags := flag.NewFlagSet("repo add", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	databasePath := flags.String("database", "/data/oberth.sqlite", "SQLite database path (in-pod; requires the live admin daemon)")
 	defaultBranch := flags.String("default-branch", "main", "repository default branch until the first push confirms it")
-	if err := flags.Parse(arguments[1:]); err != nil {
+	if err := flags.Parse(arguments); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			flags.SetOutput(output)
 			flags.Usage()
@@ -1050,6 +1062,59 @@ func runRepoWithDependencies(ctx context.Context, arguments []string, output io.
 	}
 	_, err = fmt.Fprintf(output, "registered repository %s -> upstream %s (%s); the first push proves the mapping and refreshes the default branch\n",
 		value.Name, upstream.Name, upstream.BaseURL)
+	return err
+}
+
+// runRepoRemove deletes a repository mapping and its Git cache directory.
+// Refuses if the repository has in-flight runs or pending promotions.
+func runRepoRemove(ctx context.Context, arguments []string, output io.Writer, dependencies repoDependencies) error {
+	flags := flag.NewFlagSet("repo remove", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	databasePath := flags.String("database", "/data/oberth.sqlite", "SQLite database path (in-pod; requires the live admin daemon)")
+	gitCacheRoot := flags.String("git-cache-root", "/data/git", "root directory for bare Git caches")
+	if err := flags.Parse(arguments); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			flags.SetOutput(output)
+			flags.Usage()
+			return nil
+		}
+		return fmt.Errorf("%w: %w", errUsage, err)
+	}
+	if flags.NArg() != 1 {
+		return fmt.Errorf("%w: repo remove requires a repository name", errUsage)
+	}
+	name, err := gitcache.NormalizeRepo(flags.Arg(0))
+	if err != nil {
+		return err
+	}
+	if dependencies.mutationGate == nil {
+		return errors.New("admin audit mutation gate is unavailable")
+	}
+	if err := dependencies.mutationGate(ctx, "repository.database.open", *databasePath); err != nil {
+		return err
+	}
+	database, err := store.OpenAdminClient(ctx, *databasePath, store.Options{})
+	if err != nil {
+		return err
+	}
+	defer func() { _ = database.Close() }()
+	if err := dependencies.mutationGate(ctx, "repository.remove", *databasePath); err != nil {
+		return err
+	}
+	removed, err := database.RemoveRepository(ctx, administrativeActor, name)
+	if err != nil {
+		return err
+	}
+
+	// Clean up the bare Git cache directory.
+	cachePath := filepath.Join(*gitCacheRoot, name+".git")
+	if err := os.RemoveAll(cachePath); err != nil {
+		// Cache cleanup is best-effort: the database record is already gone,
+		// so a stale directory is inert and the next push will re-create it.
+		_, _ = fmt.Fprintf(output, "warning: failed to remove git cache %s: %v\n", cachePath, err)
+	}
+
+	_, err = fmt.Fprintf(output, "removed repository %s (was upstream %s)\n", removed.Name, removed.UpstreamName)
 	return err
 }
 

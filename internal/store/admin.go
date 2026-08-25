@@ -35,6 +35,31 @@ func (s *Store) RegisterUpstream(ctx context.Context, actor string, spec model.U
 		return model.Upstream{}, fmt.Errorf("begin upstream registration: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
+
+	// Org-scoped secret paths (oberth/upstream/<org>/*) and org-qualified SSH
+	// path resolution both derive <org> from the trailing path segment of the
+	// base URL (model.Upstream.Org). Two upstreams whose base URLs share that
+	// segment map to the SAME secret subtree and SSH org, silently merging two
+	// trust domains: a repository of upstream B becomes structurally eligible
+	// for secrets seeded for upstream A. The name UNIQUE constraint does not
+	// catch this because the names differ and the base URLs may differ by host
+	// or scheme (github.com/acme vs gitlab.com/acme, or https:// vs ssh://).
+	// Reject a colliding or empty Org() at admission, naming the conflict,
+	// before the upstream exists (issue #217). This is the narrow admission
+	// guard; scoping the virtual path by full upstream identity is the broader
+	// Breaking change tracked separately.
+	newOrg := model.Upstream{BaseURL: spec.BaseURL}.Org()
+	if newOrg == "" {
+		return model.Upstream{}, fmt.Errorf("%w: base URL %q yields an empty organization identity; org-scoped secret paths require a non-empty trailing path segment", ErrInvalid, spec.BaseURL)
+	}
+	existing, err := upstreamOrgConflict(ctx, tx, newOrg)
+	if err != nil {
+		return model.Upstream{}, err
+	}
+	if existing != "" {
+		return model.Upstream{}, fmt.Errorf("%w: organization %q is already claimed by upstream %q; two upstreams with the same org would alias org-scoped secret paths (oberth/upstream/%s/*)", ErrInvalid, newOrg, existing, newOrg)
+	}
+
 	result, err := tx.ExecContext(ctx, `
 INSERT INTO upstreams(name, kind, base_url, key_name, created_at, updated_at) VALUES(?, ?, ?, ?, ?, ?)`,
 		spec.Name, spec.Kind, spec.BaseURL, spec.KeyName, now, now)
@@ -55,6 +80,33 @@ INSERT INTO upstreams(name, kind, base_url, key_name, created_at, updated_at) VA
 		return model.Upstream{}, fmt.Errorf("commit upstream registration: %w", err)
 	}
 	return s.Upstream(ctx, id)
+}
+
+// upstreamOrgConflict returns the name of an existing upstream whose Org()
+// equals org, or "" when none collides. It fully drains and closes its cursor
+// before returning so a subsequent write on the same transaction cannot block
+// on an open read cursor (SQLite serializes reads and writes on one
+// connection).
+func upstreamOrgConflict(ctx context.Context, tx *sql.Tx, org string) (string, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT name, base_url FROM upstreams`)
+	if err != nil {
+		return "", fmt.Errorf("check upstream org uniqueness: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var conflict string
+	for rows.Next() {
+		var name, baseURL string
+		if err := rows.Scan(&name, &baseURL); err != nil {
+			return "", fmt.Errorf("scan upstream org: %w", err)
+		}
+		if conflict == "" && (model.Upstream{BaseURL: baseURL}).Org() == org {
+			conflict = name
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return "", fmt.Errorf("check upstream org uniqueness: %w", err)
+	}
+	return conflict, nil
 }
 
 // RegisterRepository atomically maps one repository name to a configured
@@ -146,6 +198,106 @@ func (s *Store) RemoveUpstream(ctx context.Context, actor, name string) ([]strin
 		return nil, fmt.Errorf("commit upstream removal: %w", err)
 	}
 	return repositories, nil
+}
+
+// RemoveRepository atomically removes one repository mapping after verifying
+// no runs are in-flight and no promotions are pending. The upstream name is
+// resolved for the confirmation message. A repository that holds immutable CI
+// history (runs, promotions, receive events, publications, or issues) fails
+// the removal closed: history rows are immutable evidence and are never
+// cascaded away. Deletion is audited. No tombstone is left, so upstream
+// discovery can re-register the name on a future push.
+func (s *Store) RemoveRepository(ctx context.Context, actor, name string) (RemovedRepository, error) {
+	if strings.TrimSpace(actor) == "" || strings.TrimSpace(name) == "" {
+		return RemovedRepository{}, fmt.Errorf("%w: actor and repository name are required", ErrInvalid)
+	}
+	now := unixNano(s.now())
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return RemovedRepository{}, fmt.Errorf("begin repository removal: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	// Resolve the repository and its upstream name.
+	var repoID, upstreamID int64
+	var repoName, defaultBranch string
+	var created, updated int64
+	if err := tx.QueryRowContext(ctx, `
+SELECT id, name, upstream_id, default_branch, created_at, updated_at
+FROM repositories WHERE name = ?`, name).Scan(
+		&repoID, &repoName, &upstreamID, &defaultBranch, &created, &updated); err != nil {
+		return RemovedRepository{}, translateNotFound("repository", err)
+	}
+	var upstreamName string
+	if err := tx.QueryRowContext(ctx, `SELECT name FROM upstreams WHERE id = ?`, upstreamID).Scan(&upstreamName); err != nil {
+		return RemovedRepository{}, fmt.Errorf("resolve upstream name: %w", err)
+	}
+
+	// Safety: refuse if any run is queued or running.
+	var activeRuns int
+	if err := tx.QueryRowContext(ctx, `
+SELECT COUNT(*) FROM runs WHERE repo_id = ? AND status IN ('queued', 'running')`,
+		repoID).Scan(&activeRuns); err != nil {
+		return RemovedRepository{}, fmt.Errorf("check in-flight runs: %w", err)
+	}
+	if activeRuns > 0 {
+		return RemovedRepository{}, fmt.Errorf("%w: repository %s has %d in-flight run(s); wait for them to finish before removing",
+			ErrInvalidState, name, activeRuns)
+	}
+
+	// Safety: refuse if any promotion is pending.
+	var pendingPromotions int
+	if err := tx.QueryRowContext(ctx, `
+SELECT COUNT(*) FROM promotions WHERE repo_id = ? AND status = 'pending'`,
+		repoID).Scan(&pendingPromotions); err != nil {
+		return RemovedRepository{}, fmt.Errorf("check pending promotions: %w", err)
+	}
+	if pendingPromotions > 0 {
+		return RemovedRepository{}, fmt.Errorf("%w: repository %s has %d pending promotion(s); wait for them to finish before removing",
+			ErrInvalidState, name, pendingPromotions)
+	}
+
+	// Attempt deletion. FK constraints from runs, promotions, receive_events,
+	// publications, issues, ci_issue_work, ci_issue_projections, trusted_plans,
+	// and trusted_applies will fail the deletion if any immutable history exists.
+	if _, err := tx.ExecContext(ctx, `DELETE FROM repositories WHERE id = ?`, repoID); err != nil {
+		if strings.Contains(err.Error(), "FOREIGN KEY constraint failed") {
+			return RemovedRepository{}, fmt.Errorf("%w: repository %s has immutable CI history; removal is not supported once runs exist", ErrInvalidState, name)
+		}
+		return RemovedRepository{}, fmt.Errorf("remove repository: %w", err)
+	}
+	details, err := json.Marshal(map[string]string{
+		"name":     name,
+		"upstream": upstreamName,
+	})
+	if err != nil {
+		return RemovedRepository{}, fmt.Errorf("encode repository removal audit: %w", err)
+	}
+	if _, err := appendAuditAction(ctx, tx, model.AuditActionSpec{
+		Actor: actor, Action: "repository.remove", ResourceType: "repository",
+		ResourceID: fmt.Sprint(repoID), Details: string(details),
+	}, now); err != nil {
+		return RemovedRepository{}, fmt.Errorf("audit repository removal: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return RemovedRepository{}, fmt.Errorf("commit repository removal: %w", err)
+	}
+	return RemovedRepository{
+		Repository: model.Repository{
+			ID: repoID, Name: repoName, UpstreamID: upstreamID,
+			DefaultBranch: defaultBranch,
+			CreatedAt:     fromUnixNano(created), UpdatedAt: fromUnixNano(updated),
+		},
+		UpstreamName: upstreamName,
+	}, nil
+}
+
+// RemovedRepository carries the removed repository's identity and its upstream
+// name for the confirmation message. The Repository value is the state at
+// removal time.
+type RemovedRepository struct {
+	model.Repository
+	UpstreamName string
 }
 
 func listUpstreamRepositoryNames(ctx context.Context, tx *sql.Tx, upstreamID int64) ([]string, error) {

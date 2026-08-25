@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // runGitStdin runs one git command with the given stdin, failing the test on
@@ -24,6 +25,93 @@ func runGitStdin(t *testing.T, dir, stdin string, args ...string) string {
 		t.Fatalf("git %q failed: %v\n%s", args, err, output)
 	}
 	return strings.TrimSpace(string(output))
+}
+
+// TestCaptureFailureIncludesGitStderr verifies that when a captured git
+// command fails, the returned error carries git's own stderr (the reason)
+// instead of a bare "exit status N" (issue #212). A failing cat-file exits 128
+// and writes "fatal: Not a valid object name deadbeef" to stderr.
+func TestCaptureFailureIncludesGitStderr(t *testing.T) {
+	t.Parallel()
+	bare := filepath.Join(t.TempDir(), "empty.git")
+	runGit(t, "", "init", "--quiet", "--bare", bare)
+
+	cache := newTestCache(t, "unused-upstream")
+	_, err := cache.capture(context.Background(), bare, "cat-file", "-p", "deadbeef")
+	if err == nil {
+		t.Fatal("expected cat-file on a missing object to fail")
+	}
+	if !strings.Contains(err.Error(), "deadbeef") {
+		t.Fatalf("error must carry git stderr naming the bad object; got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "git command failed") {
+		t.Fatalf("error must keep the git-command-failed prefix; got: %v", err)
+	}
+}
+
+// TestRunFailureIncludesGitStderrWithoutCallerWriter verifies the streaming
+// (non-capture) path with no caller-supplied stderr writer still surfaces the
+// reason: previously stderr was discarded entirely there.
+func TestRunFailureIncludesGitStderrWithoutCallerWriter(t *testing.T) {
+	t.Parallel()
+	bare := filepath.Join(t.TempDir(), "empty.git")
+	runGit(t, "", "init", "--quiet", "--bare", bare)
+
+	cache := newTestCache(t, "unused-upstream")
+	err := cache.run(context.Background(), commandSpec{dir: bare, args: []string{"cat-file", "-p", "deadbeef"}})
+	if err == nil {
+		t.Fatal("expected failure")
+	}
+	if !strings.Contains(err.Error(), "deadbeef") {
+		t.Fatalf("streaming-mode error must carry git stderr; got: %v", err)
+	}
+}
+
+// TestRunFailureTeesStderrToCallerAndError verifies the MultiWriter tee does
+// not rob the caller: a supplied stderr writer still receives the full stream
+// AND the error carries the reason.
+func TestRunFailureTeesStderrToCallerAndError(t *testing.T) {
+	t.Parallel()
+	bare := filepath.Join(t.TempDir(), "empty.git")
+	runGit(t, "", "init", "--quiet", "--bare", bare)
+
+	cache := newTestCache(t, "unused-upstream")
+	var callerStderr strings.Builder
+	err := cache.run(context.Background(), commandSpec{
+		dir: bare, args: []string{"cat-file", "-p", "deadbeef"}, stderr: &callerStderr,
+	})
+	if err == nil {
+		t.Fatal("expected failure")
+	}
+	if !strings.Contains(callerStderr.String(), "deadbeef") {
+		t.Fatalf("caller stderr writer must still receive the stream; got: %q", callerStderr.String())
+	}
+	if !strings.Contains(err.Error(), "deadbeef") {
+		t.Fatalf("error must also carry the reason; got: %v", err)
+	}
+}
+
+// TestGitFailureDetailRedactsConfiguredSecret verifies the surfaced stderr is
+// masked through the same secret set as command logging, so a configured token
+// that appears in output cannot leak into an error string, CI issue, or log.
+func TestGitFailureDetailRedactsConfiguredSecret(t *testing.T) {
+	t.Parallel()
+	cache, err := New(Config{
+		Root:           filepath.Join(t.TempDir(), "cache"),
+		CommandTimeout: 10 * time.Second,
+		Redact:         []string{"s3cr3t-token-value"},
+		Upstream:       func(string) (string, error) { return "unused", nil },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := cache.redactOutput("fatal: auth failed for token s3cr3t-token-value at remote")
+	if strings.Contains(got, "s3cr3t-token-value") {
+		t.Fatalf("configured secret must be redacted from surfaced output; got: %q", got)
+	}
+	if !strings.Contains(got, "***") {
+		t.Fatalf("redaction marker missing; got: %q", got)
+	}
 }
 
 // TestListRefsSurvivesOutputBeyondCaptureTailLimit locks in the fix for the

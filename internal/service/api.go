@@ -48,6 +48,8 @@ type APIConfig struct {
 	RemoveWorkspace        func(string) error
 	SecretAccess           SecretAccessStore
 	SecretAccessReconciler *AccessReconciler
+	RepositoryRemover      RepositoryRemover
+	RemoveGitCache         func(string) error
 }
 
 type API struct {
@@ -72,6 +74,8 @@ type API struct {
 	secretAccess           SecretAccessStore
 	secretAccessReconciler *AccessReconciler
 	publisher              func(context.Context, string) error
+	repositoryRemover      RepositoryRemover
+	removeGitCache         func(string) error
 }
 
 func NewAPI(config APIConfig) (*API, error) {
@@ -110,7 +114,8 @@ func NewAPI(config APIConfig) (*API, error) {
 		health: config.Health, signals: signals, maximumWait: maximumWait, mutationGate: mutationGate,
 		promotionWorkspaceRoot: promotionWorkspaceRoot, workspaces: workspaces,
 		secretAccess: config.SecretAccess, secretAccessReconciler: config.SecretAccessReconciler,
-		publisher: config.Publisher,
+		publisher:         config.Publisher,
+		repositoryRemover: config.RepositoryRemover, removeGitCache: config.RemoveGitCache,
 	}, nil
 }
 
@@ -399,6 +404,14 @@ func (service *API) CallTool(ctx context.Context, actor api.Actor, name string, 
 		return service.accessRevoke(ctx, actor, arguments.Repo, arguments.Step, arguments.Secret)
 	case "repo_list":
 		return service.Repositories(ctx, actor)
+	case "repo_remove":
+		var arguments struct {
+			Repo string `json:"repo"`
+		}
+		if err := decodeTool(raw, &arguments); err != nil {
+			return nil, err
+		}
+		return service.repoRemove(ctx, actor, arguments.Repo)
 	case "run_list":
 		var arguments struct {
 			Repo  string `json:"repo"`
@@ -1387,7 +1400,8 @@ func wireIssueLock(lock model.IssueLock) api.IssueLockResponse {
 func mutatingTool(name string) bool {
 	switch name {
 	case "sync", "promote", "issue_create", "issue_update", "issue_close", "issue_delete", "issue_lock",
-		"access_allow", "access_revoke":
+		"access_allow", "access_revoke",
+		"repo_remove":
 		return true
 	default:
 		return false
@@ -1564,6 +1578,35 @@ func (service *API) accessRevoke(ctx context.Context, actor api.Actor, repo, ste
 		return api.AccessGrantResponse{}, err
 	}
 	return wireAccessGrant(grant), nil
+}
+
+func (service *API) repoRemove(ctx context.Context, actor api.Actor, repo string) (any, error) {
+	if !actor.Admin {
+		return nil, fmt.Errorf("%w: repo_remove requires an admin uplink; mint one with: oberth uplink add --admin - <identity>@<host> < key.pub", ErrForbidden)
+	}
+	if service.repositoryRemover == nil {
+		return nil, fmt.Errorf("%w: repository removal", ErrUnavailable)
+	}
+	if strings.TrimSpace(repo) == "" {
+		return nil, fmt.Errorf("%w: repo is required", ErrInvalidInput)
+	}
+	removed, err := service.repositoryRemover.RemoveRepository(ctx, actor.Identity, repo)
+	if err != nil {
+		return nil, err
+	}
+	response := map[string]string{"removed": removed.Name, "upstream": removed.UpstreamName}
+	// Best-effort git cache cleanup: the mapping is already gone, a stale
+	// directory is inert, and the next push's Ensure recreates it. A failure
+	// is still surfaced to the (admin) caller rather than swallowed, so an
+	// operator knows a manual sweep is needed instead of discovering a stale
+	// directory later. The cache path derives from the store's registered
+	// name, never from raw tool input.
+	if service.removeGitCache != nil {
+		if cacheErr := service.removeGitCache(removed.Name); cacheErr != nil {
+			response["cache_warning"] = cacheErr.Error()
+		}
+	}
+	return response, nil
 }
 
 func wireAccessGrant(grant store.SecretAccessGrant) api.AccessGrantResponse {

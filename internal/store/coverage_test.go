@@ -286,6 +286,143 @@ func TestRemoveUpstreamAtomicWithAudit(t *testing.T) {
 	}
 }
 
+func TestRemoveRepositoryAtomicWithAudit(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 17, 14, 0, 0, 0, time.UTC)
+	s := testStore(t, &now)
+	ctx := context.Background()
+
+	upstream, err := s.RegisterUpstream(ctx, "admin@host", model.UpstreamSpec{
+		Name: "github", Kind: "ssh", BaseURL: "ssh://git@github.com/acme",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.RegisterRepository(ctx, "admin@host", model.RepositorySpec{
+		Name: "removable-repo", UpstreamID: upstream.ID, DefaultBranch: "main",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	removed, err := s.RemoveRepository(ctx, "admin@host", "removable-repo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if removed.Name != "removable-repo" || removed.UpstreamName != "github" {
+		t.Fatalf("removed = %+v", removed)
+	}
+
+	// Verify repository is gone.
+	if _, err := s.RepositoryByName(ctx, "removable-repo"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("removed repository lookup = %v, want ErrNotFound", err)
+	}
+
+	// Verify audit action was recorded.
+	var auditCount int
+	if err := s.db.QueryRow(`SELECT count(*) FROM audit_actions WHERE action = 'repository.remove'`).Scan(&auditCount); err != nil {
+		t.Fatal(err)
+	}
+	if auditCount != 1 {
+		t.Fatalf("repository.remove audit actions = %d, want 1", auditCount)
+	}
+
+	// Validation.
+	if _, err := s.RemoveRepository(ctx, "", "foo"); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("empty actor = %v, want ErrInvalid", err)
+	}
+	if _, err := s.RemoveRepository(ctx, "admin", "nonexistent"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("missing repository = %v, want ErrNotFound", err)
+	}
+}
+
+func TestRemoveRepositoryRefusesInFlightRuns(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 17, 14, 0, 0, 0, time.UTC)
+	s := testStore(t, &now)
+	ctx := context.Background()
+
+	upstream, err := s.RegisterUpstream(ctx, "admin@host", model.UpstreamSpec{
+		Name: "github", Kind: "ssh", BaseURL: "ssh://git@github.com/acme",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo, err := s.RegisterRepository(ctx, "admin@host", model.RepositorySpec{
+		Name: "busy-repo", UpstreamID: upstream.ID, DefaultBranch: "main",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.EnqueueRun(ctx, model.RunSpec{
+		RepoID: repo.ID, RefKind: model.RefBranch, Ref: "main",
+		SHA: strings.Repeat("b", 40), Actor: "test@host", Trigger: "push",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = s.RemoveRepository(ctx, "admin@host", "busy-repo")
+	if err == nil || !strings.Contains(err.Error(), "in-flight") {
+		t.Fatalf("expected in-flight rejection, got %v", err)
+	}
+	if !errors.Is(err, ErrInvalidState) {
+		t.Fatalf("expected ErrInvalidState, got %v", err)
+	}
+}
+
+func TestRemoveRepositoryRefusesImmutableHistory(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 17, 14, 0, 0, 0, time.UTC)
+	s := testStore(t, &now)
+	ctx := context.Background()
+
+	upstream, err := s.RegisterUpstream(ctx, "admin@host", model.UpstreamSpec{
+		Name: "github", Kind: "ssh", BaseURL: "ssh://git@github.com/acme",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo, err := s.RegisterRepository(ctx, "admin@host", model.RepositorySpec{
+		Name: "historied-repo", UpstreamID: upstream.ID, DefaultBranch: "main",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	enqueued, err := s.EnqueueRun(ctx, testRunSpec(repo.ID, "main", strings.Repeat("c", 40)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ClaimNextRun(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.FinishRun(ctx, enqueued.ID, model.RunResult{Status: model.RunPassed}); err != nil {
+		t.Fatal(err)
+	}
+
+	// The run is terminal, so the in-flight guard passes; the FK constraint
+	// is what must refuse. History rows are immutable evidence and are never
+	// cascaded away — the distinguishing invariant of repository removal.
+	_, err = s.RemoveRepository(ctx, "admin@host", "historied-repo")
+	if err == nil || !strings.Contains(err.Error(), "immutable CI history") {
+		t.Fatalf("expected immutable-history rejection, got %v", err)
+	}
+	if !errors.Is(err, ErrInvalidState) {
+		t.Fatalf("expected ErrInvalidState, got %v", err)
+	}
+
+	// The refused removal must roll back completely: the repository row
+	// survives and no repository.remove audit action is recorded.
+	if _, err := s.RepositoryByName(ctx, "historied-repo"); err != nil {
+		t.Fatalf("repository must survive refused removal: %v", err)
+	}
+	var auditCount int
+	if err := s.db.QueryRow(`SELECT count(*) FROM audit_actions WHERE action = 'repository.remove'`).Scan(&auditCount); err != nil {
+		t.Fatal(err)
+	}
+	if auditCount != 0 {
+		t.Fatalf("refused removal recorded %d repository.remove audit actions, want 0", auditCount)
+	}
+}
+
 func TestRemoveUplinkAtomicWithAudit(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 8, 17, 14, 0, 0, 0, time.UTC)

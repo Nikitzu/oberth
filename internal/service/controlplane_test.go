@@ -3605,3 +3605,120 @@ func TestAuthenticatorAdminPropagation(t *testing.T) {
 		t.Fatal("non-admin uplink should produce Actor.Admin=false")
 	}
 }
+
+type stubRepositoryRemover struct {
+	removed []string
+}
+
+func (s *stubRepositoryRemover) RemoveRepository(_ context.Context, actor, name string) (store.RemovedRepository, error) {
+	s.removed = append(s.removed, name)
+	return store.RemovedRepository{
+		Repository:   model.Repository{ID: 1, Name: name},
+		UpstreamName: "test-upstream",
+	}, nil
+}
+
+func TestRepoRemoveRequiresAdminUplink(t *testing.T) {
+	t.Parallel()
+	fixture := newControlFixture(t)
+	remover := &stubRepositoryRemover{}
+	var cacheRemovals []string
+	service, err := NewAPI(APIConfig{
+		Runs: fixture.store, History: fixture.store, Repositories: fixture.store,
+		Issues: fixture.store, Promotions: fixture.store, PromotionRuns: fixture.store,
+		Enqueues: fixture.scheduler, Git: fixture.git, Refs: fixture.refs,
+		Logs: fixture.logs, Auditor: fixture.store,
+		Signals: fixture.signals, MaximumWait: 50 * time.Millisecond,
+		PromotionWorkspaceRoot: filepath.Join(fixture.root, "promotion-work"),
+		RepositoryRemover:      remover,
+		RemoveGitCache: func(name string) error {
+			cacheRemovals = append(cacheRemovals, name)
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	nonAdmin := api.Actor{Identity: "agent@host", Fingerprint: "SHA256:agent", Admin: false}
+
+	// Non-admin actor must be rejected, before the remover or the cache
+	// cleanup ever run.
+	_, err = service.CallTool(context.Background(), nonAdmin, "repo_remove",
+		json.RawMessage(`{"repo":"widget"}`))
+	if !errors.Is(err, ErrForbidden) {
+		t.Fatalf("repo_remove with non-admin error = %v, want ErrForbidden", err)
+	}
+	if len(remover.removed) != 0 {
+		t.Fatalf("non-admin repo_remove removed %d repos, want 0", len(remover.removed))
+	}
+	if len(cacheRemovals) != 0 {
+		t.Fatalf("non-admin repo_remove removed %d cache directories, want 0", len(cacheRemovals))
+	}
+
+	// Admin actor succeeds; the cache cleanup receives the store's registered
+	// name, never the raw tool input.
+	admin := api.Actor{Identity: "admin@host", Fingerprint: "SHA256:admin", Admin: true}
+	result, err := service.CallTool(context.Background(), admin, "repo_remove",
+		json.RawMessage(`{"repo":"widget"}`))
+	if err != nil {
+		t.Fatalf("repo_remove with admin error = %v", err)
+	}
+	if len(remover.removed) != 1 || remover.removed[0] != "widget" {
+		t.Fatalf("admin repo_remove removed = %v, want [widget]", remover.removed)
+	}
+	if len(cacheRemovals) != 1 || cacheRemovals[0] != "widget" {
+		t.Fatalf("admin repo_remove cache removals = %v, want [widget]", cacheRemovals)
+	}
+	resultMap, ok := result.(map[string]string)
+	if !ok {
+		t.Fatalf("repo_remove result type = %T", result)
+	}
+	if resultMap["removed"] != "widget" || resultMap["upstream"] != "test-upstream" {
+		t.Fatalf("repo_remove result = %v", resultMap)
+	}
+	if warning, present := resultMap["cache_warning"]; present {
+		t.Fatalf("clean removal carries cache_warning %q", warning)
+	}
+}
+
+func TestRepoRemoveSurfacesCacheCleanupFailure(t *testing.T) {
+	t.Parallel()
+	fixture := newControlFixture(t)
+	remover := &stubRepositoryRemover{}
+	service, err := NewAPI(APIConfig{
+		Runs: fixture.store, History: fixture.store, Repositories: fixture.store,
+		Issues: fixture.store, Promotions: fixture.store, PromotionRuns: fixture.store,
+		Enqueues: fixture.scheduler, Git: fixture.git, Refs: fixture.refs,
+		Logs: fixture.logs, Auditor: fixture.store,
+		Signals: fixture.signals, MaximumWait: 50 * time.Millisecond,
+		PromotionWorkspaceRoot: filepath.Join(fixture.root, "promotion-work"),
+		RepositoryRemover:      remover,
+		RemoveGitCache: func(string) error {
+			return errors.New("remove repository cache: device busy")
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The mapping removal succeeded, so the tool must succeed — a stale cache
+	// directory is inert — but the operator must see the warning instead of
+	// discovering the stale directory later.
+	admin := api.Actor{Identity: "admin@host", Fingerprint: "SHA256:admin", Admin: true}
+	result, err := service.CallTool(context.Background(), admin, "repo_remove",
+		json.RawMessage(`{"repo":"widget"}`))
+	if err != nil {
+		t.Fatalf("repo_remove with failing cache cleanup error = %v", err)
+	}
+	resultMap, ok := result.(map[string]string)
+	if !ok {
+		t.Fatalf("repo_remove result type = %T", result)
+	}
+	if resultMap["removed"] != "widget" {
+		t.Fatalf("repo_remove result = %v", resultMap)
+	}
+	if !strings.Contains(resultMap["cache_warning"], "device busy") {
+		t.Fatalf("cache_warning = %q, want the cleanup failure surfaced", resultMap["cache_warning"])
+	}
+}

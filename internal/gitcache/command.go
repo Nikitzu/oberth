@@ -114,12 +114,37 @@ func (c *Cache) execute(ctx context.Context, spec commandSpec, capture bool) (st
 
 	var output tailBuffer
 	output.max = maxCapturedOutput
-	if capture {
+	// Always retain the tail of stderr, bounded and redacted, so a failure at
+	// the upstream boundary carries the forge's own reason (URL, "repository
+	// not found", "Permission denied (publickey)") instead of a bare "exit
+	// status 128" (issue #212). In capture mode stderr is already folded into
+	// output; in streaming mode it flows to the caller's writer (if any) and is
+	// teed into this buffer for the error path only.
+	var stderrTail tailBuffer
+	stderrTail.max = maxCapturedOutput
+	switch {
+	case capture:
+		// Both streams into one buffer; os/exec reuses a single copier because
+		// Stdout == Stderr (identical writer), so there is no concurrent write.
 		cmd.Stdout = &output
 		cmd.Stderr = &output
-	} else {
+	case spec.stderr == nil:
 		cmd.Stdout = spec.stdout
-		cmd.Stderr = spec.stderr
+		cmd.Stderr = &stderrTail
+	case interfaceEqual(spec.stdout, spec.stderr):
+		// The caller captures combined output in one writer (e.g. the
+		// smart-protocol services and listRefs pass stdout==stderr). os/exec
+		// only uses a single copier when Stdout and Stderr are the SAME writer
+		// value; handing it two distinct writers over one buffer would race
+		// (two copier goroutines, one target). Preserve the single-writer
+		// identity by teeing BOTH streams through one combined writer that also
+		// feeds the tail buffer for the error path.
+		combined := io.MultiWriter(spec.stdout, &stderrTail)
+		cmd.Stdout = combined
+		cmd.Stderr = combined
+	default:
+		cmd.Stdout = spec.stdout
+		cmd.Stderr = io.MultiWriter(spec.stderr, &stderrTail)
 	}
 
 	c.logger.Printf("git %s", c.redactedCommand(spec.args))
@@ -132,7 +157,15 @@ func (c *Cache) execute(ctx context.Context, spec commandSpec, capture bool) (st
 	select {
 	case err := <-done:
 		if err != nil {
+			detail := stderrTail.String()
+			if capture {
+				detail = output.String()
+			}
+			detail = c.redactOutput(detail)
 			c.logger.Printf("git command failed: %v", err)
+			if detail != "" {
+				return "", fmt.Errorf("git command failed: %w: %s", err, detail)
+			}
 			return "", fmt.Errorf("git command failed: %w", err)
 		}
 		return output.String(), nil
@@ -142,8 +175,42 @@ func (c *Cache) execute(ctx context.Context, spec commandSpec, capture bool) (st
 			_ = cmd.Process.Kill()
 		}
 		<-done
+		detail := stderrTail.String()
+		if capture {
+			detail = output.String()
+		}
+		if detail = c.redactOutput(detail); detail != "" {
+			return "", fmt.Errorf("git command stopped: %w: %s", context.Cause(ctx), detail)
+		}
 		return "", fmt.Errorf("git command stopped: %w", context.Cause(ctx))
 	}
+}
+
+// interfaceEqual reports whether two writers are the same value, guarding the
+// comparison against a panic on non-comparable dynamic types (mirrors the
+// os/exec check that decides whether Stdout and Stderr can share one copier).
+// A non-comparable writer conservatively reports false.
+func interfaceEqual(a, b io.Writer) (equal bool) {
+	defer func() {
+		if recover() != nil {
+			equal = false
+		}
+	}()
+	return a == b
+}
+
+// redactOutput masks configured secrets in captured git output before it is
+// surfaced in an error. The tail buffers already bound length; this bounds
+// content. It mirrors the secret masking in redactedCommand. SSH remote URLs
+// carry no credentials, so the common failure reasons (forge messages, remote
+// URL, auth denial) survive intact while any configured token is replaced.
+func (c *Cache) redactOutput(value string) string {
+	for _, secret := range c.redact {
+		if secret != "" {
+			value = strings.ReplaceAll(value, secret, "***")
+		}
+	}
+	return value
 }
 
 func (c *Cache) commandEnv(extra map[string]string) []string {

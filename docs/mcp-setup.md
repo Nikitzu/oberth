@@ -157,6 +157,7 @@ A step above the 4 MiB response ceiling returns a truncated result with
 step: a single step can exceed a model's context window.
 
 | `repo_list` | List registered repositories with upstream and probe state |
+| `repo_remove` | Remove a repository mapping and its Git cache (admin-only) |
 | `run_list` | List recent runs with optional repo/ref filter (bounded page) |
 | `system_status` | System health: database, upstreams, cluster, audit, version |
 

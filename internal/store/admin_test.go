@@ -2,6 +2,8 @@ package store
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -38,6 +40,70 @@ SELECT count(*) FROM audit_actions WHERE action IN ('upstream.register', 'uplink
 	}
 	if actions != 2 {
 		t.Fatalf("administrative audit actions = %d", actions)
+	}
+}
+
+func TestRegisterUpstreamRejectsOrgAliasing(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 25, 2, 0, 0, 0, time.UTC)
+	database := testStore(t, &now)
+	ctx := context.Background()
+
+	// Upstream A claims org "acme" on one forge.
+	if _, err := database.RegisterUpstream(ctx, "admin@localhost", model.UpstreamSpec{
+		Name: "github-acme", Kind: "ssh", BaseURL: "ssh://git@github.com/acme",
+	}); err != nil {
+		t.Fatalf("register first upstream: %v", err)
+	}
+
+	// Upstream B: different name, different host/scheme, SAME trailing segment
+	// -> same Org() "acme" -> would alias oberth/upstream/acme/*. Must be
+	// rejected with ErrInvalid before any row is created (issue #217).
+	_, err := database.RegisterUpstream(ctx, "admin@localhost", model.UpstreamSpec{
+		Name: "gitlab-acme", Kind: "https", BaseURL: "https://gitlab.com/acme",
+	})
+	if !errors.Is(err, ErrInvalid) {
+		t.Fatalf("org-aliasing registration error = %v, want ErrInvalid", err)
+	}
+	if !strings.Contains(err.Error(), "acme") || !strings.Contains(err.Error(), "github-acme") {
+		t.Fatalf("error must name the org and the conflicting upstream: %v", err)
+	}
+
+	// The rejected upstream must not have been created (fail closed, atomic).
+	if _, err := database.UpstreamByName(ctx, "gitlab-acme"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("rejected upstream must not exist: got err=%v", err)
+	}
+
+	// A genuinely distinct org still registers.
+	if _, err := database.RegisterUpstream(ctx, "admin@localhost", model.UpstreamSpec{
+		Name: "github-other", Kind: "ssh", BaseURL: "ssh://git@github.com/other",
+	}); err != nil {
+		t.Fatalf("register distinct-org upstream: %v", err)
+	}
+
+	// A base URL that derives an empty org is rejected too.
+	if _, err := database.RegisterUpstream(ctx, "admin@localhost", model.UpstreamSpec{
+		Name: "empty-org", Kind: "ssh", BaseURL: "/",
+	}); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("empty-org registration error = %v, want ErrInvalid", err)
+	}
+
+	// Exactly the two legitimate upstreams exist; no register audit action for
+	// either rejected attempt.
+	all, err := database.ListUpstreams(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 2 {
+		t.Fatalf("upstream count = %d, want 2 (aliased and empty-org rejected)", len(all))
+	}
+	var registered int
+	if err := database.db.QueryRowContext(ctx, `
+SELECT count(*) FROM audit_actions WHERE action = 'upstream.register'`).Scan(&registered); err != nil {
+		t.Fatal(err)
+	}
+	if registered != 2 {
+		t.Fatalf("upstream.register audit actions = %d, want 2", registered)
 	}
 }
 
