@@ -331,3 +331,78 @@ func TestAHostnameMismatchNamesTheAddressesTheCertificateCovers(t *testing.T) {
 		t.Fatalf("error does not explain the mismatch: %v", err)
 	}
 }
+
+// --- #235: reject non-loopback http:// ---
+
+func TestPlainHTTPIsRejectedForNonLoopbackHosts(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("OBERTH_TOKEN", secret)
+	for _, base := range []string{
+		"http://oberth.example",
+		"http://10.0.0.1:8443",
+		"http://192.168.1.1",
+	} {
+		t.Setenv("OBERTH_BASE_URL", base)
+		_, err := New(t.Context(), FromEnv())
+		if err == nil {
+			t.Fatalf("http:// to %q was accepted; the bearer token would be in cleartext", base)
+		}
+		if !strings.Contains(err.Error(), "cleartext") {
+			t.Fatalf("error does not say why http:// is refused: %v", err)
+		}
+	}
+}
+
+func TestPlainHTTPIsAllowedForLoopback(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer server.Close()
+
+	clearEnv(t)
+	t.Setenv("OBERTH_BASE_URL", server.URL) // http://127.0.0.1:<port>
+	t.Setenv("OBERTH_TOKEN", secret)
+	if _, err := New(t.Context(), FromEnv()); err != nil {
+		t.Fatalf("http://127.0.0.1 should be allowed for port-forward use: %v", err)
+	}
+}
+
+// --- #237: GetBytes reads raw binary, not JSON ---
+
+func TestGetBytesReadsRawBinaryContent(t *testing.T) {
+	binary := []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a} // PNG header
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/octet-stream")
+		_, _ = w.Write(binary)
+	}))
+	defer server.Close()
+
+	client := newClient(t, server)
+	got, err := client.GetBytes(context.Background(), "/api/runs/r/artifacts/img.png", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != len(binary) {
+		t.Fatalf("got %d bytes, want %d", len(got), len(binary))
+	}
+	for i := range binary {
+		if got[i] != binary[i] {
+			t.Fatalf("byte %d: got %02x, want %02x", i, got[i], binary[i])
+		}
+	}
+}
+
+func TestGetBytesDoesNotSetAcceptJSON(t *testing.T) {
+	var seenAccept string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seenAccept = r.Header.Get("Accept")
+		_, _ = w.Write([]byte("data"))
+	}))
+	defer server.Close()
+
+	client := newClient(t, server)
+	_, _ = client.GetBytes(context.Background(), "/test", nil)
+	if seenAccept == "application/json" {
+		t.Fatal("GetBytes set Accept: application/json, but it is for binary downloads")
+	}
+}

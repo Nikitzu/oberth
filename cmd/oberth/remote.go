@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -132,13 +133,14 @@ func emitJSON(ctx context.Context, api *client.Client, path string, query map[st
 	if err != nil {
 		return err
 	}
-	var pretty any
-	if json.Unmarshal(raw, &pretty) == nil {
-		encoder := json.NewEncoder(output)
-		encoder.SetIndent("", "  ")
-		return encoder.Encode(pretty)
+	var indented bytes.Buffer
+	if err := json.Indent(&indented, raw, "", "  "); err != nil {
+		// Not valid JSON; pass through unchanged.
+		_, writeErr := output.Write(raw)
+		return writeErr
 	}
-	_, err = output.Write(raw)
+	indented.WriteByte('\n')
+	_, err = output.Write(indented.Bytes())
 	return err
 }
 
@@ -270,7 +272,7 @@ func runRemoteLog(ctx context.Context, arguments []string, output io.Writer) err
 	tail := flags.Bool("tail", false, "read from the end")
 	raw := flags.Bool("raw", false, "keep the [burn/step] prefix on each line")
 	asJSON := flags.Bool("json", false, "emit the server's payload unchanged")
-	if err := flags.Parse(arguments); err != nil {
+	if err := flags.Parse(permuteFlagsFirst(arguments)); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			flags.SetOutput(output)
 			flags.Usage()
@@ -435,7 +437,7 @@ func remoteArtifacts(ctx context.Context, config client.Config, rest []string, o
 	}
 	reportMode("server")
 	if len(rest) == 2 {
-		body, readErr := api.GetRaw(ctx, "/api/runs/"+rest[0]+"/artifacts/"+rest[1], nil)
+		body, readErr := api.GetBytes(ctx, "/api/runs/"+rest[0]+"/artifacts/"+rest[1], nil)
 		if readErr != nil {
 			return readErr
 		}

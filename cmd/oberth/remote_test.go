@@ -208,3 +208,66 @@ func TestEveryRemoteCommandAcceptsJSON(t *testing.T) {
 		}
 	}
 }
+
+// --- #237: log flags after the run-id ---
+
+func TestLogAcceptsFlagsAfterTheRunID(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"run_id":"r","burn":"ci","step":"test","output":"ok\n","total_lines":1}`))
+	}))
+	defer server.Close()
+	configure(t, server)
+
+	// The documented form is `oberth log <run-id> --burn ci --step test`.
+	// Before the fix, flags after the positional were a parse error.
+	var out bytes.Buffer
+	err := runRemoteLog(context.Background(), []string{"run-abc", "--burn", "ci", "--step", "test"}, &out)
+	if err != nil {
+		t.Fatalf("flags after the run-id failed: %v", err)
+	}
+	if !strings.Contains(out.String(), "ok") {
+		t.Fatalf("output missing content:\n%s", out.String())
+	}
+}
+
+// --- #237: --json preserves int64 precision ---
+
+func TestJSONPreservesInt64Precision(t *testing.T) {
+	// RepoID is int64; decoding through any turns it into float64, which
+	// loses precision above 2^53. json.Indent on the raw bytes preserves
+	// the original representation.
+	payload := `[{"ID":"run-x","RepoID":9007199254740993,"SHA":"abc","Status":"ok"}]`
+	configure(t, remoteServer(t, payload))
+	var out bytes.Buffer
+	if err := runRuns(context.Background(), []string{"--json"}, &out); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "9007199254740993") {
+		t.Fatalf("int64 precision lost in --json output:\n%s", out.String())
+	}
+}
+
+// --- #237: binary artifact download ---
+
+func TestArtifactDownloadWritesRawBytes(t *testing.T) {
+	binary := "\x89PNG\r\n\x1a\nfake-png-body"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/artifacts/img.png") {
+			w.Header().Set("Content-Type", "application/octet-stream")
+			_, _ = w.Write([]byte(binary))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"run_id":"r","artifacts":[]}`))
+	}))
+	defer server.Close()
+	configure(t, server)
+
+	var out bytes.Buffer
+	if err := runArtifacts(context.Background(), []string{"run-abc", "img.png"}, &out); err != nil {
+		t.Fatalf("binary artifact download failed: %v", err)
+	}
+	if out.String() != binary {
+		t.Fatalf("artifact body = %q, want %q", out.String(), binary)
+	}
+}

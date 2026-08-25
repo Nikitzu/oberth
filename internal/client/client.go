@@ -85,6 +85,9 @@ func New(ctx context.Context, config Config) (*Client, error) {
 	if base.Host == "" {
 		return nil, errors.New("client: OBERTH_BASE_URL has no host")
 	}
+	if base.Scheme == "http" && !isLoopback(base.Hostname()) {
+		return nil, errors.New("client: use https:// — the token would be transmitted in cleartext")
+	}
 	token, err := config.resolveToken(ctx)
 	if err != nil {
 		return nil, err
@@ -100,12 +103,27 @@ func New(ctx context.Context, config Config) (*Client, error) {
 	}, nil
 }
 
+// isLoopback reports whether host is a loopback address safe for plain HTTP.
+// Only 127.0.0.1, localhost, and ::1 qualify; everything else must use TLS
+// to protect the bearer token.
+func isLoopback(host string) bool {
+	switch host {
+	case "127.0.0.1", "localhost", "::1":
+		return true
+	}
+	return false
+}
+
 func newTransport(caCert string) (http.RoundTripper, error) {
 	transport, ok := http.DefaultTransport.(*http.Transport)
 	if !ok {
-		return http.DefaultTransport, nil
+		return nil, errors.New("client: http.DefaultTransport is not *http.Transport; cannot configure TLS")
 	}
 	cloned := transport.Clone()
+	if cloned.TLSClientConfig == nil {
+		cloned.TLSClientConfig = &tls.Config{}
+	}
+	cloned.TLSClientConfig.MinVersion = tls.VersionTLS13
 	if caCert == "" {
 		return cloned, nil
 	}
@@ -113,14 +131,11 @@ func newTransport(caCert string) (http.RoundTripper, error) {
 	if err != nil {
 		return nil, fmt.Errorf("client: read OBERTH_CA_CERT: %w", err)
 	}
-	pool, err := x509.SystemCertPool()
-	if err != nil || pool == nil {
-		pool = x509.NewCertPool()
-	}
+	pool := x509.NewCertPool()
 	if !pool.AppendCertsFromPEM(pem) {
 		return nil, fmt.Errorf("client: OBERTH_CA_CERT %s contains no certificate", caCert)
 	}
-	cloned.TLSClientConfig = &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12}
+	cloned.TLSClientConfig.RootCAs = pool
 	return cloned, nil
 }
 
@@ -171,6 +186,43 @@ func (client *Client) GetRaw(ctx context.Context, path string, query map[string]
 		return nil, err
 	}
 	return raw, nil
+}
+
+// GetBytes reads the response body as raw bytes without JSON decoding,
+// for payloads like artifact downloads where the server sends
+// application/octet-stream.
+func (client *Client) GetBytes(ctx context.Context, path string, query map[string]string) ([]byte, error) {
+	target := *client.base
+	target.Path = strings.TrimRight(target.Path, "/") + path
+	if len(query) > 0 {
+		values := url.Values{}
+		for name, value := range query {
+			if value != "" {
+				values.Set(name, value)
+			}
+		}
+		target.RawQuery = values.Encode()
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, target.String(), nil)
+	if err != nil {
+		return nil, fmt.Errorf("client: build request for %s: %w", path, err)
+	}
+	request.Header.Set("Authorization", "Bearer "+client.token)
+
+	response, err := client.http.Do(request)
+	if err != nil {
+		return nil, classifyTransport(path, err)
+	}
+	defer func() { _ = response.Body.Close() }()
+
+	if response.StatusCode != http.StatusOK {
+		return nil, statusError(path, response)
+	}
+	body, err := io.ReadAll(io.LimitReader(response.Body, maxResponseSize))
+	if err != nil {
+		return nil, fmt.Errorf("client: read %s: %w", path, err)
+	}
+	return body, nil
 }
 
 func classifyTransport(path string, err error) error {
