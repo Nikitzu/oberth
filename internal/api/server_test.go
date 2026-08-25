@@ -786,3 +786,31 @@ func TestRunLogPassesFilterParametersThrough(t *testing.T) {
 		t.Fatalf("filter = %#v, want %#v", backend.logFilter, want)
 	}
 }
+
+func TestRunsLimitClampedToStoreMaximum(t *testing.T) {
+	server, backend := testServer(t)
+
+	// Request limit=500 — the handler must clamp it to 100.
+	request := httptest.NewRequest(http.MethodGet, "/api/runs?limit=500", nil)
+	request.Header.Set("Authorization", "Bearer valid-token")
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d", response.Code)
+	}
+	if backend.runFilter.Limit != 100 {
+		t.Fatalf("runs limit = %d, want 100 (store max)", backend.runFilter.Limit)
+	}
+
+	// Request limit=50 — below the cap, should pass through.
+	request = httptest.NewRequest(http.MethodGet, "/api/runs?limit=50", nil)
+	request.Header.Set("Authorization", "Bearer valid-token")
+	response = httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d", response.Code)
+	}
+	if backend.runFilter.Limit != 50 {
+		t.Fatalf("runs limit = %d, want 50", backend.runFilter.Limit)
+	}
+}

@@ -546,10 +546,33 @@ func (service *API) RunLogLive(ctx context.Context, _ api.Actor, id string, offs
 }
 
 func (service *API) Repositories(ctx context.Context, _ api.Actor) (any, error) {
+	var repos []model.Repository
+	var err error
 	if service.repositories != nil {
-		return service.repositories.ListRepositories(ctx)
+		repos, err = service.repositories.ListRepositories(ctx)
+	} else {
+		repos, err = service.runs.ListRepositories(ctx)
 	}
-	return service.runs.ListRepositories(ctx)
+	if err != nil {
+		return nil, err
+	}
+	// Fetch the latest runs per repo so the dashboard never derives per-repo
+	// status from a global top-N window that silently drops quiet repos.
+	var runsByRepo map[int64][]model.Run
+	if service.history != nil {
+		runs, historyErr := service.history.ListLatestRunsPerRepo(ctx, 12)
+		if historyErr == nil {
+			runsByRepo = make(map[int64][]model.Run, len(repos))
+			for _, run := range runs {
+				runsByRepo[run.RepoID] = append(runsByRepo[run.RepoID], run)
+			}
+		}
+	}
+	views := make([]RepoView, len(repos))
+	for i, repo := range repos {
+		views[i] = RepoView{Repository: repo, LatestRuns: runsByRepo[repo.ID]}
+	}
+	return views, nil
 }
 
 func (service *API) Issues(ctx context.Context, _ api.Actor, filter api.IssueFilter) (any, error) {

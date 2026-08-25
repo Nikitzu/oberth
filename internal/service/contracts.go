@@ -64,6 +64,7 @@ type RunLookup interface {
 
 type RunHistory interface {
 	ListRecentRuns(context.Context, model.RunListFilter) ([]model.Run, error)
+	ListLatestRunsPerRepo(context.Context, int) ([]model.Run, error)
 	Run(context.Context, string) (model.Run, error)
 	StepResults(context.Context, string) ([]model.StepResult, error)
 }
@@ -432,4 +433,12 @@ type WaitResponse struct {
 type PromotionWaitResponse struct {
 	Promotion    model.Promotion `json:"promotion"`
 	StillRunning bool            `json:"still_running"`
+}
+
+// RepoView is the enriched repository response for the /api/repos dashboard
+// endpoint. It embeds the repository record and attaches the most recent runs
+// so the frontend never has to derive per-repo status from a global window.
+type RepoView struct {
+	model.Repository
+	LatestRuns []model.Run `json:"LatestRuns"`
 }

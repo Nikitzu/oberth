@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -1580,5 +1581,93 @@ func TestResolveRunRefsPrefixDisambiguation(t *testing.T) {
 	// refs/tags/ with empty remainder returns invalid.
 	if _, err := s.ResolveRun(ctx, repo.ID, "refs/tags/"); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("refs/tags/ empty error = %v, want ErrInvalid", err)
+	}
+}
+
+func TestListLatestRunsPerRepoReturnsQuietReposOutsideGlobalWindow(t *testing.T) {
+	now := time.Date(2026, 8, 25, 12, 0, 0, 0, time.UTC)
+	s := testStore(t, &now)
+	ctx := context.Background()
+
+	upstream, err := s.CreateUpstream(ctx, model.UpstreamSpec{
+		Name: "forge", Kind: "forgejo", BaseURL: "https://codeberg.org",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	repoA, err := s.CreateRepository(ctx, model.RepositorySpec{
+		Name: "active-repo", UpstreamID: upstream.ID, DefaultBranch: "main",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	repoB, err := s.CreateRepository(ctx, model.RepositorySpec{
+		Name: "quiet-repo", UpstreamID: upstream.ID, DefaultBranch: "main",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Seed 2 runs for repo B first (these will be oldest).
+	for i := 0; i < 2; i++ {
+		sha := fmt.Sprintf("b%039d", i)
+		now = now.Add(time.Second)
+		if _, err := s.EnqueueRun(ctx, testRunSpec(repoB.ID, "main", sha)); err != nil {
+			t.Fatalf("enqueue quiet repo run %d: %v", i, err)
+		}
+	}
+
+	// Seed 105 runs for repo A (pushes repo B out of any global top-100).
+	for i := 0; i < 105; i++ {
+		sha := fmt.Sprintf("a%039d", i)
+		now = now.Add(time.Second)
+		if _, err := s.EnqueueRun(ctx, testRunSpec(repoA.ID, "main", sha)); err != nil {
+			t.Fatalf("enqueue active repo run %d: %v", i, err)
+		}
+	}
+
+	// Verify the global ListRecentRuns at limit 100 misses repo B entirely.
+	globalRuns, err := s.ListRecentRuns(ctx, model.RunListFilter{Limit: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	hasQuietRepo := false
+	for _, run := range globalRuns {
+		if run.RepoID == repoB.ID {
+			hasQuietRepo = true
+			break
+		}
+	}
+	if hasQuietRepo {
+		t.Fatal("precondition: global top-100 should not contain quiet repo runs")
+	}
+
+	// ListLatestRunsPerRepo must return runs for both repos.
+	perRepoRuns, err := s.ListLatestRunsPerRepo(ctx, 12)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repoIDs := make(map[int64]int)
+	for _, run := range perRepoRuns {
+		repoIDs[run.RepoID]++
+	}
+	if repoIDs[repoA.ID] == 0 {
+		t.Fatalf("per-repo runs missing active repo; got repos %v", repoIDs)
+	}
+	if repoIDs[repoB.ID] == 0 {
+		t.Fatalf("per-repo runs missing quiet repo; got repos %v", repoIDs)
+	}
+	if repoIDs[repoB.ID] != 2 {
+		t.Fatalf("quiet repo should have 2 runs, got %d", repoIDs[repoB.ID])
+	}
+	if repoIDs[repoA.ID] > 12 {
+		t.Fatalf("active repo should have at most 12 runs, got %d", repoIDs[repoA.ID])
+	}
+
+	// Verify ordering: runs are ordered by queue_sequence DESC.
+	for i := 1; i < len(perRepoRuns); i++ {
+		if perRepoRuns[i].QueueSequence > perRepoRuns[i-1].QueueSequence {
+			t.Fatalf("per-repo runs not ordered by queue_sequence DESC at index %d", i)
+		}
 	}
 }
