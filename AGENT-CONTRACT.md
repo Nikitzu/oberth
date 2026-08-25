@@ -186,7 +186,18 @@ implementation detail disagree.
     registration fails closed when a new upstream's `<org>` (or an empty one)
     collides with an already-registered upstream's `<org>`, naming the
     conflict — two upstreams may not share an org, since that would alias this
-    subtree across trust domains.
+    subtree across trust domains. Registration additionally validates the
+    upstream NAME itself: it must match the repository segment charset, must
+    not end in `.git`, and must not be one of the reserved names `release`,
+    `data`, `upstream`, `sys`, `metadata`, `receive-outbox`
+    (case-insensitive) — an upstream named `release` would make the release
+    credential namespace structurally addressable from repository-controlled
+    path spellings. Name and org namespaces are kept disjoint in both
+    directions: a new upstream's name may not equal an existing upstream's
+    org, and a new upstream's org may not equal an existing upstream's name
+    (an upstream whose own name equals its own org remains legal), so a
+    2-segment `<first>/<repo>` spelling can never be ambiguous between the
+    two.
   - **System** — any other KV API path (for example
     `oberth/data/release/cosign-secret`), requiring an exact administrator
     `secretstore.allowedPaths` entry; used by Oberth's own release
@@ -268,6 +279,17 @@ implementation detail disagree.
 - Only `git-upload-pack` and `git-receive-pack` are accepted. Receive-pack may
   update only `refs/heads/*` and `refs/tags/*`; shell, PTY, forwarding, helper
   protocols, replacement refs, and other namespaces are rejected.
+- Three repository path spellings are accepted and validated segment-wise:
+  `<repo>[.git]`, `<org>/<repo>[.git]`, and
+  `<upstream-name>/<org>/<repo>[.git]`. All spellings of one repository
+  resolve to the same identity — the registered bare repository name — so one
+  repository has exactly one cache directory, one lock, and one durable
+  receive reservation regardless of spelling (qualified on-disk layout and
+  qualified persisted identity are deferred to the #245 G3 canonical-
+  persistence change). For a registered repository, a supplied upstream name
+  must equal the registered upstream's name and a supplied org must equal
+  that upstream's org identity; mismatches fail closed. Nested paths beyond
+  three segments are rejected.
 - Feature branches may be force-updated. Tags are creation-only: deletion,
   movement, upstream conflict, and commits outside the fresh upstream default
   branch are rejected before the public cache ref changes. The same branch/tag
@@ -656,6 +678,7 @@ implementation detail disagree.
 | Bind an OpenBao role to a wildcard ServiceAccount name or namespace, or grant the CI tier a ServiceAccount token | Forbidden |
 | Change the RunnerImage declaration shape or widen the default prefix allowlist | Breaking security change |
 | Change token-to-uplink cardinality or accepted Git ref namespaces | Breaking security change |
+| Change the accepted repository path grammar, its resolution to the registered identity, or the upstream-name reserved list / disjointness guards | Breaking security change |
 | Mount any Secret in a branch Job or share/nest CI and release cache roots | Forbidden |
 | Execute or evaluate repository code in the server process | Forbidden |
 | Force-push a promotion target | Forbidden |
