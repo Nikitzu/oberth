@@ -85,6 +85,7 @@ type serveOptions struct {
 	runnerImagePrefixes     string
 	scheduleMinInterval     time.Duration
 	scheduleMaxEntries      int
+	fragmentAllowlist       string
 	maxConcurrent           int
 	ciCacheRoot             string
 	releaseCacheRoot        string
@@ -164,6 +165,7 @@ func parseServeOptions(arguments []string, output io.Writer) (serveOptions, erro
 	flags.StringVar(&options.runnerImagePrefixes, "runner-image-prefixes", strings.Join(periapsis.DefaultRunnerImagePrefixes, ","), "comma-separated allowlist of permitted runner image prefixes")
 	flags.DurationVar(&options.scheduleMinInterval, "schedule-min-interval", defaultScheduleMinInterval, "shortest interval a repository may schedule itself at")
 	flags.IntVar(&options.scheduleMaxEntries, "schedule-max-entries", defaultScheduleMaxEntries, "most schedule entries one repository may declare")
+	flags.StringVar(&options.fragmentAllowlist, "fragment-allowlist", "", "comma-separated repositories usable as pipeline fragments; empty permits every registered repository")
 	flags.IntVar(&options.maxConcurrent, "max-concurrent-jobs", 3, "maximum concurrent Jobs")
 	flags.StringVar(&options.ciCacheRoot, "ci-cache-root", "/var/cache/oberth/ci", "CI host cache root")
 	flags.StringVar(&options.releaseCacheRoot, "release-cache-root", "/var/cache/oberth/release", "release host cache root")
@@ -549,7 +551,11 @@ func serve(ctx context.Context, options serveOptions, logger *log.Logger) (resul
 	if err != nil {
 		return err
 	}
-	argoJobs, err := buildArgoEngine(options, restConfig, kube, database, database)
+	fragmentLoader, err := app.NewGitFragmentLoader(git, database, splitRunnerImagePrefixes(options.fragmentAllowlist))
+	if err != nil {
+		return err
+	}
+	argoJobs, err := buildArgoEngine(options, restConfig, kube, database, database, fragmentLoader)
 	if err != nil {
 		return err
 	}

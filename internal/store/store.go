@@ -1009,6 +1009,18 @@ func (s *Store) RepositoryByName(ctx context.Context, name string) (model.Reposi
 SELECT id, name, upstream_id, default_branch, created_at, updated_at FROM repositories WHERE name = ?`, name))
 }
 
+func (s *Store) RepositoryRegistered(ctx context.Context, name string) (bool, error) {
+	var id int64
+	err := s.db.QueryRowContext(ctx, `SELECT id FROM repositories WHERE name = ?`, name).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("look up repository %q: %w", name, err)
+	}
+	return true, nil
+}
+
 func (s *Store) SetRepositoryDefaultBranch(ctx context.Context, id int64, branch string) (model.Repository, error) {
 	if id <= 0 || strings.TrimSpace(branch) == "" {
 		return model.Repository{}, fmt.Errorf("%w: repository and default branch are required", ErrInvalid)

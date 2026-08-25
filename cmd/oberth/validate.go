@@ -25,6 +25,8 @@ func runValidate(_ context.Context, arguments []string, output io.Writer) error 
 	_ = flags.Duration("timeout", validateDefaultTimeout, "reserved for future use")
 	_ = flags.Bool("static", false, "reserved for future use")
 	var imagePrefixes string
+	allowUnresolved := flags.Bool("allow-unresolved-fragments", false,
+		"report fragment references without failing; their contents are still unchecked")
 	flags.StringVar(&imagePrefixes, "runner-image-prefixes", strings.Join(periapsis.DefaultRunnerImagePrefixes, ","), "comma-separated allowlist of permitted runner image prefixes")
 	if err := flags.Parse(arguments); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -42,13 +44,15 @@ func runValidate(_ context.Context, arguments []string, output io.Writer) error 
 		return err
 	}
 	target.imagePrefixes = splitRunnerImagePrefixes(imagePrefixes)
+	target.allowUnresolvedFragments = *allowUnresolved
 	return executeValidate(target, output)
 }
 
 // validateTarget names the locations every check derives from.
 type validateTarget struct {
-	repoRoot      string   // the repository root
-	imagePrefixes []string // administrator-allowed runner image prefixes
+	allowUnresolvedFragments bool
+	repoRoot                 string   // the repository root
+	imagePrefixes            []string // administrator-allowed runner image prefixes
 }
 
 // resolveValidateTarget accepts the same spellings a developer reaches for:
@@ -128,6 +132,27 @@ func executeValidate(target validateTarget, output io.Writer) error {
 			continue
 		}
 		report.line("  ok  YAML decode (strict)")
+
+		references, refErr := argoworkflow.FragmentRefs(workflow)
+		if refErr != nil {
+			report.problem("fragment references in %s: %v", entry.file, refErr)
+			continue
+		}
+		if len(references) != 0 {
+			for _, reference := range references {
+				if target.allowUnresolvedFragments {
+					report.line("  --  fragment %s not resolved locally; its contents are unchecked", reference)
+				} else {
+					report.problem("fragment %s cannot be resolved locally; the server resolves and admits it at push time. "+
+						"Re-run with --allow-unresolved-fragments to check the rest of this document", reference)
+				}
+			}
+			if !target.allowUnresolvedFragments {
+				continue
+			}
+			report.line("  ok  %d fragment reference(s), contents unchecked", len(references))
+			continue
+		}
 
 		if err := argoworkflow.Admit(workflow, argoworkflow.Policy{RunnerImagePrefixes: target.imagePrefixes}); err != nil {
 			report.problem("admission %s: %v", entry.file, err)
