@@ -206,3 +206,45 @@ func TestClientAccessDoesNotInventAClientThatIsNotInstalled(t *testing.T) {
 		t.Errorf("ran %d commands with no client installed", ran)
 	}
 }
+
+// The offer previously lived only inside first-time onboarding, so once an
+// upstream existed the install went straight to "Ready" and there was no way to
+// configure a client afterwards. Anyone who declined it, whose install failed
+// partway, or who added a second machine had to reconstruct three environment
+// variables and a CA by hand from documentation.
+func TestClientAccessIsOfferedOnAReadyDeploymentThatHasNoConfigYet(t *testing.T) {
+	deps, _, home := clientAccessDeps(t, "\n")
+	tw := newTableWriter(deps.Output, false)
+
+	if err := offerClientAccessToConfiguredDeployment(context.Background(), Config{}, deps, tw); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(home, ".config", "oberth", "env")); err != nil {
+		t.Error("a ready deployment with no client configuration was not offered one")
+	}
+}
+
+// It must stay quiet when the machine is already configured, or every install
+// on a working setup ends with a prompt that has nothing to do.
+func TestClientAccessIsNotReofferedWhenItIsAlreadyConfigured(t *testing.T) {
+	deps, _, home := clientAccessDeps(t, "\n")
+	root := filepath.Join(home, ".config", "oberth")
+	if err := os.MkdirAll(root, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "env"), []byte("export OBERTH_BASE_URL=x\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	tw := newTableWriter(deps.Output, false)
+
+	if err := offerClientAccessToConfiguredDeployment(context.Background(), Config{}, deps, tw); err != nil {
+		t.Fatal(err)
+	}
+	body, err := os.ReadFile(filepath.Join(root, "env"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(body) != "export OBERTH_BASE_URL=x\n" {
+		t.Error("an existing client configuration was overwritten without being asked about")
+	}
+}
