@@ -24,8 +24,9 @@ func TestLocalImageIsLoadedIntoTheNodeWhenTheNodeLacksIt(t *testing.T) {
 			command := strings.Join(append([]string{name}, args...), " ")
 			ran = append(ran, command)
 			switch {
-			case strings.HasPrefix(command, "docker exec oberth-control-plane ctr --namespace=k8s.io images check"):
-				return nil, errors.New("not present in the node")
+			case strings.HasPrefix(command, "docker exec oberth-control-plane ctr --namespace=k8s.io images ls"):
+				// Exits 0 and prints nothing when the filter matches nothing.
+				return []byte("\n"), nil
 			case command == "kind get nodes --name oberth":
 				return []byte("oberth-control-plane\n"), nil
 			case strings.HasPrefix(command, "docker image inspect"):
@@ -65,7 +66,10 @@ func TestNodeThatAlreadyHasTheImageIsLeftAlone(t *testing.T) {
 			if command == "kind get nodes --name oberth" {
 				return []byte("oberth-control-plane\n"), nil
 			}
-			return nil, nil // images check succeeds: the node has it
+			if strings.Contains(command, "images ls") {
+				return []byte(pinned + "\n"), nil // the node has it
+			}
+			return nil, nil
 		},
 	}
 
