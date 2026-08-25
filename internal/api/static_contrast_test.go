@@ -55,6 +55,56 @@ func TestLightThemeStatusInkClearsAA(t *testing.T) {
 	}
 }
 
+// TestTheAccentIsReadableBothWays checks the accent in the two roles it plays.
+//
+// --acc is link text on a panel in five rules and a button background in two,
+// so one value has to clear 4.5:1 against the surface and its --acc-ink has to
+// clear 4.5:1 against itself. A brand colour picked as a fill is very likely to
+// fail the first: the Transferz accent measured 2.54:1 as link text while
+// looking perfectly deliberate.
+func TestTheAccentIsReadableBothWays(t *testing.T) {
+	css := string(staticAssets["app.css"].body)
+	if theme := string(staticAssets["theme.css"].body); strings.Contains(theme, "--acc-bg") {
+		css = theme
+	}
+	light := themeBlock(t, css, "light{")
+
+	accent := token(t, light, "--acc")
+	panel := token(t, light, "--panel")
+	if got := contrast(t, accent, panel); got < textContrast {
+		t.Fatalf("--acc %s as link text on --panel %s is %.2f:1, below AA %.1f",
+			accent, panel, got, textContrast)
+	}
+
+	ink := token(t, light, "--acc-ink")
+	if got := contrast(t, ink, accent); got < textContrast {
+		t.Fatalf("--acc-ink %s on --acc %s is %.2f:1, below AA %.1f",
+			ink, accent, got, textContrast)
+	}
+}
+
+// TestTheKeptStripCollapses keeps the artifact list from becoming a wall.
+//
+// One real coverage report kept 624 files. Rendered flat, the strip pushed the
+// whole run page below the fold.
+func TestTheKeptStripCollapses(t *testing.T) {
+	script := string(staticAssets["app.js"].body)
+	// Match the element by its class rather than by extracting the function.
+	// A first version searched a regexp-delimited function body, and the
+	// delimiter matched a shorter span than intended, so deleting the element
+	// left the assertion passing against text that no longer contained it.
+	if !strings.Contains(script, `<details class="artis"`) {
+		t.Fatal("the kept strip is not a collapsible <details>; hundreds of chips render flat")
+	}
+	if strings.Contains(script, `<details open class="artis"`) || strings.Contains(script, `<details class="artis" open`) {
+		t.Fatal("the kept strip opens by default, which is the wall it was meant to avoid")
+	}
+	css := string(staticAssets["app.css"].body)
+	if !regexp.MustCompile(`\.artis-body\{[^}]*max-height`).MatchString(css) {
+		t.Fatal("an opened strip is unbounded, so opening it recreates the wall")
+	}
+}
+
 // TestTheIssueGridHasNoContentSizedTracks guards the alignment fix.
 //
 // Every row is its own grid container, so an auto or max-content track resolves

@@ -19,7 +19,6 @@ const state = {
   live: null, // assigned per-run by liveLogContent
   issueKind: "", issueState: "open", issueRepo: "", issueCursor: 0, issueCursorHistory: [],
   issueItems: [], issueNext: 0, issueLoading: false,
-  logWrap: localStorage.getItem("oberth.logWrap") === "1",
   issuePage: null, issueOpener: null,
   lastList: "/runs",
   stream: localStorage.getItem("oberth-stream") || "needs",
@@ -686,7 +685,17 @@ function artifactStrip(runID, entries) {
     const href = `/api/runs/${encodeURIComponent(runID)}/artifacts/${entry.name.split("/").map(encodeURIComponent).join("/")}`;
     return `<a class="arti" href="${esc(href)}" download>${esc(entry.name)}<span class="du">${esc(fmtBytes(entry.size))}</span></a>`;
   }).join("");
-  return `<div class="artis"><span class="artis-h">kept</span>${links}</div>`;
+  // A real run keeps hundreds of files: one coverage report alone was 624 of
+  // them. Listing all of them turns a run page into a wall of chips that
+  // buries everything below it, so the strip states the shape and opens on
+  // request.
+  //
+  // <details> rather than a JS toggle: it is keyboard operable, announces its
+  // own expanded state, and still opens if a script fails to load. The count
+  // and total say whether opening it is worth the scroll.
+  const total = entries.reduce((sum, entry) => sum + (entry.size || 0), 0);
+  const summary = `${entries.length} file${entries.length === 1 ? "" : "s"} · ${fmtBytes(total)}`;
+  return `<details class="artis"><summary class="artis-sum"><span class="artis-h">kept</span><span class="artis-n">${esc(summary)}</span><span class="artis-cue" aria-hidden="true"></span></summary><div class="artis-body">${links}</div></details>`;
 }
 
 function fmtBytes(size) {
@@ -762,15 +771,15 @@ async function renderRunDetailView(detail, seq) {
         }).join("")}</div></div>`;
       }).join("") || '<div class="empty">No step results recorded yet.</div>'}
     </div>
-    <div class="logp${state.logWrap ? " wrapping" : ""}">
+    <div class="logp">
       <div class="log-h">
         ${live ? '<span class="live"><span class="dot run"></span>live</span>' : ""}
         <span>${selected ? esc(stepKey(selected)) : "run summary"}</span>
         ${selected ? `<label class="logfilter"><input id="logFilter" type="search" autocomplete="off" placeholder="filter lines" value="${esc(state.logPattern)}"></label>` : ""}
         ${logMetaLabel()}
-        <div class="rt"><button class="copy-btn" data-action="toggle-wrap" aria-pressed="${state.logWrap ? "true" : "false"}">${state.logWrap ? "no wrap" : "wrap"}</button><button class="copy-btn" data-copy-text="${esc(run.ID)}">copy run id</button></div>
+        <div class="rt"><button class="copy-btn" data-copy-text="${esc(run.ID)}">copy run id</button></div>
       </div>
-      <div id="termBody" class="logbody${state.logWrap ? " wrapped" : ""}">${terminal}</div>
+      <div id="termBody" class="logbody">${terminal}</div>
       ${artifactStrip(run.ID, artifacts)}
     </div>
     </div>
@@ -1095,20 +1104,6 @@ document.addEventListener("click", event => {
     case "close-issue": closeIssue(); break;
     case "issue-retry": route(); break;
     case "issue-more": loadMoreIssues(); break;
-    case "toggle-wrap": {
-      state.logWrap = !state.logWrap;
-      localStorage.setItem("oberth.logWrap", state.logWrap ? "1" : "0");
-      const body = document.getElementById("termBody");
-      const pane = body && body.closest(".logp");
-      if (body) body.classList.toggle("wrapped", state.logWrap);
-      if (pane) pane.classList.toggle("wrapping", state.logWrap);
-      const button = target.closest("[data-action=toggle-wrap]");
-      if (button) {
-        button.textContent = state.logWrap ? "no wrap" : "wrap";
-        button.setAttribute("aria-pressed", state.logWrap ? "true" : "false");
-      }
-      break;
-    }
   }
 });
 document.addEventListener("change", event => {
