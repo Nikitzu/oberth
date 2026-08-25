@@ -37,8 +37,14 @@ func ensureLocalImageInNode(ctx context.Context, deps Deps, pinned string) error
 	}
 	// Ask the node first. A repeat install must not pay for a load it does not
 	// need, and on a rerun this is the common case.
-	if _, checkErr := run(ctx, nil, "docker", "exec", nodes[0],
-		"ctr", "--namespace=k8s.io", "images", "check", "name=="+pinned); checkErr == nil {
+	//
+	// The presence signal is the output, not the exit status. `ctr images ls`
+	// with a filter that matches nothing exits 0 and prints nothing, so testing
+	// the error alone reports every image as already present and skips every
+	// load, which is exactly the silence this function exists to remove.
+	if listed, checkErr := run(ctx, nil, "docker", "exec", nodes[0],
+		"ctr", "--namespace=k8s.io", "images", "ls", "-q", "name=="+pinned); checkErr == nil &&
+		strings.TrimSpace(string(listed)) != "" {
 		return nil
 	}
 
