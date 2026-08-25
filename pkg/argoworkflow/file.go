@@ -102,7 +102,7 @@ func ParseFileRef(reference string) (FileRef, error) {
 	}
 	// Cut on the first colon, not the last. A version may not contain one and
 	// a path may not either, so the first is the only separator -- and cutting
-	// first is what makes "tzmem:graph/repos.yml" report a missing version
+	// first is what makes "registry:graph/repos.yml" report a missing version
 	// rather than a malformed path.
 	pinned, path, found := strings.Cut(trimmed, ":")
 	if !found {
