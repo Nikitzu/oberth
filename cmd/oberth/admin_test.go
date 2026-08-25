@@ -49,7 +49,7 @@ func registerTestUpstreamWithKey(t *testing.T, databasePath, name, baseURL, keyN
 func TestRepoAddMapsRepositoryToNamedUpstreamAndIsIdempotent(t *testing.T) {
 	databasePath := filepath.Join(t.TempDir(), "oberth.sqlite")
 	registerTestUpstream(t, databasePath, "codeberg", "ssh://git@codeberg.org/acme")
-	registerTestUpstream(t, databasePath, "github", "ssh://git@github.com/acme")
+	registerTestUpstream(t, databasePath, "github", "ssh://git@github.com/octocat")
 	var output bytes.Buffer
 	if err := runRepoWithDependencies(context.Background(), []string{
 		"add", "--database", databasePath, "widget", "github",
@@ -108,7 +108,7 @@ func TestUpstreamListShowsConfiguredUpstreams(t *testing.T) {
 	directory := t.TempDir()
 	databasePath := filepath.Join(directory, "oberth.sqlite")
 	registerTestUpstream(t, databasePath, "codeberg", "ssh://git@codeberg.org/acme")
-	registerTestUpstream(t, databasePath, "github", "ssh://git@github.com/acme")
+	registerTestUpstream(t, databasePath, "github", "ssh://git@github.com/octocat")
 	_, keyPEM, _ := testSSHIdentity(t)
 	keyPath := filepath.Join(directory, "id_ed25519")
 	if err := os.WriteFile(keyPath, keyPEM, 0o600); err != nil {
@@ -121,7 +121,7 @@ func TestUpstreamListShowsConfiguredUpstreams(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := output.String()
-	if !strings.Contains(text, "codeberg") || !strings.Contains(text, "ssh://git@github.com/acme") ||
+	if !strings.Contains(text, "codeberg") || !strings.Contains(text, "ssh://git@github.com/octocat") ||
 		!strings.Contains(text, "KEY FINGERPRINT") || !strings.Contains(text, "KEY NAME") || !strings.Contains(text, "SHA256:") {
 		t.Fatalf("upstream list output = %q", text)
 	}
@@ -135,7 +135,7 @@ func TestUpstreamListShowsConfiguredUpstreams(t *testing.T) {
 func TestUpstreamListShowsPerUpstreamKeyFingerprints(t *testing.T) {
 	directory := t.TempDir()
 	databasePath := filepath.Join(directory, "oberth.sqlite")
-	registerTestUpstream(t, databasePath, "github", "ssh://git@github.com/acme")
+	registerTestUpstream(t, databasePath, "github", "ssh://git@github.com/octocat")
 	registerTestUpstreamWithKey(t, databasePath, "codeberg", "ssh://git@codeberg.org/acme", "id_ed25519-codeberg")
 	_, sharedPEM, _ := testSSHIdentity(t)
 	_, dedicatedPEM, _ := testSSHIdentity(t)
@@ -195,7 +195,7 @@ func TestUpstreamListDegradesUnreadableDedicatedKey(t *testing.T) {
 
 func TestUpstreamRemoveRequiresConfirmationAndRemovesMappings(t *testing.T) {
 	databasePath := filepath.Join(t.TempDir(), "oberth.sqlite")
-	registerTestUpstream(t, databasePath, "github", "ssh://git@github.com/acme")
+	registerTestUpstream(t, databasePath, "github", "ssh://git@github.com/octocat")
 	if err := runRepoWithDependencies(context.Background(), []string{
 		"add", "--database", databasePath, "widget", "github",
 	}, io.Discard, repoDependencies{mutationGate: allowTestMutation}); err != nil {
@@ -236,7 +236,7 @@ func TestUpstreamRemoveRequiresConfirmationAndRemovesMappings(t *testing.T) {
 
 func TestUpstreamRemoveFailsClosedWhenRepositoryHasHistory(t *testing.T) {
 	databasePath := filepath.Join(t.TempDir(), "oberth.sqlite")
-	registerTestUpstream(t, databasePath, "github", "ssh://git@github.com/acme")
+	registerTestUpstream(t, databasePath, "github", "ssh://git@github.com/octocat")
 	if err := runRepoWithDependencies(context.Background(), []string{
 		"add", "--database", databasePath, "widget", "github",
 	}, io.Discard, repoDependencies{mutationGate: allowTestMutation}); err != nil {
@@ -1964,7 +1964,7 @@ func TestRepoRemoveDeletesMappingAndCleansCacheDirectory(t *testing.T) {
 	t.Parallel()
 	directory := t.TempDir()
 	databasePath := filepath.Join(directory, "oberth.sqlite")
-	registerTestUpstream(t, databasePath, "github", "ssh://git@github.com/acme")
+	registerTestUpstream(t, databasePath, "github", "ssh://git@github.com/octocat")
 	if err := runRepoWithDependencies(context.Background(), []string{
 		"add", "--database", databasePath, "widget", "github",
 	}, io.Discard, repoDependencies{mutationGate: allowTestMutation}); err != nil {
@@ -2014,7 +2014,7 @@ func TestRepoRemoveDeletesMappingAndCleansCacheDirectory(t *testing.T) {
 func TestRepoRemoveRefusesInFlightRuns(t *testing.T) {
 	t.Parallel()
 	databasePath := filepath.Join(t.TempDir(), "oberth.sqlite")
-	registerTestUpstream(t, databasePath, "github", "ssh://git@github.com/acme")
+	registerTestUpstream(t, databasePath, "github", "ssh://git@github.com/octocat")
 	if err := runRepoWithDependencies(context.Background(), []string{
 		"add", "--database", databasePath, "widget", "github",
 	}, io.Discard, repoDependencies{mutationGate: allowTestMutation}); err != nil {
@@ -2051,7 +2051,7 @@ func TestRepoRemoveRefusesInFlightRuns(t *testing.T) {
 func TestRepoRemoveRefusesNonexistentRepository(t *testing.T) {
 	t.Parallel()
 	databasePath := filepath.Join(t.TempDir(), "oberth.sqlite")
-	registerTestUpstream(t, databasePath, "github", "ssh://git@github.com/acme")
+	registerTestUpstream(t, databasePath, "github", "ssh://git@github.com/octocat")
 
 	err := runRepoWithDependencies(context.Background(), []string{
 		"remove", "--database", databasePath, "nonexistent",
