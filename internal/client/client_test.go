@@ -1,14 +1,25 @@
 package client
 
 import (
+	"bytes"
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/pem"
+	"errors"
+	"io"
+	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 const secret = "tok-DO-NOT-LEAK-9f3a"
@@ -34,7 +45,7 @@ func TestConfiguredReportsWhetherAServerIsSet(t *testing.T) {
 func TestTokenComesFromTheEnvironment(t *testing.T) {
 	clearEnv(t)
 	t.Setenv("OBERTH_TOKEN", secret)
-	got, err := FromEnv().resolveToken()
+	got, err := FromEnv().resolveToken(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -46,7 +57,7 @@ func TestTokenComesFromTheEnvironment(t *testing.T) {
 func TestTokenCommandStdoutIsTrimmed(t *testing.T) {
 	clearEnv(t)
 	t.Setenv("OBERTH_TOKEN_COMMAND", "printf '"+secret+"\\n\\n'")
-	got, err := FromEnv().resolveToken()
+	got, err := FromEnv().resolveToken(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -58,7 +69,7 @@ func TestTokenCommandStdoutIsTrimmed(t *testing.T) {
 func TestTokenCommandFailureSurfacesItsOwnStderr(t *testing.T) {
 	clearEnv(t)
 	t.Setenv("OBERTH_TOKEN_COMMAND", "echo 'vault is locked' >&2; exit 3")
-	_, err := FromEnv().resolveToken()
+	_, err := FromEnv().resolveToken(t.Context())
 	if err == nil {
 		t.Fatal("a failing token command succeeded")
 	}
@@ -69,7 +80,7 @@ func TestTokenCommandFailureSurfacesItsOwnStderr(t *testing.T) {
 
 func TestAMissingTokenNamesTheEnvironmentVariable(t *testing.T) {
 	clearEnv(t)
-	_, err := FromEnv().resolveToken()
+	_, err := FromEnv().resolveToken(t.Context())
 	if err == nil {
 		t.Fatal("no token was accepted")
 	}
@@ -83,7 +94,7 @@ func newClient(t *testing.T, server *httptest.Server) *Client {
 	clearEnv(t)
 	t.Setenv("OBERTH_BASE_URL", server.URL)
 	t.Setenv("OBERTH_TOKEN", secret)
-	client, err := New(FromEnv())
+	client, err := New(t.Context(), FromEnv())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -207,7 +218,7 @@ func TestNoFailurePathEverEchoesTheToken(t *testing.T) {
 	clearEnv(t)
 	t.Setenv("OBERTH_BASE_URL", "https://127.0.0.1:1")
 	t.Setenv("OBERTH_TOKEN", secret)
-	client, err := New(FromEnv())
+	client, err := New(t.Context(), FromEnv())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -228,7 +239,7 @@ func TestAnUntrustedCertificateIsRefusedUntilItsAnchorIsSupplied(t *testing.T) {
 	clearEnv(t)
 	t.Setenv("OBERTH_BASE_URL", server.URL)
 	t.Setenv("OBERTH_TOKEN", secret)
-	client, err := New(FromEnv())
+	client, err := New(t.Context(), FromEnv())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -248,7 +259,7 @@ func TestAnUntrustedCertificateIsRefusedUntilItsAnchorIsSupplied(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("OBERTH_CA_CERT", anchor)
-	trusted, err := New(FromEnv())
+	trusted, err := New(t.Context(), FromEnv())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -291,7 +302,7 @@ func TestNewRefusesAMalformedBaseURL(t *testing.T) {
 	t.Setenv("OBERTH_TOKEN", secret)
 	for _, base := range []string{"", "not a url", "ftp://oberth.example", "://broken"} {
 		t.Setenv("OBERTH_BASE_URL", base)
-		if _, err := New(FromEnv()); err == nil {
+		if _, err := New(t.Context(), FromEnv()); err == nil {
 			t.Fatalf("base URL %q was accepted", base)
 		}
 	}
@@ -314,7 +325,7 @@ func TestAHostnameMismatchNamesTheAddressesTheCertificateCovers(t *testing.T) {
 	t.Setenv("OBERTH_BASE_URL", address)
 	t.Setenv("OBERTH_TOKEN", secret)
 	t.Setenv("OBERTH_CA_CERT", anchor)
-	api, err := New(FromEnv())
+	api, err := New(t.Context(), FromEnv())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -329,5 +340,275 @@ func TestAHostnameMismatchNamesTheAddressesTheCertificateCovers(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "does not cover") {
 		t.Fatalf("error does not explain the mismatch: %v", err)
+	}
+}
+
+// --- #235: reject non-loopback http:// ---
+
+func TestPlainHTTPIsRejectedForNonLoopbackHosts(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("OBERTH_TOKEN", secret)
+	for _, base := range []string{
+		"http://oberth.example",
+		"http://10.0.0.1:8443",
+		"http://192.168.1.1",
+	} {
+		t.Setenv("OBERTH_BASE_URL", base)
+		_, err := New(t.Context(), FromEnv())
+		if err == nil {
+			t.Fatalf("http:// to %q was accepted; the bearer token would be in cleartext", base)
+		}
+		if !strings.Contains(err.Error(), "cleartext") {
+			t.Fatalf("error does not say why http:// is refused: %v", err)
+		}
+	}
+}
+
+func TestPlainHTTPIsAllowedForLoopback(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer server.Close()
+
+	clearEnv(t)
+	t.Setenv("OBERTH_BASE_URL", server.URL) // http://127.0.0.1:<port>
+	t.Setenv("OBERTH_TOKEN", secret)
+	if _, err := New(t.Context(), FromEnv()); err != nil {
+		t.Fatalf("http://127.0.0.1 should be allowed for port-forward use: %v", err)
+	}
+}
+
+// --- #237: GetTo streams raw binary, not JSON ---
+
+func TestGetToStreamsRawBinaryContent(t *testing.T) {
+	binary := []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a} // PNG header
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/octet-stream")
+		_, _ = w.Write(binary)
+	}))
+	defer server.Close()
+
+	client := newClient(t, server)
+	var got bytes.Buffer
+	if err := client.GetTo(context.Background(), "/api/runs/r/artifacts/img.png", nil, &got); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got.Bytes(), binary) {
+		t.Fatalf("body = %x, want %x", got.Bytes(), binary)
+	}
+}
+
+func TestGetToDoesNotSetAcceptJSON(t *testing.T) {
+	var seenAccept string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seenAccept = r.Header.Get("Accept")
+		_, _ = w.Write([]byte("data"))
+	}))
+	defer server.Close()
+
+	client := newClient(t, server)
+	_ = client.GetTo(context.Background(), "/test", nil, io.Discard)
+	if seenAccept == "application/json" {
+		t.Fatal("GetTo set Accept: application/json, but it is for binary downloads")
+	}
+}
+
+func TestGetToIsNotCappedAtTheJSONResponseSize(t *testing.T) {
+	// The server's default artifact ceiling is 256 MiB per run while the
+	// JSON read cap is 8 MiB. Before the streaming fix the client returned
+	// the first 8 MiB of a larger artifact with no error — a silently
+	// corrupt download is worse than a loud one.
+	const chunkSize = 64 * 1024
+	const size = maxResponseSize + chunkSize
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/octet-stream")
+		chunk := bytes.Repeat([]byte{0xA5}, chunkSize)
+		for written := 0; written < size; written += chunkSize {
+			if _, err := w.Write(chunk); err != nil {
+				return
+			}
+		}
+	}))
+	defer server.Close()
+
+	client := newClient(t, server)
+	var got bytes.Buffer
+	if err := client.GetTo(context.Background(), "/api/runs/r/artifacts/big.bin", nil, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Len() != size {
+		t.Fatalf("downloaded %d bytes of %d; the transfer was truncated", got.Len(), size)
+	}
+	if got.Bytes()[size-1] != 0xA5 {
+		t.Fatalf("final byte = %02x, want a5", got.Bytes()[size-1])
+	}
+}
+
+// --- #236: OBERTH_CA_CERT is a pin, TLS floor is 1.3, no silent fallback ---
+
+// mintUnrelatedCA writes a freshly generated self-signed CA certificate to a
+// temporary file and returns its path. Every httptest TLS server in a process
+// serves the same embedded certificate, so a genuinely unrelated authority
+// has to be minted, not borrowed from a second server.
+func mintUnrelatedCA(t *testing.T) string {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	template := x509.Certificate{
+		SerialNumber:          big.NewInt(1),
+		Subject:               pkix.Name{CommonName: "unrelated-test-ca"},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().Add(time.Hour),
+		IsCA:                  true,
+		KeyUsage:              x509.KeyUsageCertSign,
+		BasicConstraintsValid: true,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, &template, &template, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "unrelated-ca.pem")
+	pemBytes := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+	if err := os.WriteFile(path, pemBytes, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func TestACACertPinReplacesTheSystemPool(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer server.Close()
+
+	anchor := filepath.Join(t.TempDir(), "ca.pem")
+	pemBytes := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw})
+	if err := os.WriteFile(anchor, pemBytes, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// White box (the append/replace discriminator): the trust pool is
+	// exactly the pinned PEM. CertPool.Equal distinguishes a fresh pool
+	// from a system pool with the PEM appended even on a machine whose
+	// system store happens to be empty.
+	roundTripper, err := newTransport(anchor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	transport, ok := roundTripper.(*http.Transport)
+	if !ok {
+		t.Fatalf("newTransport returned %T", roundTripper)
+	}
+	want := x509.NewCertPool()
+	if !want.AppendCertsFromPEM(pemBytes) {
+		t.Fatal("the test anchor did not parse")
+	}
+	if !transport.TLSClientConfig.RootCAs.Equal(want) {
+		t.Fatal("OBERTH_CA_CERT did not replace the trust pool; an explicit pin must trust only the named authority")
+	}
+
+	// Behaviorally: the pin that names this server's authority verifies it,
+	// and a pin naming an unrelated authority rejects it — nothing else
+	// about the connection differs between the two.
+	clearEnv(t)
+	t.Setenv("OBERTH_TOKEN", secret)
+	t.Setenv("OBERTH_BASE_URL", server.URL)
+	t.Setenv("OBERTH_CA_CERT", anchor)
+	trusted, err := New(t.Context(), FromEnv())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out struct{}
+	if err := trusted.Get(context.Background(), "/api/runs", nil, &out); err != nil {
+		t.Fatalf("the pinned authority was not trusted: %v", err)
+	}
+	t.Setenv("OBERTH_CA_CERT", mintUnrelatedCA(t))
+	stranger, err := New(t.Context(), FromEnv())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := stranger.Get(context.Background(), "/api/runs", nil, &out); err == nil {
+		t.Fatal("a certificate outside the pin was accepted")
+	}
+}
+
+func TestTLSFloorIsOnePointThreeWithAndWithoutACACert(t *testing.T) {
+	bare, err := newTransport("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bareTransport, ok := bare.(*http.Transport)
+	if !ok {
+		t.Fatalf("newTransport returned %T", bare)
+	}
+	if bareTransport.TLSClientConfig == nil || bareTransport.TLSClientConfig.MinVersion != tls.VersionTLS13 {
+		t.Fatal("without OBERTH_CA_CERT the TLS floor is not 1.3")
+	}
+
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	server.TLS = &tls.Config{MaxVersion: tls.VersionTLS12}
+	server.StartTLS()
+	defer server.Close()
+
+	anchor := filepath.Join(t.TempDir(), "ca.pem")
+	pemBytes := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw})
+	if err := os.WriteFile(anchor, pemBytes, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	anchored, err := newTransport(anchor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	anchoredTransport, ok := anchored.(*http.Transport)
+	if !ok {
+		t.Fatalf("newTransport returned %T", anchored)
+	}
+	if anchoredTransport.TLSClientConfig.MinVersion != tls.VersionTLS13 {
+		t.Fatal("with OBERTH_CA_CERT the TLS floor is not 1.3")
+	}
+
+	// Behaviorally: a server capped at TLS 1.2 is refused even though its
+	// certificate is the pinned anchor, so the only possible failure is the
+	// protocol floor.
+	clearEnv(t)
+	t.Setenv("OBERTH_TOKEN", secret)
+	t.Setenv("OBERTH_CA_CERT", anchor)
+	t.Setenv("OBERTH_BASE_URL", server.URL)
+	api, err := New(t.Context(), FromEnv())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out struct{}
+	if err := api.Get(context.Background(), "/api/runs", nil, &out); err == nil {
+		t.Fatal("a TLS 1.2 handshake was accepted below the 1.3 floor")
+	}
+}
+
+type opaqueTransport struct{}
+
+func (opaqueTransport) RoundTrip(*http.Request) (*http.Response, error) {
+	return nil, errors.New("opaque")
+}
+
+func TestNewErrorsWhenDefaultTransportCannotCarryTLS(t *testing.T) {
+	// Deliberately not parallel: it swaps the process-global
+	// http.DefaultTransport and restores it before returning.
+	saved := http.DefaultTransport
+	http.DefaultTransport = opaqueTransport{}
+	defer func() { http.DefaultTransport = saved }()
+
+	clearEnv(t)
+	t.Setenv("OBERTH_BASE_URL", "https://oberth.example")
+	t.Setenv("OBERTH_TOKEN", secret)
+	_, err := New(t.Context(), FromEnv())
+	if err == nil {
+		t.Fatal("a transport that cannot carry TLS configuration was accepted silently")
+	}
+	if !strings.Contains(err.Error(), "Transport") {
+		t.Fatalf("the error does not name the transport problem: %v", err)
 	}
 }

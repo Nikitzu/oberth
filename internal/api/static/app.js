@@ -300,7 +300,7 @@ function setAuto(ms) {
 
 /* ---------- data loading ---------- */
 async function loadRepos() { state.repos = await api("/api/repos") || []; }
-async function loadRuns() { state.runs = await api("/api/runs?limit=200") || []; }
+async function loadRuns() { state.runs = await api("/api/runs?limit=100") || []; }
 async function loadStatus() {
   state.status = await api("/api/status");
   setVersion(true, state.status?.version);
@@ -899,7 +899,7 @@ async function renderRepos(seq) {
   await Promise.all([loadRepos(), loadRuns(), loadStatus().catch(() => { })]);
   if (!currentRoute(seq)) return;
   const rows = state.repos.map(repo => {
-    const runs = state.runs.filter(run => run.RepoID === repo.ID);
+    const runs = repo.LatestRuns || [];
     return { repo, runs, latest: runs[0] || null };
   });
   replaceApp(`

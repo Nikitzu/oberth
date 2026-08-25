@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -54,12 +55,12 @@ type remoteRunDetail struct {
 	Repository remoteRepository
 }
 
-func remoteClient() (*client.Client, error) {
+func remoteClient(ctx context.Context) (*client.Client, error) {
 	config := client.FromEnv()
 	if !config.Configured() {
 		return nil, errors.New("set OBERTH_BASE_URL to the server's address to read it from here")
 	}
-	return client.New(config)
+	return client.New(ctx, config)
 }
 
 func reportMode(mode string) {
@@ -132,13 +133,14 @@ func emitJSON(ctx context.Context, api *client.Client, path string, query map[st
 	if err != nil {
 		return err
 	}
-	var pretty any
-	if json.Unmarshal(raw, &pretty) == nil {
-		encoder := json.NewEncoder(output)
-		encoder.SetIndent("", "  ")
-		return encoder.Encode(pretty)
+	var indented bytes.Buffer
+	if err := json.Indent(&indented, raw, "", "  "); err != nil {
+		// Not valid JSON; pass through unchanged.
+		_, writeErr := output.Write(raw)
+		return writeErr
 	}
-	_, err = output.Write(raw)
+	indented.WriteByte('\n')
+	_, err = output.Write(indented.Bytes())
 	return err
 }
 
@@ -157,7 +159,7 @@ func runRuns(ctx context.Context, arguments []string, output io.Writer) error {
 		}
 		return fmt.Errorf("%w: %w", errUsage, err)
 	}
-	api, err := remoteClient()
+	api, err := remoteClient(ctx)
 	if err != nil {
 		return err
 	}
@@ -194,7 +196,7 @@ func runRunDetail(ctx context.Context, arguments []string, output io.Writer) err
 	if flags.NArg() != 1 {
 		return fmt.Errorf("%w: run <run-id>", errUsage)
 	}
-	api, err := remoteClient()
+	api, err := remoteClient(ctx)
 	if err != nil {
 		return err
 	}
@@ -270,7 +272,7 @@ func runRemoteLog(ctx context.Context, arguments []string, output io.Writer) err
 	tail := flags.Bool("tail", false, "read from the end")
 	raw := flags.Bool("raw", false, "keep the [burn/step] prefix on each line")
 	asJSON := flags.Bool("json", false, "emit the server's payload unchanged")
-	if err := flags.Parse(arguments); err != nil {
+	if err := flags.Parse(permuteFlagsFirst(arguments)); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			flags.SetOutput(output)
 			flags.Usage()
@@ -284,7 +286,7 @@ func runRemoteLog(ctx context.Context, arguments []string, output io.Writer) err
 	if strings.TrimSpace(*burn) == "" || strings.TrimSpace(*step) == "" {
 		return fmt.Errorf("%w: --burn and --step are required; oberth run <id> lists them", errUsage)
 	}
-	api, err := remoteClient()
+	api, err := remoteClient(ctx)
 	if err != nil {
 		return err
 	}
@@ -344,7 +346,7 @@ func runRepos(ctx context.Context, arguments []string, output io.Writer) error {
 	if err != nil || flags == nil {
 		return err
 	}
-	api, err := remoteClient()
+	api, err := remoteClient(ctx)
 	if err != nil {
 		return err
 	}
@@ -369,7 +371,7 @@ func runRemoteStatus(ctx context.Context, arguments []string, output io.Writer) 
 	if err != nil || flags == nil {
 		return err
 	}
-	api, err := remoteClient()
+	api, err := remoteClient(ctx)
 	if err != nil {
 		return err
 	}
@@ -383,7 +385,7 @@ func runIssues(ctx context.Context, arguments []string, output io.Writer) error 
 	if err != nil || flags == nil {
 		return err
 	}
-	api, err := remoteClient()
+	api, err := remoteClient(ctx)
 	if err != nil {
 		return err
 	}
@@ -429,25 +431,20 @@ type remoteArtifactList struct {
 }
 
 func remoteArtifacts(ctx context.Context, config client.Config, rest []string, output io.Writer) error {
-	api, err := client.New(config)
+	api, err := client.New(ctx, config)
 	if err != nil {
 		return err
 	}
 	reportMode("server")
 	if len(rest) == 2 {
-		body, readErr := api.GetRaw(ctx, "/api/runs/"+rest[0]+"/artifacts/"+rest[1], nil)
-		if readErr != nil {
-			return readErr
-		}
-		_, writeErr := output.Write(body)
-		return writeErr
+		return api.GetTo(ctx, "/api/runs/"+rest[0]+"/artifacts/"+rest[1], nil, output)
 	}
 	var listing remoteArtifactList
 	if err := api.Get(ctx, "/api/runs/"+rest[0]+"/artifacts", nil, &listing); err != nil {
 		return err
 	}
 	if len(listing.Artifacts) == 0 {
-		_, err := fmt.Fprint(output, noArtifactsMessage(rest[0]))
+		_, err := fmt.Fprintf(output, "run %s kept no artifacts\n", rest[0])
 		return err
 	}
 	if _, err := fmt.Fprintf(output, "%-12s  %-20s  %s\n", "SIZE", "MODIFIED", "NAME"); err != nil {

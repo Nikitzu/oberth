@@ -193,7 +193,7 @@ func (server *Server) handleRuns(writer http.ResponseWriter, request *http.Reque
 	filter := RunFilter{
 		Repository: query.Get("repo"),
 		Ref:        query.Get("ref"),
-		Limit:      queryLimit(request, 100, 500),
+		Limit:      queryLimit(request, 100, 100),
 	}
 	value, err := server.views.Runs(request.Context(), actorFrom(request.Context()), filter)
 	server.writeView(writer, value, err)

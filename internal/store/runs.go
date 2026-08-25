@@ -575,6 +575,42 @@ ORDER BY queue_sequence DESC LIMIT ?`,
 	return runs, nil
 }
 
+// ListLatestRunsPerRepo returns the most recent N runs for every repository
+// using a SQL window function. The result is bounded by repos x perRepo rows
+// (e.g. 20 repos x 12 = 240) and is always correct regardless of total run
+// count, unlike filtering a global top-N window which silently drops repos
+// whose latest run fell outside that window.
+func (s *Store) ListLatestRunsPerRepo(ctx context.Context, perRepo int) ([]model.Run, error) {
+	if perRepo <= 0 {
+		perRepo = 12
+	}
+	if perRepo > 50 {
+		perRepo = 50
+	}
+	rows, err := s.db.QueryContext(ctx, `
+SELECT `+runColumns+` FROM (
+    SELECT *, ROW_NUMBER() OVER (PARTITION BY repo_id ORDER BY queue_sequence DESC) AS rn
+    FROM runs
+) WHERE rn <= ?
+ORDER BY queue_sequence DESC`, perRepo)
+	if err != nil {
+		return nil, fmt.Errorf("list latest runs per repo: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var runs []model.Run
+	for rows.Next() {
+		value, err := scanRun(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan latest run per repo: %w", err)
+		}
+		runs = append(runs, value)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list latest runs per repo: %w", err)
+	}
+	return runs, nil
+}
+
 func (s *Store) PutStepResult(ctx context.Context, result model.StepResult) (model.StepResult, error) {
 	if strings.TrimSpace(result.RunID) == "" || strings.TrimSpace(result.Burn) == "" ||
 		strings.TrimSpace(result.Step) == "" || result.Ordinal < 0 || !result.Status.Terminal() ||

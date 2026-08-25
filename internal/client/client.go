@@ -40,14 +40,14 @@ func FromEnv() Config {
 
 func (config Config) Configured() bool { return config.BaseURL != "" }
 
-func (config Config) resolveToken() (string, error) {
+func (config Config) resolveToken(ctx context.Context) (string, error) {
 	if config.Token != "" {
 		return config.Token, nil
 	}
 	if config.TokenCommand == "" {
 		return "", errors.New("client: set OBERTH_TOKEN, or OBERTH_TOKEN_COMMAND naming a command that prints one")
 	}
-	command := exec.Command("/bin/sh", "-c", config.TokenCommand) // #nosec G204 -- the operator's own command, from their environment.
+	command := exec.CommandContext(ctx, "/bin/sh", "-c", config.TokenCommand) // #nosec G204 -- the operator's own command, from their environment.
 	var stderr strings.Builder
 	command.Stderr = &stderr
 	out, err := command.Output()
@@ -69,9 +69,15 @@ type Client struct {
 	base  *url.URL
 	token string
 	http  *http.Client
+	// download shares the same transport but carries no whole-request
+	// timeout: http.Client.Timeout covers reading the entire body, and an
+	// artifact download bounded only by the server's ceiling (256 MiB per
+	// run by default) can legitimately outlive the 30 seconds that are
+	// right for an API call. Cancellation still works through the context.
+	download *http.Client
 }
 
-func New(config Config) (*Client, error) {
+func New(ctx context.Context, config Config) (*Client, error) {
 	if config.BaseURL == "" {
 		return nil, errors.New("client: set OBERTH_BASE_URL to the server's https address")
 	}
@@ -85,7 +91,10 @@ func New(config Config) (*Client, error) {
 	if base.Host == "" {
 		return nil, errors.New("client: OBERTH_BASE_URL has no host")
 	}
-	token, err := config.resolveToken()
+	if base.Scheme == "http" && !isLoopback(base.Hostname()) {
+		return nil, errors.New("client: use https:// — the token would be transmitted in cleartext")
+	}
+	token, err := config.resolveToken(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -94,18 +103,34 @@ func New(config Config) (*Client, error) {
 		return nil, err
 	}
 	return &Client{
-		base:  base,
-		token: token,
-		http:  &http.Client{Timeout: requestTimeout, Transport: transport},
+		base:     base,
+		token:    token,
+		http:     &http.Client{Timeout: requestTimeout, Transport: transport},
+		download: &http.Client{Transport: transport},
 	}, nil
+}
+
+// isLoopback reports whether host is a loopback address safe for plain HTTP.
+// Only 127.0.0.1, localhost, and ::1 qualify; everything else must use TLS
+// to protect the bearer token.
+func isLoopback(host string) bool {
+	switch host {
+	case "127.0.0.1", "localhost", "::1":
+		return true
+	}
+	return false
 }
 
 func newTransport(caCert string) (http.RoundTripper, error) {
 	transport, ok := http.DefaultTransport.(*http.Transport)
 	if !ok {
-		return http.DefaultTransport, nil
+		return nil, errors.New("client: http.DefaultTransport is not *http.Transport; cannot configure TLS")
 	}
 	cloned := transport.Clone()
+	if cloned.TLSClientConfig == nil {
+		cloned.TLSClientConfig = &tls.Config{}
+	}
+	cloned.TLSClientConfig.MinVersion = tls.VersionTLS13
 	if caCert == "" {
 		return cloned, nil
 	}
@@ -113,18 +138,18 @@ func newTransport(caCert string) (http.RoundTripper, error) {
 	if err != nil {
 		return nil, fmt.Errorf("client: read OBERTH_CA_CERT: %w", err)
 	}
-	pool, err := x509.SystemCertPool()
-	if err != nil || pool == nil {
-		pool = x509.NewCertPool()
-	}
+	pool := x509.NewCertPool()
 	if !pool.AppendCertsFromPEM(pem) {
 		return nil, fmt.Errorf("client: OBERTH_CA_CERT %s contains no certificate", caCert)
 	}
-	cloned.TLSClientConfig = &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12}
+	cloned.TLSClientConfig.RootCAs = pool
 	return cloned, nil
 }
 
-func (client *Client) Get(ctx context.Context, path string, query map[string]string, into any) error {
+// newGetRequest builds an authenticated GET for path. Every request path
+// shares it so the Authorization header can never diverge between the JSON
+// and the raw-download reads.
+func (client *Client) newGetRequest(ctx context.Context, path string, query map[string]string) (*http.Request, error) {
 	target := *client.base
 	target.Path = strings.TrimRight(target.Path, "/") + path
 	if len(query) > 0 {
@@ -138,9 +163,17 @@ func (client *Client) Get(ctx context.Context, path string, query map[string]str
 	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, target.String(), nil)
 	if err != nil {
-		return fmt.Errorf("client: build request for %s: %w", path, err)
+		return nil, fmt.Errorf("client: build request for %s: %w", path, err)
 	}
 	request.Header.Set("Authorization", "Bearer "+client.token)
+	return request, nil
+}
+
+func (client *Client) Get(ctx context.Context, path string, query map[string]string, into any) error {
+	request, err := client.newGetRequest(ctx, path, query)
+	if err != nil {
+		return err
+	}
 	request.Header.Set("Accept", "application/json")
 
 	response, err := client.http.Do(request)
@@ -171,6 +204,33 @@ func (client *Client) GetRaw(ctx context.Context, path string, query map[string]
 		return nil, err
 	}
 	return raw, nil
+}
+
+// GetTo streams the response body into output without JSON decoding and
+// without maxResponseSize: that cap exists to bound JSON decoding in
+// memory, but an artifact is served as application/octet-stream and the
+// server's default per-run artifact ceiling is 256 MiB, so capping the
+// read at 8 MiB silently truncated every larger download (#237). The
+// transfer is bounded by the server's own artifact limits and cancelled
+// through ctx; nothing is buffered beyond io.Copy's window.
+func (client *Client) GetTo(ctx context.Context, path string, query map[string]string, output io.Writer) error {
+	request, err := client.newGetRequest(ctx, path, query)
+	if err != nil {
+		return err
+	}
+	response, err := client.download.Do(request)
+	if err != nil {
+		return classifyTransport(path, err)
+	}
+	defer func() { _ = response.Body.Close() }()
+
+	if response.StatusCode != http.StatusOK {
+		return statusError(path, response)
+	}
+	if _, err := io.Copy(output, response.Body); err != nil {
+		return fmt.Errorf("client: read %s: %w", path, err)
+	}
+	return nil
 }
 
 func classifyTransport(path string, err error) error {
