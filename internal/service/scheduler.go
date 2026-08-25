@@ -499,6 +499,16 @@ func (scheduler *Scheduler) execute(ctx context.Context, run model.Run, require 
 		err = scheduler.jobs.CreateCI(ctx, jobRequest)
 	}
 	if err != nil {
+		// Write the reason into the run's own log before closing it.
+		//
+		// A run refused before its pipeline object exists has always recorded
+		// the reason on the run row, which the dashboard and the API show. The
+		// log file, though, stayed empty, and that is where anyone holding a
+		// shell looks first. An admission refusal then presents as a run that
+		// queued and vanished: no Workflow, no log, nothing in the server's
+		// output. The reason existed the whole time and was unreachable
+		// without a token.
+		_, _ = fmt.Fprintf(logFile, "run refused before submission: %v\n", err)
 		_ = logFile.Close()
 		return scheduler.finishInfrastructureFailure(ctx, run, repository, fmt.Errorf("create Job: %w", err))
 	}

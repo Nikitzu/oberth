@@ -728,7 +728,7 @@ func compilePattern(pattern string) (*regexp.Regexp, error) {
 	}
 	compiled, err := regexp.Compile(pattern)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %s", ErrInvalidPattern, err)
+		return nil, fmt.Errorf("%w: %w", ErrInvalidPattern, err)
 	}
 	return compiled, nil
 }
@@ -784,6 +784,8 @@ type collector struct {
 	offset   int
 	limit    int
 	tail     bool
+	budget   int64
+	retained int64
 	ring     []numberedLine
 	groups   [][]numberedLine
 	open     []numberedLine
@@ -797,7 +799,7 @@ type collector struct {
 func newCollector(pattern *regexp.Regexp, filter Filter) *collector {
 	return &collector{
 		pattern: pattern, context: filter.Context, offset: filter.Offset,
-		limit: filter.Limit, tail: filter.Tail,
+		limit: filter.Limit, tail: filter.Tail, budget: maxReadBytes,
 	}
 }
 
@@ -856,7 +858,12 @@ func (c *collector) appendLine(line numberedLine) {
 	if line.number <= c.lastKept {
 		return
 	}
+	if c.retained+int64(len(line.text)) > c.budget {
+		c.dropped = true
+		return
+	}
 	c.open = append(c.open, line)
+	c.retained += int64(len(line.text))
 	c.lastKept = line.number
 }
 
@@ -877,6 +884,11 @@ func (c *collector) closeOpen() {
 	c.groups = append(c.groups, c.open)
 	c.open = nil
 	if c.tail && c.limit > 0 && len(c.groups) > c.limit {
+		for _, evicted := range c.groups[:len(c.groups)-c.limit] {
+			for _, line := range evicted {
+				c.retained -= int64(len(line.text))
+			}
+		}
 		c.groups = c.groups[len(c.groups)-c.limit:]
 		c.dropped = true
 	}
@@ -888,10 +900,27 @@ func (c *collector) close() {
 
 func (c *collector) offerPlain(line numberedLine) {
 	limit := c.limit
+	lineBytes := int64(len(line.text))
 	if limit <= 0 {
-		if line.number > c.offset {
-			c.open = append(c.open, line)
+		if line.number <= c.offset {
+			return
 		}
+		if c.tail {
+			c.open = append(c.open, line)
+			c.retained += lineBytes
+			for c.retained > c.budget && len(c.open) > 1 {
+				c.retained -= int64(len(c.open[0].text))
+				c.open = c.open[1:]
+				c.dropped = true
+			}
+			return
+		}
+		if c.retained+lineBytes > c.budget {
+			c.dropped = true
+			return
+		}
+		c.open = append(c.open, line)
+		c.retained += lineBytes
 		return
 	}
 	if line.number <= c.offset {
@@ -899,14 +928,22 @@ func (c *collector) offerPlain(line numberedLine) {
 	}
 	if c.tail {
 		c.open = append(c.open, line)
+		c.retained += lineBytes
 		if len(c.open) > limit {
+			c.retained -= int64(len(c.open[0].text))
 			c.open = c.open[len(c.open)-limit:]
+			c.dropped = true
+		}
+		for c.retained > c.budget && len(c.open) > 1 {
+			c.retained -= int64(len(c.open[0].text))
+			c.open = c.open[1:]
 			c.dropped = true
 		}
 		return
 	}
-	if len(c.open) < limit {
+	if len(c.open) < limit && c.retained+lineBytes <= c.budget {
 		c.open = append(c.open, line)
+		c.retained += lineBytes
 		return
 	}
 	c.dropped = true
@@ -955,7 +992,6 @@ func takeFromEnd(lines []numberedLine, budget int64) ([]byte, []int, bool) {
 	out, numbers, _ := takeFromStart(lines[first:], budget)
 	return out, numbers, first > 0
 }
-
 func FilterBytes(raw []byte, filter Filter) ([]byte, Meta, error) {
 	meta := Meta{Bytes: int64(len(raw))}
 	if filter.Context < 0 || filter.Context > maxContextLines {

@@ -384,7 +384,7 @@ func remoteArtifacts(ctx context.Context, config client.Config, rest []string, o
 		return err
 	}
 	if len(listing.Artifacts) == 0 {
-		_, err := fmt.Fprintf(output, "run %s kept no artifacts\n", rest[0])
+		_, err := fmt.Fprint(output, noArtifactsMessage(rest[0]))
 		return err
 	}
 	if _, err := fmt.Fprintf(output, "%-12s  %-20s  %s\n", "SIZE", "MODIFIED", "NAME"); err != nil {

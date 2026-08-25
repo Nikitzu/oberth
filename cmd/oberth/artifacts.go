@@ -48,7 +48,7 @@ func runArtifacts(ctx context.Context, arguments []string, output io.Writer) err
 		return err
 	}
 	if len(entries) == 0 {
-		_, err := fmt.Fprintf(output, "run %s kept no artifacts\n", rest[0])
+		_, err := fmt.Fprint(output, noArtifactsMessage(rest[0]))
 		return err
 	}
 	if _, err := fmt.Fprintf(output, "%-12s  %-20s  %s\n", "SIZE", "MODIFIED", "NAME"); err != nil {

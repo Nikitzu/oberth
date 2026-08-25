@@ -691,10 +691,16 @@ func applyServerMetadata(workflow *wfv1.Workflow, config Config, request Request
 		// that the run's audit action records at submission time.
 		workflow.Annotations[secretPathsAnnotation] = strings.Join(declaredPaths, ",")
 	}
+	// A marshal failure fails the build rather than being swallowed. This
+	// annotation is the audit record of which fragment commits a run inlined,
+	// and a run that executes borrowed templates without recording where they
+	// came from is precisely the run that record exists for.
 	if len(fragmentLock) != 0 {
-		if encoded, err := json.Marshal(fragmentLock); err == nil {
-			workflow.Annotations[FragmentsAnnotation] = string(encoded)
+		encoded, err := json.Marshal(fragmentLock)
+		if err != nil {
+			return fmt.Errorf("argojob: record the resolved fragments: %w", err)
 		}
+		workflow.Annotations[FragmentsAnnotation] = string(encoded)
 	}
 	// The declared references are replaced by what they resolved to, so the
 	// annotation on a submitted Workflow always states pinned commits and
