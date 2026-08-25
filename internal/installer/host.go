@@ -694,6 +694,13 @@ func isSHA256Digest(digest string) bool {
 }
 
 func oberthChartValuesArgs(cfg Config) []string {
+	// --chart means this deployment's chart is on disk, so its values are read
+	// from there. Reading the published chart instead makes --chart a half
+	// promise, and fails outright when the binary's version is not a published
+	// chart version, which is true of every fork build.
+	if local := strings.TrimSpace(cfg.ChartPath); local != "" {
+		return []string{"show", "values", local}
+	}
 	args := []string{"show", "values", oberthRepoName + "/oberth"}
 	if cfg.ChartVersion != "" {
 		args = append(args, "--version", cfg.ChartVersion)

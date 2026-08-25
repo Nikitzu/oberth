@@ -86,6 +86,17 @@ func openBaoDataPVC(namespace, nodeName string) *corev1.PersistentVolumeClaim {
 }
 
 func resolveOberthTLSBootstrapImage(ctx context.Context, cfg Config, deps Deps) (string, error) {
+	// --image names the server image outright. Resolving a chart to discover
+	// one is asking a question the operator already answered, and it was the
+	// question that failed: the lookup runs after the cluster exists, so a
+	// version the published repository does not carry aborts an install
+	// halfway through.
+	if pinned := strings.TrimSpace(cfg.ImageRef); pinned != "" {
+		if err := ensureLocalImageInNode(ctx, deps, pinned); err != nil {
+			return "", err
+		}
+		return pinned, nil
+	}
 	if deps.RunHelm == nil {
 		return "", errors.New("OpenBao TLS bootstrap requires Helm")
 	}
