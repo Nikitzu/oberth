@@ -70,30 +70,34 @@ func kindNodeNames(ctx context.Context, run CommandRunner, cluster string) ([]st
 	return strings.Fields(string(output)), nil
 }
 
-// localTagForDigest finds a tag in the local daemon whose manifest digest is the
-// pinned one. kind load takes a name the daemon knows, and a digest ref is not
-// one of those.
+// localTagForDigest finds a name the local daemon knows for the pinned digest.
+//
+// kind load takes a name the daemon can resolve, and a digest ref is not one.
+// The pinned repository is not necessarily the one the daemon holds it under
+// either: a build that pushes to a loopback registry to obtain a digest, then
+// pins that digest under the name the cluster resolves by, leaves the daemon
+// with the right image under a different repository. So the digest is what is
+// matched on, and the repository is only a first guess.
 func localTagForDigest(ctx context.Context, run CommandRunner, pinned string) (string, error) {
 	_, digest, ok := splitImageDigestRef(pinned)
 	if !ok {
 		return "", errors.New("not a digest ref")
 	}
-	output, err := run(ctx, nil, "docker", "image", "inspect", pinned, "--format", "{{index .RepoTags 0}}")
-	if err == nil {
+	if output, err := run(ctx, nil, "docker", "image", "inspect", pinned, "--format", "{{index .RepoTags 0}}"); err == nil {
 		if tag := strings.TrimSpace(string(output)); tag != "" && tag != "<no value>" {
 			return tag, nil
 		}
 	}
-	// Fall back to the repository the digest names, which is how the image was
-	// tagged when it was pushed to obtain that digest.
-	repository := imageRepository(pinned)
-	output, err = run(ctx, nil, "docker", "image", "inspect", repository+"@"+digest, "--format", "{{index .RepoTags 0}}")
+	output, err := run(ctx, nil, "docker", "images", "--digests", "--no-trunc",
+		"--format", "{{.Repository}}:{{.Tag}} {{.Digest}}")
 	if err != nil {
 		return "", err
 	}
-	tag := strings.TrimSpace(string(output))
-	if tag == "" || tag == "<no value>" {
-		return "", errors.New("no local tag for that digest")
+	for _, line := range strings.Split(string(output), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 2 && fields[1] == digest && !strings.HasSuffix(fields[0], ":<none>") {
+			return fields[0], nil
+		}
 	}
-	return tag, nil
+	return "", errors.New("no local image carries that digest")
 }

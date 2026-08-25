@@ -92,3 +92,35 @@ func TestNonKindInstallDoesNothing(t *testing.T) {
 		t.Errorf("ran %d commands with no kind cluster", ran)
 	}
 }
+
+// The pinned ref names the repository the cluster resolves by, which is not
+// necessarily the repository the local daemon knows. A build that pushes to
+// localhost:5001 to obtain a digest, then pins that digest under another name,
+// leaves the daemon holding the right image under the wrong name, and a lookup
+// by the pinned repository finds nothing.
+func TestLocalTagIsFoundByDigestRatherThanByRepository(t *testing.T) {
+	t.Parallel()
+	digest := "sha256:" + strings.Repeat("e", 64)
+	pinned := "oberth-registry:5000/oberth@" + digest
+
+	run := func(_ context.Context, _ []byte, name string, args ...string) ([]byte, error) {
+		command := strings.Join(append([]string{name}, args...), " ")
+		// Nothing is known under the pinned repository.
+		if strings.HasPrefix(command, "docker image inspect") {
+			return nil, errors.New("No such image")
+		}
+		if strings.HasPrefix(command, "docker images") {
+			return []byte("localhost:5001/oberth:0.13.31-tz " + digest + "\n" +
+				"someone/else:latest sha256:" + strings.Repeat("f", 64) + "\n"), nil
+		}
+		return nil, nil
+	}
+
+	tag, err := localTagForDigest(context.Background(), run, pinned)
+	if err != nil {
+		t.Fatalf("the image was not found by digest: %v", err)
+	}
+	if tag != "localhost:5001/oberth:0.13.31-tz" {
+		t.Errorf("found %q, want the local tag carrying that digest", tag)
+	}
+}
