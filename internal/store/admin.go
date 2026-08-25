@@ -35,6 +35,31 @@ func (s *Store) RegisterUpstream(ctx context.Context, actor string, spec model.U
 		return model.Upstream{}, fmt.Errorf("begin upstream registration: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
+
+	// Org-scoped secret paths (oberth/upstream/<org>/*) and org-qualified SSH
+	// path resolution both derive <org> from the trailing path segment of the
+	// base URL (model.Upstream.Org). Two upstreams whose base URLs share that
+	// segment map to the SAME secret subtree and SSH org, silently merging two
+	// trust domains: a repository of upstream B becomes structurally eligible
+	// for secrets seeded for upstream A. The name UNIQUE constraint does not
+	// catch this because the names differ and the base URLs may differ by host
+	// or scheme (github.com/acme vs gitlab.com/acme, or https:// vs ssh://).
+	// Reject a colliding or empty Org() at admission, naming the conflict,
+	// before the upstream exists (issue #217). This is the narrow admission
+	// guard; scoping the virtual path by full upstream identity is the broader
+	// Breaking change tracked separately.
+	newOrg := model.Upstream{BaseURL: spec.BaseURL}.Org()
+	if newOrg == "" {
+		return model.Upstream{}, fmt.Errorf("%w: base URL %q yields an empty organization identity; org-scoped secret paths require a non-empty trailing path segment", ErrInvalid, spec.BaseURL)
+	}
+	existing, err := upstreamOrgConflict(ctx, tx, newOrg)
+	if err != nil {
+		return model.Upstream{}, err
+	}
+	if existing != "" {
+		return model.Upstream{}, fmt.Errorf("%w: organization %q is already claimed by upstream %q; two upstreams with the same org would alias org-scoped secret paths (oberth/upstream/%s/*)", ErrInvalid, newOrg, existing, newOrg)
+	}
+
 	result, err := tx.ExecContext(ctx, `
 INSERT INTO upstreams(name, kind, base_url, key_name, created_at, updated_at) VALUES(?, ?, ?, ?, ?, ?)`,
 		spec.Name, spec.Kind, spec.BaseURL, spec.KeyName, now, now)
@@ -55,6 +80,33 @@ INSERT INTO upstreams(name, kind, base_url, key_name, created_at, updated_at) VA
 		return model.Upstream{}, fmt.Errorf("commit upstream registration: %w", err)
 	}
 	return s.Upstream(ctx, id)
+}
+
+// upstreamOrgConflict returns the name of an existing upstream whose Org()
+// equals org, or "" when none collides. It fully drains and closes its cursor
+// before returning so a subsequent write on the same transaction cannot block
+// on an open read cursor (SQLite serializes reads and writes on one
+// connection).
+func upstreamOrgConflict(ctx context.Context, tx *sql.Tx, org string) (string, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT name, base_url FROM upstreams`)
+	if err != nil {
+		return "", fmt.Errorf("check upstream org uniqueness: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var conflict string
+	for rows.Next() {
+		var name, baseURL string
+		if err := rows.Scan(&name, &baseURL); err != nil {
+			return "", fmt.Errorf("scan upstream org: %w", err)
+		}
+		if conflict == "" && (model.Upstream{BaseURL: baseURL}).Org() == org {
+			conflict = name
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return "", fmt.Errorf("check upstream org uniqueness: %w", err)
+	}
+	return conflict, nil
 }
 
 // RegisterRepository atomically maps one repository name to a configured

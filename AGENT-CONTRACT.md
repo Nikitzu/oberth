@@ -182,7 +182,11 @@ implementation detail disagree.
     `oberth`, flag `--secretstore-kv-mount`), so with the default mount the
     declared path is exactly the `bao kv put` logical path. Exactly 4 (org)
     or 5 (repo) path segments; the raw `oberth/data/upstream/...` spelling is
-    reserved and rejected in declarations and in the allowlist.
+    reserved and rejected in declarations and in the allowlist. Upstream
+    registration fails closed when a new upstream's `<org>` (or an empty one)
+    collides with an already-registered upstream's `<org>`, naming the
+    conflict — two upstreams may not share an org, since that would alias this
+    subtree across trust domains.
   - **System** — any other KV API path (for example
     `oberth/data/release/cosign-secret`), requiring an exact administrator
     `secretstore.allowedPaths` entry; used by Oberth's own release
