@@ -1235,8 +1235,13 @@ func InstallOberth(ctx context.Context, cfg Config, deps Deps, openbao OpenBaoRe
 	}
 	switch {
 	case strings.TrimSpace(cfg.ChartPath) != "":
-		// A local chart resolves from disk; there is no repository to add and
-		// no image to pre-load, because --image names one the node already has.
+		// A local chart resolves from disk, so there is no repository to add.
+		// --image was assumed to name an image the node already has, which
+		// cannot hold when this installer is what created the node: put it
+		// there from the local daemon if the node lacks it.
+		if err := ensureLocalImageInNode(ctx, deps, strings.TrimSpace(cfg.ImageRef)); err != nil {
+			return result, err
+		}
 	case deps.KindClusterName != "":
 		if err := prepareKindImagesForCluster(ctx, cfg, deps, deps.KindClusterName); err != nil {
 			return result, fmt.Errorf("prepare kind images: %w", err)
