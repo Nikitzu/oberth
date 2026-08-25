@@ -697,6 +697,8 @@ func serve(ctx context.Context, options serveOptions, logger *log.Logger) (resul
 		PromotionWorkspaceRoot: filepath.Join(options.dataRoot, "work"),
 		SecretAccess:           database,
 		SecretAccessReconciler: accessReconciler,
+		RepositoryRemover:      database,
+		RemoveGitCache:         git.RemoveRepository,
 	})
 	if err != nil {
 		return err
@@ -1533,6 +1535,11 @@ func classifyViewError(err error) (int, string) {
 		return http.StatusNotFound, "not found"
 	case errors.Is(err, store.ErrAmbiguous),
 		errors.Is(err, service.ErrAmbiguousRepository):
+		return http.StatusConflict, err.Error()
+	case errors.Is(err, store.ErrInvalidState):
+		// State-based refusals (in-flight runs, immutable history, terminal
+		// records) are actionable answers, not server faults: keep the message
+		// instead of collapsing it into an opaque internal-error reference.
 		return http.StatusConflict, err.Error()
 	case errors.Is(err, service.ErrUnavailable):
 		return http.StatusServiceUnavailable, "service unavailable"

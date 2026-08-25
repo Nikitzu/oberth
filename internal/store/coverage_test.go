@@ -369,6 +369,60 @@ func TestRemoveRepositoryRefusesInFlightRuns(t *testing.T) {
 	}
 }
 
+func TestRemoveRepositoryRefusesImmutableHistory(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 17, 14, 0, 0, 0, time.UTC)
+	s := testStore(t, &now)
+	ctx := context.Background()
+
+	upstream, err := s.RegisterUpstream(ctx, "admin@host", model.UpstreamSpec{
+		Name: "github", Kind: "ssh", BaseURL: "ssh://git@github.com/acme",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo, err := s.RegisterRepository(ctx, "admin@host", model.RepositorySpec{
+		Name: "historied-repo", UpstreamID: upstream.ID, DefaultBranch: "main",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	enqueued, err := s.EnqueueRun(ctx, testRunSpec(repo.ID, "main", strings.Repeat("c", 40)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ClaimNextRun(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.FinishRun(ctx, enqueued.ID, model.RunResult{Status: model.RunPassed}); err != nil {
+		t.Fatal(err)
+	}
+
+	// The run is terminal, so the in-flight guard passes; the FK constraint
+	// is what must refuse. History rows are immutable evidence and are never
+	// cascaded away — the distinguishing invariant of repository removal.
+	_, err = s.RemoveRepository(ctx, "admin@host", "historied-repo")
+	if err == nil || !strings.Contains(err.Error(), "immutable CI history") {
+		t.Fatalf("expected immutable-history rejection, got %v", err)
+	}
+	if !errors.Is(err, ErrInvalidState) {
+		t.Fatalf("expected ErrInvalidState, got %v", err)
+	}
+
+	// The refused removal must roll back completely: the repository row
+	// survives and no repository.remove audit action is recorded.
+	if _, err := s.RepositoryByName(ctx, "historied-repo"); err != nil {
+		t.Fatalf("repository must survive refused removal: %v", err)
+	}
+	var auditCount int
+	if err := s.db.QueryRow(`SELECT count(*) FROM audit_actions WHERE action = 'repository.remove'`).Scan(&auditCount); err != nil {
+		t.Fatal(err)
+	}
+	if auditCount != 0 {
+		t.Fatalf("refused removal recorded %d repository.remove audit actions, want 0", auditCount)
+	}
+}
+
 func TestRemoveUplinkAtomicWithAudit(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 8, 17, 14, 0, 0, 0, time.UTC)
