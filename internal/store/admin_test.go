@@ -272,7 +272,7 @@ func TestRegisterUpstreamRejectsReservedNames(t *testing.T) {
 	ctx := context.Background()
 
 	// Guard 1: reserved names that would alias security boundaries.
-	for _, name := range []string{"release", "data", "upstream", "sys"} {
+	for _, name := range []string{"release", "data", "upstream", "sys", "metadata", "receive-outbox"} {
 		_, err := database.RegisterUpstream(ctx, "admin@localhost", model.UpstreamSpec{
 			Name: name, Kind: "ssh", BaseURL: "ssh://git@example.com/" + name,
 		})
@@ -327,7 +327,7 @@ func TestRegisterUpstreamRejectsNameOrgDisjointness(t *testing.T) {
 	}
 }
 
-func TestSchemaV10CompoundUniqueAllowsSameNameDifferentUpstream(t *testing.T) {
+func TestSameNameDifferentUpstreamRejectedUntilG3(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 8, 25, 3, 0, 0, 0, time.UTC)
 	database := testStore(t, &now)
@@ -346,30 +346,66 @@ func TestSchemaV10CompoundUniqueAllowsSameNameDifferentUpstream(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Same name "terraform" under different upstreams should succeed.
-	repo1, err := database.RegisterRepository(ctx, "admin@localhost", model.RepositorySpec{
+	// Register terraform under codeberg.
+	if _, err := database.RegisterRepository(ctx, "admin@localhost", model.RepositorySpec{
 		Name: "terraform", UpstreamID: upstream1.ID, DefaultBranch: "main",
-	})
-	if err != nil {
+	}); err != nil {
 		t.Fatalf("register terraform under codeberg: %v", err)
 	}
-	repo2, err := database.RegisterRepository(ctx, "admin@localhost", model.RepositorySpec{
+
+	// Same name under a different upstream must be rejected while
+	// UNIQUE(name) is in effect — same-name repos need canonical
+	// persistence (G3) before the compound key replaces it.
+	_, err = database.RegisterRepository(ctx, "admin@localhost", model.RepositorySpec{
 		Name: "terraform", UpstreamID: upstream2.ID, DefaultBranch: "main",
 	})
-	if err != nil {
-		t.Fatalf("register terraform under github: %v", err)
+	if err == nil {
+		t.Fatal("same-name repo under different upstream should fail until G3 canonical persistence lands")
 	}
 
-	if repo1.ID == repo2.ID || repo1.UpstreamID == repo2.UpstreamID {
-		t.Fatalf("repos must be distinct: repo1=%+v repo2=%+v", repo1, repo2)
-	}
-
-	// Same name under the same upstream should still fail.
+	// Same name under the same upstream should also fail.
 	_, err = database.RegisterRepository(ctx, "admin@localhost", model.RepositorySpec{
 		Name: "terraform", UpstreamID: upstream1.ID, DefaultBranch: "main",
 	})
 	if err == nil {
 		t.Fatal("duplicate name under same upstream should fail")
+	}
+}
+
+func TestRegisterUpstreamRejectsOrgCollidingWithExistingName(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 25, 4, 0, 0, 0, time.UTC)
+	database := testStore(t, &now)
+	ctx := context.Background()
+
+	// Register upstream named "codeberg".
+	if _, err := database.RegisterUpstream(ctx, "admin@localhost", model.UpstreamSpec{
+		Name: "codeberg", Kind: "ssh", BaseURL: "ssh://git@codeberg.org/cloudtaser",
+	}); err != nil {
+		t.Fatalf("register first upstream: %v", err)
+	}
+
+	// G2 reverse: adding a second upstream whose org (from base URL) is
+	// "codeberg" must be rejected because it collides with the existing
+	// upstream NAME "codeberg". A 2-segment path "codeberg/repo" would
+	// be ambiguous: upstream name or org identity?
+	_, err := database.RegisterUpstream(ctx, "admin@localhost", model.UpstreamSpec{
+		Name: "github-mirror", Kind: "ssh", BaseURL: "ssh://git@github.com/codeberg",
+	})
+	if !errors.Is(err, ErrInvalid) {
+		t.Fatalf("G2 reverse: error = %v, want ErrInvalid", err)
+	}
+	if !strings.Contains(err.Error(), "collides") && !strings.Contains(err.Error(), "codeberg") {
+		t.Fatalf("G2 reverse: error must name the collision: %v", err)
+	}
+
+	// Verify no leaked upstream was created.
+	all, err := database.ListUpstreams(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 1 {
+		t.Fatalf("upstream count = %d, want 1", len(all))
 	}
 }
 

@@ -685,23 +685,11 @@ CREATE UNIQUE INDEX secret_access_active
 	},
 	{
 		version: 10,
-		sql: `-- Phase 1 of org-qualified identity (#245): compound unique constraint
--- on (upstream_id, name) replaces the single-column unique on name. This
--- allows the same repository name under different upstreams (e.g.,
--- codeberg/acme/terraform and github/acme/terraform).
---
--- SQLite cannot ALTER a UNIQUE constraint, so we rebuild the table.
-CREATE TABLE repositories_new (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT NOT NULL,
-    upstream_id INTEGER NOT NULL REFERENCES upstreams(id),
-    default_branch TEXT NOT NULL,
-    created_at INTEGER NOT NULL,
-    updated_at INTEGER NOT NULL,
-    UNIQUE(upstream_id, name)
-);
-INSERT INTO repositories_new SELECT * FROM repositories;
-DROP TABLE repositories;
-ALTER TABLE repositories_new RENAME TO repositories;`,
+		sql: `-- Phase 1 of org-qualified identity (#245): reserved-name guards and
+-- upstream namespace disjointness enforced in code. Compound unique on
+-- (upstream_id, name) deferred to canonical persistence (G3); grants,
+-- schedule_fires, and cache paths must key on the qualified form before
+-- same-name repos across upstreams can be admitted.
+SELECT 1`,
 	},
 }

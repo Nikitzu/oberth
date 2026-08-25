@@ -39,10 +39,12 @@ const (
 // overlap the hierarchical path prefix (oberth/upstream/*); "sys" would overlap
 // potential system paths.
 var ReservedUpstreamNames = map[string]bool{
-	"release":  true,
-	"data":     true,
-	"upstream": true,
-	"sys":      true,
+	"release":        true,
+	"data":           true,
+	"upstream":       true,
+	"sys":            true,
+	"metadata":       true,
+	"receive-outbox": true,
 }
 
 // NormalizeRepo accepts the canonical SSH spellings /repo and repo.git while
@@ -144,7 +146,10 @@ func ValidateUpstreamName(name string) error {
 		return err
 	}
 	if ReservedUpstreamNames[strings.ToLower(name)] {
-		return fmt.Errorf("upstream name %q is reserved; reserved names: release, data, upstream, sys", name)
+		return fmt.Errorf("upstream name %q is reserved", name)
+	}
+	if strings.HasSuffix(strings.ToLower(name), ".git") {
+		return fmt.Errorf("upstream name %q must not end with .git", name)
 	}
 	return nil
 }

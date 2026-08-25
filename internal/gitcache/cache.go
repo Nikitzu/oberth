@@ -890,32 +890,24 @@ func (c *Cache) isBare(ctx context.Context, path string) bool {
 }
 
 func (c *Cache) path(input string) (string, string, error) {
-	upstream, org, repo, err := ParseRepoPath(input)
+	// ParseRepoPath validates and splits the input; the upstream and org
+	// segments route upstream resolution (configureRemote) but MUST NOT
+	// affect the cache identity or on-disk path. The canonical cache key
+	// is the bare repo name — one repository has one cache directory, one
+	// lock, and one reservation regardless of input spelling. Qualified
+	// paths (upstream/org/repo.git) are deferred to G3 canonical
+	// persistence (#245); until then, UNIQUE(name) in the schema prevents
+	// same-name repos across upstreams, so the bare name is unambiguous.
+	_, _, repo, err := ParseRepoPath(input)
 	if err != nil {
 		return "", "", err
 	}
-	// Build the cache directory path. The canonical form
-	// upstream/org/repo.git nests under the cache root; shorter forms
-	// (org/repo, bare repo) use fewer directory levels for backwards
-	// compatibility with existing single-upstream deployments.
-	var cachePath string
-	var identity string
-	switch {
-	case upstream != "" && org != "":
-		cachePath = filepath.Join(c.root, upstream, org, repo+".git")
-		identity = upstream + "/" + org + "/" + repo
-	case org != "":
-		cachePath = filepath.Join(c.root, org, repo+".git")
-		identity = org + "/" + repo
-	default:
-		cachePath = filepath.Join(c.root, repo+".git")
-		identity = repo
-	}
+	cachePath := filepath.Join(c.root, repo+".git")
 	relative, err := filepath.Rel(c.root, cachePath)
 	if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
 		return "", "", fmt.Errorf("repository path escapes cache root")
 	}
-	return identity, cachePath, nil
+	return repo, cachePath, nil
 }
 
 func (c *Cache) repoLock(repo string) *sync.Mutex {

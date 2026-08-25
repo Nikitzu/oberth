@@ -4,9 +4,21 @@ import "testing"
 
 func TestValidateUpstreamNameRejectsReservedNames(t *testing.T) {
 	t.Parallel()
-	for _, name := range []string{"release", "data", "upstream", "sys", "Release", "DATA"} {
+	for _, name := range []string{
+		"release", "data", "upstream", "sys", "Release", "DATA",
+		"metadata", "Metadata", "receive-outbox", "Receive-Outbox",
+	} {
 		if err := ValidateUpstreamName(name); err == nil {
 			t.Fatalf("ValidateUpstreamName(%q) should reject reserved name", name)
+		}
+	}
+}
+
+func TestValidateUpstreamNameRejectsGitSuffix(t *testing.T) {
+	t.Parallel()
+	for _, name := range []string{"repo.git", "upstream.GIT", "my-forge.Git"} {
+		if err := ValidateUpstreamName(name); err == nil {
+			t.Fatalf("ValidateUpstreamName(%q) should reject .git suffix", name)
 		}
 	}
 }
