@@ -85,7 +85,7 @@ func (upstreams Upstreams) selectUpstream(ctx context.Context, upstreamName, org
 			return model.Upstream{}, fmt.Errorf("app: repository %s is registered under upstream %q, not %q", repositoryName, upstream.Name, upstreamName)
 		}
 		if org != "" && !upstreamMatchesOrg(upstream, org) {
-			return model.Upstream{}, fmt.Errorf("app: repository %s is registered under upstream %q, not %q", repositoryName, upstream.Name, org)
+			return model.Upstream{}, upstreamOrgMismatch(repositoryName, upstream, org)
 		}
 		return upstream, nil
 	}
@@ -146,6 +146,21 @@ func (upstreams Upstreams) selectUpstream(ctx context.Context, upstreamName, org
 // operator convenience; the registered spelling from model.Upstream.Org is
 // still the single canonical identity (secret path scoping matches it
 // exactly).
+// upstreamOrgMismatch names the value the comparison actually used. The check
+// is on the upstream's org, derived from its base URL, so reporting the
+// upstream's Name instead produced "upstream \"local\", not \"local\"" whenever a
+// deployment named an upstream after something other than the last segment of
+// its URL: an error stating that a value is not itself, which tells the reader
+// nothing about the path they should have pushed to.
+func upstreamOrgMismatch(repositoryName string, upstream model.Upstream, org string) error {
+	registered := upstream.Org()
+	if upstream.Name != "" && !strings.EqualFold(upstream.Name, registered) {
+		return fmt.Errorf("app: repository %s belongs to org %q (upstream %q), not %q",
+			repositoryName, registered, upstream.Name, org)
+	}
+	return fmt.Errorf("app: repository %s belongs to org %q, not %q", repositoryName, registered, org)
+}
+
 func upstreamMatchesOrg(upstream model.Upstream, org string) bool {
 	registered := upstream.Org()
 	return registered != "" && strings.EqualFold(registered, org)
