@@ -179,6 +179,21 @@ case "$ref" in
   refs/heads/*)
     branch=${ref#refs/heads/}
     validate_public_name branch "$branch"
+    # Reject non-fast-forward pushes to the default branch. Feature branches
+    # may force-push; the default branch is the promotion target and the
+    # release reachability anchor — a rebase silently invalidates promotion
+    # evidence, tag ancestry, and issue-close criteria (#222).
+    if ! is_zero_oid "$old" && ! is_zero_oid "$new"; then
+      default_ref=$(git symbolic-ref --quiet HEAD) || true
+      case "$default_ref" in
+        refs/heads/*)
+          if [ "$ref" = "$default_ref" ]; then
+            git merge-base --is-ancestor "$old" "$new" ||
+              reject branch "non-fast-forward push to default branch (old $old is not an ancestor of new $new)"
+          fi
+          ;;
+      esac
+    fi
     ;;
   refs/tags/*)
     tag=${ref#refs/tags/}

@@ -74,6 +74,87 @@ func TestReceivePackAllowsOnlyBranchesAndTags(t *testing.T) {
 	}
 }
 
+func TestReceivePackRejectsNonFastForwardDefaultBranch(t *testing.T) {
+	t.Parallel()
+	repository := newTestRepository(t)
+	cache := newTestCache(t, repository.upstream)
+	ready, err := cache.Ensure(context.Background(), "example")
+	if err != nil {
+		t.Fatal(err)
+	}
+	receiveArgs := cache.serviceArgs(ReceivePack, ready.Path)
+	receivePack := strings.Join(append([]string{cache.gitBinary}, receiveArgs[:len(receiveArgs)-1]...), " ")
+
+	// A fast-forward push to main must succeed.
+	ffSHA := repository.featureCommit(t, "feature/ff-main", "ff update\n")
+	if output, pushErr := pushWithReceivePack(repository.work, ready.Path, receivePack, ffSHA+":refs/heads/main"); pushErr != nil {
+		t.Fatalf("fast-forward main push rejected: %v\n%s", pushErr, output)
+	}
+	if got := runGit(t, ready.Path, "rev-parse", "refs/heads/main"); got != ffSHA {
+		t.Fatalf("main after FF = %s, want %s", got, ffSHA)
+	}
+
+	// A non-fast-forward (rebase) push to main must be rejected. Create a
+	// divergent commit from the original initial commit, which is not an
+	// ancestor of the current main (ffSHA).
+	rebasedSHA := repository.featureCommit(t, "feature/rebased-main", "rebased content\n")
+	output, pushErr := pushWithReceivePack(repository.work, ready.Path, receivePack, "+"+rebasedSHA+":refs/heads/main")
+	if pushErr == nil {
+		t.Fatalf("non-fast-forward main push accepted; want rejection\n%s", output)
+	}
+	if !strings.Contains(output, "non-fast-forward push to default branch") {
+		t.Fatalf("rejection reason missing; got:\n%s", output)
+	}
+	// Main must not have moved.
+	if got := runGit(t, ready.Path, "rev-parse", "refs/heads/main"); got != ffSHA {
+		t.Fatalf("main moved after rejected non-FF push: %s, want %s", got, ffSHA)
+	}
+
+	// A force-push to a feature branch must still succeed.
+	featureA := repository.featureCommit(t, "feature/forceable-a", "feature a\n")
+	if output, pushErr := pushWithReceivePack(repository.work, ready.Path, receivePack, featureA+":refs/heads/feature/forceable"); pushErr != nil {
+		t.Fatalf("create feature branch: %v\n%s", pushErr, output)
+	}
+	featureB := repository.featureCommit(t, "feature/forceable-b", "feature b\n")
+	if output, pushErr := pushWithReceivePack(repository.work, ready.Path, receivePack, "+"+featureB+":refs/heads/feature/forceable"); pushErr != nil {
+		t.Fatalf("force-push feature branch rejected: %v\n%s", pushErr, output)
+	}
+	if got := runGit(t, ready.Path, "rev-parse", "refs/heads/feature/forceable"); got != featureB {
+		t.Fatalf("feature after force-push = %s, want %s", got, featureB)
+	}
+}
+
+func TestReceivePackRejectsNonFastForwardCustomDefaultBranch(t *testing.T) {
+	t.Parallel()
+	repository := newTestRepositoryWithBranch(t, "trunk")
+	cache := newTestCache(t, repository.upstream)
+	ready, err := cache.Ensure(context.Background(), "example")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ready.DefaultBranch != "trunk" {
+		t.Fatalf("default branch = %q, want trunk", ready.DefaultBranch)
+	}
+	receiveArgs := cache.serviceArgs(ReceivePack, ready.Path)
+	receivePack := strings.Join(append([]string{cache.gitBinary}, receiveArgs[:len(receiveArgs)-1]...), " ")
+
+	// Fast-forward push to trunk succeeds.
+	ffSHA := repository.featureCommit(t, "feature/ff-trunk", "ff trunk\n")
+	if output, pushErr := pushWithReceivePack(repository.work, ready.Path, receivePack, ffSHA+":refs/heads/trunk"); pushErr != nil {
+		t.Fatalf("fast-forward trunk push rejected: %v\n%s", pushErr, output)
+	}
+
+	// Non-fast-forward push to trunk is rejected.
+	rebasedSHA := repository.featureCommit(t, "feature/rebased-trunk", "rebased trunk\n")
+	output, pushErr := pushWithReceivePack(repository.work, ready.Path, receivePack, "+"+rebasedSHA+":refs/heads/trunk")
+	if pushErr == nil {
+		t.Fatalf("non-fast-forward trunk push accepted; want rejection\n%s", output)
+	}
+	if !strings.Contains(output, "non-fast-forward push to default branch") {
+		t.Fatalf("rejection reason missing; got:\n%s", output)
+	}
+}
+
 func TestReceivePackRejectsUnreachableMovedAndDeletedReleaseTagsBeforeRefMutation(t *testing.T) {
 	t.Parallel()
 	repository := newTestRepository(t)
