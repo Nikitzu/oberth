@@ -111,10 +111,10 @@ func ParseFileRef(reference string) (FileRef, error) {
 	}
 	key, err := ParseFragmentRef(pinned)
 	if err != nil {
-		return FileRef{}, fmt.Errorf("%w: reference %q: %s", ErrFileRefused, reference, err)
+		return FileRef{}, fmt.Errorf("%w: reference %q: %w", ErrFileRefused, reference, err)
 	}
 	if err := ValidateFilePath(path); err != nil {
-		return FileRef{}, fmt.Errorf("%w: reference %q: %s", ErrFileRefused, reference, err)
+		return FileRef{}, fmt.Errorf("%w: reference %q: %w", ErrFileRefused, reference, err)
 	}
 	return FileRef{Repo: key.Repo, Version: key.Version, Path: path}, nil
 }

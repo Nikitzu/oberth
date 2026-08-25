@@ -239,7 +239,7 @@ func TestSeedWritesFileDependenciesIntoTheClaim(t *testing.T) {
 	archive := tar.NewReader(stream)
 	for {
 		header, err := archive.Next()
-		if err == io.EOF {
+		if errors.Is(err, io.EOF) {
 			break
 		}
 		if err != nil {
