@@ -19,6 +19,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -650,5 +651,87 @@ func TestClassifyTransportPreservesDNSDetail(t *testing.T) {
 	got := classifyTransport("/api/runs", inner)
 	if !strings.Contains(got.Error(), "resolve") || !strings.Contains(got.Error(), "missing.invalid") {
 		t.Fatalf("DNS detail lost: %v", got)
+	}
+}
+
+func TestARedirectDowngradeToHTTPIsRefusedBeforeSending(t *testing.T) {
+	// A plain-HTTP listener records whether any request ever reaches it.
+	var cleartextHits int32
+	cleartext := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		atomic.AddInt32(&cleartextHits, 1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer cleartext.Close()
+
+	// The TLS server downgrade-redirects to the plain-HTTP listener.
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, cleartext.URL+"/api/runs/run-1", http.StatusFound)
+	}))
+	defer server.Close()
+
+	anchor := filepath.Join(t.TempDir(), "ca.pem")
+	pemBytes := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw})
+	if err := os.WriteFile(anchor, pemBytes, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	clearEnv(t)
+	t.Setenv("OBERTH_BASE_URL", server.URL)
+	t.Setenv("OBERTH_TOKEN", "bearer-value-must-stay-on-tls")
+	t.Setenv("OBERTH_CA_CERT", anchor)
+	client, err := New(t.Context(), FromEnv())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var out struct{ ID string }
+	err = client.Get(context.Background(), "/api/runs/run-1", nil, &out)
+	if err == nil {
+		t.Fatal("a https->http downgrade redirect was followed")
+	}
+	if !strings.Contains(err.Error(), "cleartext") {
+		t.Fatalf("error does not explain the downgrade refusal: %v", err)
+	}
+	if got := atomic.LoadInt32(&cleartextHits); got != 0 {
+		t.Fatalf("the cleartext listener received %d request(s); the redirect must be refused before sending", got)
+	}
+}
+
+func TestARedirectWithinHTTPSIsStillFollowed(t *testing.T) {
+	// Same-scheme redirects must keep working: the guard closes downgrades,
+	// not redirects in general. One TLS server redirects to itself.
+	var served int32
+	mux := http.NewServeMux()
+	server := httptest.NewTLSServer(mux)
+	defer server.Close()
+	mux.HandleFunc("/api/runs/run-1", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, server.URL+"/api/runs/run-1-moved", http.StatusFound)
+	})
+	mux.HandleFunc("/api/runs/run-1-moved", func(w http.ResponseWriter, _ *http.Request) {
+		atomic.AddInt32(&served, 1)
+		_, _ = w.Write([]byte(`{"ID":"run-1"}`))
+	})
+
+	anchor := filepath.Join(t.TempDir(), "ca.pem")
+	pemBytes := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw})
+	if err := os.WriteFile(anchor, pemBytes, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	clearEnv(t)
+	t.Setenv("OBERTH_BASE_URL", server.URL)
+	t.Setenv("OBERTH_TOKEN", "token-value")
+	t.Setenv("OBERTH_CA_CERT", anchor)
+	client, err := New(t.Context(), FromEnv())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var out struct{ ID string }
+	if err := client.Get(context.Background(), "/api/runs/run-1", nil, &out); err != nil {
+		t.Fatalf("same-scheme redirect refused: %v", err)
+	}
+	if out.ID != "run-1" || atomic.LoadInt32(&served) != 1 {
+		t.Fatalf("redirect target not served exactly once (ID=%q served=%d)", out.ID, served)
 	}
 }

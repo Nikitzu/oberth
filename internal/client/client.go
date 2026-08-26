@@ -106,9 +106,25 @@ func New(ctx context.Context, config Config) (*Client, error) {
 	return &Client{
 		base:     base,
 		token:    token,
-		http:     &http.Client{Timeout: requestTimeout, Transport: transport},
-		download: &http.Client{Transport: transport},
+		http:     &http.Client{Timeout: requestTimeout, Transport: transport, CheckRedirect: refuseSchemeDowngrade},
+		download: &http.Client{Transport: transport, CheckRedirect: refuseSchemeDowngrade},
 	}, nil
+}
+
+// refuseSchemeDowngrade rejects any redirect that steps from https down to a
+// non-https scheme before the request is sent. Go's http.Client re-sends the
+// Authorization header on same-host redirects without considering the scheme,
+// so a hostile or misconfigured server could otherwise downgrade-redirect and
+// cause a cleartext bearer-token re-send. It also preserves the standard
+// library's default ten-redirect ceiling, which setting CheckRedirect replaces.
+func refuseSchemeDowngrade(request *http.Request, via []*http.Request) error {
+	if len(via) > 0 && via[len(via)-1].URL.Scheme == "https" && request.URL.Scheme != "https" {
+		return fmt.Errorf("%w (redirect target scheme %q)", errRedirectDowngrade, request.URL.Scheme)
+	}
+	if len(via) >= 10 {
+		return errors.New("client: stopped after 10 redirects")
+	}
+	return nil
 }
 
 // isLoopback reports whether host is a loopback address safe for plain HTTP.
@@ -234,7 +250,14 @@ func (client *Client) GetTo(ctx context.Context, path string, query map[string]s
 	return nil
 }
 
+// errRedirectDowngrade marks a refused https-to-http downgrade redirect so
+// classifyTransport can surface the reason instead of the generic bucket.
+var errRedirectDowngrade = errors.New("client: refusing a redirect from https to a cleartext scheme — the token would be transmitted in cleartext")
+
 func classifyTransport(path string, err error) error {
+	if errors.Is(err, errRedirectDowngrade) {
+		return fmt.Errorf("%w for %s", errRedirectDowngrade, path)
+	}
 	var hostname x509.HostnameError
 	if errors.As(err, &hostname) {
 		return fmt.Errorf("client: the server's certificate does not cover %q; it is issued for %s. "+
