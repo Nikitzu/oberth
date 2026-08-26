@@ -56,7 +56,7 @@ func offerClientAccess(ctx context.Context, cfg Config, deps Deps, tw *tableWrit
 		tw.AppendRow("Client access", "no uplink token", "⚠ manual", false)
 		return nil
 	}
-	return runClientAccessOffer(ctx, cfg, deps, tw, true)
+	return runClientAccessOffer(ctx, cfg, deps, tw, true, token)
 }
 
 // offerClientAccessToConfiguredDeployment reaches the same offer on an install
@@ -86,10 +86,10 @@ func offerClientAccessToConfiguredDeployment(ctx context.Context, cfg Config, de
 	if _, statErr := os.Stat(filepath.Join(root, "mcp.json")); statErr == nil {
 		return nil
 	}
-	return runClientAccessOffer(ctx, cfg, deps, tw, false)
+	return runClientAccessOffer(ctx, cfg, deps, tw, false, "")
 }
 
-func runClientAccessOffer(ctx context.Context, cfg Config, deps Deps, tw *tableWriter, freshToken bool) error {
+func runClientAccessOffer(ctx context.Context, cfg Config, deps Deps, tw *tableWriter, freshToken bool, token string) error {
 	w := deps.Output
 	color := isColor(deps)
 
@@ -137,6 +137,20 @@ func runClientAccessOffer(ctx context.Context, cfg Config, deps Deps, tw *tableW
 
 	baseURL := "https://" + clientReachableHost(deps) + ":" + httpsNodePort
 	tokenCommand, tokenHint := tokenCommandForHost()
+
+	// Store the credential the configuration below is about to depend on.
+	//
+	// Only on the path where a token was just minted: the other path runs
+	// against a deployment whose token this process never saw.
+	stored := false
+	if freshToken && strings.TrimSpace(token) != "" {
+		if err := storeUplinkToken(ctx, deps, token); err != nil {
+			tw.AppendRow("Bearer token", err.Error(), "⚠ manual", false)
+		} else {
+			tw.AppendRow("Bearer token", "saved to your secret store", "✓ stored", false)
+			stored = true
+		}
+	}
 
 	cliNote := ""
 	if choice == clientAccessBoth || choice == clientAccessCLI {
@@ -198,7 +212,7 @@ func runClientAccessOffer(ctx context.Context, cfg Config, deps Deps, tw *tableW
 	if cliNote != "" {
 		_, _ = fmt.Fprint(w, cliNote)
 	}
-	printClientAccessNotes(w, root, choice, tokenHint, freshToken)
+	printClientAccessNotes(w, root, choice, tokenHint, freshToken && !stored)
 	return nil
 }
 
@@ -349,8 +363,10 @@ func displayPath(path string) string {
 }
 
 func printClientAccessNotes(w io.Writer, root string, choice int, storeCommand string, freshToken bool) {
+	// freshToken is false once the token has been stored: the instruction is
+	// only worth printing when something still has to be done by hand.
 	if freshToken {
-		_, _ = fmt.Fprintf(w, "\nStore the bearer token above where the config expects it:\n\n    %s\n", storeCommand)
+		_, _ = fmt.Fprintf(w, "\nThe bearer token was not saved. Store it where the config expects it:\n\n    %s\n", storeCommand)
 	} else {
 		// No token was minted on this path, so the instruction is conditional:
 		// the configuration is inert until one is there, and saying nothing

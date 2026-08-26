@@ -200,9 +200,14 @@ func TestClientAccessRegistersWithClaudeCodeWhenItIsPresent(t *testing.T) {
 func TestClientAccessDoesNotInventAClientThatIsNotInstalled(t *testing.T) {
 	deps, _, _ := clientAccessDeps(t, "\n")
 	deps.LookPath = func(string) (string, error) { return "", errors.New("not found") }
-	var ran int
-	deps.RunCommand = func(context.Context, []byte, string, ...string) ([]byte, error) {
-		ran++
+	var registrations []string
+	deps.RunCommand = func(_ context.Context, _ []byte, name string, args ...string) ([]byte, error) {
+		// Storing the token is not a client registration: it happens whether
+		// or not any client is installed, because the CLI needs it too.
+		if name == "security" || name == "secret-tool" || name == "pass" {
+			return nil, nil
+		}
+		registrations = append(registrations, strings.Join(append([]string{name}, args...), " "))
 		return nil, nil
 	}
 	tw := newTableWriter(deps.Output, false)
@@ -210,8 +215,8 @@ func TestClientAccessDoesNotInventAClientThatIsNotInstalled(t *testing.T) {
 	if err := offerClientAccess(context.Background(), Config{}, deps, tw, testToken); err != nil {
 		t.Fatal(err)
 	}
-	if ran != 0 {
-		t.Errorf("ran %d commands with no client installed", ran)
+	if len(registrations) != 0 {
+		t.Errorf("registered a client that is not installed: %v", registrations)
 	}
 }
 
