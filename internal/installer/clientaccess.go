@@ -138,12 +138,24 @@ func runClientAccessOffer(ctx context.Context, cfg Config, deps Deps, tw *tableW
 	baseURL := "https://" + clientReachableHost(deps) + ":" + httpsNodePort
 	tokenCommand, tokenHint := tokenCommandForHost()
 
+	cliNote := ""
 	if choice == clientAccessBoth || choice == clientAccessCLI {
 		path := filepath.Join(root, "env")
 		if err := atomicWriteFile(path, []byte(renderClientEnv(baseURL, caPath, tokenCommand)), 0600); err != nil {
 			tw.AppendRow("CLI access", displayPath(path), "✗ error", false)
 		} else {
 			tw.AppendRow("CLI access", displayPath(path), "✓ written", false)
+		}
+		// The env file serves a shell that knows to source it. The name on
+		// PATH is what makes every documented `oberth ...` command work, for a
+		// person and for an agent that shells out.
+		if link, linkErr := installCLIOnPath(); linkErr != nil {
+			tw.AppendRow("CLI on PATH", linkErr.Error(), "⚠ manual", false)
+		} else {
+			tw.AppendRow("CLI on PATH", link, "✓ linked", false)
+			if dir, dirErr := cliInstallDir(); dirErr == nil {
+				cliNote = cliAccessNote(link, dir)
+			}
 		}
 	}
 	if choice == clientAccessBoth || choice == clientAccessMCP {
@@ -170,10 +182,22 @@ func runClientAccessOffer(ctx context.Context, cfg Config, deps Deps, tw *tableW
 					continue
 				}
 				tw.AppendRow(client.label, detail, "✓ ready", false)
+				// An MCP server announces its own tools; a CLI announces
+				// nothing. Oberth's skills are how an agent learns that either
+				// surface exists, so they are installed where this particular
+				// client reads them.
+				if written, skillErr := installSkillsForClient(client.id); skillErr != nil {
+					tw.AppendRow(client.label+" skills", skillErr.Error(), "⚠ manual", false)
+				} else {
+					tw.AppendRow(client.label+" skills", written, "✓ installed", false)
+				}
 			}
 		}
 	}
 
+	if cliNote != "" {
+		_, _ = fmt.Fprint(w, cliNote)
+	}
 	printClientAccessNotes(w, root, choice, tokenHint, freshToken)
 	return nil
 }

@@ -169,3 +169,80 @@ func TestCursorRefusesToOverwriteUnparseableConfig(t *testing.T) {
 		t.Fatalf("file was modified: %s", body)
 	}
 }
+
+// An MCP server announces its tools; a CLI announces nothing. These two are
+// the whole of what makes the command discoverable, so they are worth pinning.
+
+func TestCLIIsLinkedUnderTheNameEveryInstructionUses(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	link, err := installCLIOnPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(home, ".local", "bin", "oberth")
+	info, err := os.Lstat(path)
+	if err != nil {
+		t.Fatalf("nothing linked at %s: %v", path, err)
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		t.Fatal("a copy was made where a link would survive an upgrade")
+	}
+	if !strings.Contains(link, "oberth") {
+		t.Fatalf("reported link %q does not name the command", link)
+	}
+	// Re-running an install must not fail on its own previous link.
+	if _, err := installCLIOnPath(); err != nil {
+		t.Fatalf("second install failed: %v", err)
+	}
+}
+
+// Replacing a real file at that path would be overwriting another tool.
+func TestCLILinkRefusesToReplaceSomeoneElsesBinary(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	dir := filepath.Join(home, ".local", "bin")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "oberth"), []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := installCLIOnPath(); err == nil {
+		t.Fatal("overwrote a real file at the install path")
+	}
+	body, _ := os.ReadFile(filepath.Join(dir, "oberth"))
+	if string(body) != "#!/bin/sh\n" {
+		t.Fatalf("the existing binary was modified: %q", body)
+	}
+}
+
+// Codex and Cursor never read .claude/skills, so writing there for them would
+// be writing to a path they do not open.
+func TestSkillsGoWhereEachClientActuallyReads(t *testing.T) {
+	for id, want := range map[string]string{
+		"claude": "claude",
+		"codex":  "agents",
+		"cursor": "agents",
+	} {
+		if got := string(skillTargetFor(id)); got != want {
+			t.Errorf("%s skills target = %q, want %q", id, got, want)
+		}
+	}
+}
+
+func TestSkillsAreInstalledIntoTheHomeDirectory(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	detail, err := installSkillsForClient("claude")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if detail == "" {
+		t.Fatal("no detail reported")
+	}
+	if _, err := os.Stat(filepath.Join(home, ".claude", "skills", "oberth-triage", "SKILL.md")); err != nil {
+		t.Fatalf("triage skill not installed where Claude Code reads: %v", err)
+	}
+}
