@@ -650,6 +650,19 @@ func serve(ctx context.Context, options serveOptions, logger *log.Logger) (resul
 			}
 			return nil
 		}
+		if upstream.Kind == "https" {
+			// An https upstream authenticates with a token belonging to a
+			// person, so there is no identity on this server to read. Reading
+			// one anyway reported every such upstream as unavailable with a
+			// missing-key error, which reads like a broken deployment rather
+			// than like a deployment that was never given a key.
+			//
+			// Reachability is what the probe is for, so that is what it
+			// checks: DNS, TLS and a response. No credential is sent -- the
+			// token belongs to a push, not to a health check, and a forge that
+			// answers 401 or 404 to an anonymous request has still answered.
+			return probeHTTPSUpstream(ctx, upstream.BaseURL)
+		}
 		// Per-upstream key: the Secret volume mount projects each dedicated
 		// key as a file beside the shared one. Fall back to the shared key
 		// while the kubelet has not yet projected a freshly added data key.
@@ -1646,4 +1659,26 @@ func upstreamTokenReader(path string) func() string {
 		}
 		return strings.TrimSpace(string(body))
 	}
+}
+
+// probeHTTPSUpstream reports whether an https upstream answers.
+//
+// Any HTTP response counts: the probe asks whether the forge is reachable from
+// this pod, and an anonymous request to a private namespace is answered with
+// 401 or 404 by a forge that is working perfectly.
+func probeHTTPSUpstream(ctx context.Context, baseURL string) error {
+	probeCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	request, err := http.NewRequestWithContext(probeCtx, http.MethodHead, baseURL, nil)
+	if err != nil {
+		return fmt.Errorf("probe upstream: %w", err)
+	}
+	client := &http.Client{Timeout: 10 * time.Second}
+	response, err := client.Do(request)
+	if err != nil {
+		return fmt.Errorf("probe upstream: %w", err)
+	}
+	defer func() { _ = response.Body.Close() }()
+	return nil
 }
