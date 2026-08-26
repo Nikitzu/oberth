@@ -875,7 +875,10 @@ func TestExecuteDarwinNodeListFailureStillLoadsKindImages(t *testing.T) {
 			switch {
 			case command == "list -n openbao -o json", command == "list -n oberth -o json":
 				return []byte("[]"), nil
-			case strings.HasPrefix(command, "show values oberth-charts/oberth"):
+			// Any chart: the values now come from the chart being installed,
+			// which is the one embedded in the binary unless --chart says
+			// otherwise, rather than always from the published repository.
+			case strings.HasPrefix(command, "show values"):
 				return []byte("image:\n  ref: private.example/oberth:latest\n"), nil
 			default:
 				return nil, nil
@@ -1660,7 +1663,10 @@ func TestRunInstallRekorWiresOberth(t *testing.T) {
 			if args[0] == "list" {
 				return []byte("[]"), nil
 			}
-			if args[0] == "upgrade" && len(args) > 3 && args[3] == "oberth-charts/oberth" {
+			// Matched on the release name rather than the chart reference:
+			// the chart is now the one embedded in the binary, so its path is
+			// a temporary directory and not a fixed string.
+			if args[0] == "upgrade" && len(args) > 2 && args[2] == "oberth" {
 				oberthArgs = slices.Clone(args)
 			}
 			return nil, nil

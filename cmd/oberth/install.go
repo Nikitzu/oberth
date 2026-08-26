@@ -46,8 +46,8 @@ func runInstall(ctx context.Context, arguments []string, input io.Reader, output
 	flags.StringVar(&cfg.ChartVersion, "chart-version", "", "Oberth chart version (default: binary version)")
 	flags.StringVar(&cfg.ChartPath, "chart", "",
 		"install the Oberth chart from this local directory or archive instead of the published repository")
-	flags.StringVar(&cfg.ImageRef, "image", "",
-		"server image the chart deploys, overriding the chart default (used with --chart for local iteration)")
+	flags.StringVar(&cfg.ImageRef, "image", imageRef,
+		"server image the chart deploys, overriding the chart default (defaults to the image built with this binary)")
 	flags.StringVar(&cfg.OpenBaoChartVersion, "openbao-chart-version", "", "OpenBao chart version")
 	flags.StringVar(&cfg.RekorChartVersion, "rekor-chart-version", "", "Rekor chart version")
 	flags.StringVar(&cfg.ArgoChartVersion, "argo-chart-version", "", "argo-workflows chart version")

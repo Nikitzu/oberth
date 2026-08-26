@@ -699,7 +699,7 @@ func oberthChartValuesArgs(cfg Config) []string {
 	// promise, and fails outright when the binary's version is not a published
 	// chart version, which is true of every fork build.
 	if local := strings.TrimSpace(cfg.ChartPath); local != "" {
-		return []string{"show", "values", local}
+		return []string{"show", "values", localChartReference(local)}
 	}
 	args := []string{"show", "values", oberthRepoName + "/oberth"}
 	if cfg.ChartVersion != "" {
@@ -751,4 +751,28 @@ func DefaultRunInteractive(ctx context.Context, name string, args ...string) err
 // piped and CI runs on the printed manual-steps path.
 func StdinIsTerminal() bool {
 	return term.IsTerminal(int(os.Stdin.Fd()))
+}
+
+// localChartReference makes a --chart value something helm will read as a path.
+//
+// helm reads a bare name as repo/chart, so `--chart oberth-0.13.27.tgz` fails
+// with "non-absolute URLs should be in form of repo_name/path_to_chart" even
+// though the file is right there in the working directory. Requiring a ./ that
+// nothing in the interface mentions is a trap, so the path is made absolute
+// here instead.
+//
+// A value that is already absolute, or that names no existing file, is left
+// alone: the second case is how a genuine repo/chart reference reaches helm.
+func localChartReference(path string) string {
+	if filepath.IsAbs(path) {
+		return path
+	}
+	if _, err := os.Stat(path); err != nil {
+		return path
+	}
+	absolute, err := filepath.Abs(path)
+	if err != nil {
+		return path
+	}
+	return absolute
 }

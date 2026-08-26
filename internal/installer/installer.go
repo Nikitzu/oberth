@@ -184,6 +184,12 @@ type Config struct {
 	// chart, push, watch it run, change something, repeat — without a release
 	// in between.
 	ChartPath string
+
+	// chartEmbedded records that ChartPath was filled in from the chart this
+	// binary carries rather than named by the operator. The two are the same
+	// path to helm and different intents everywhere else: --chart means local
+	// iteration, the embedded chart means an ordinary install.
+	chartEmbedded bool
 	// ImageRef overrides the server image the chart deploys (--image), for the
 	// same loop. A tag that exists only in the node's image store is the normal
 	// case here, so the chart's IfNotPresent pull policy is what makes it work.
@@ -499,6 +505,21 @@ func (cfg *Config) Validate() error {
 func Run(ctx context.Context, cfg Config, deps Deps) error {
 	if err := cfg.Validate(); err != nil {
 		return err
+	}
+
+	// With no --chart, install the chart this binary carries. The published
+	// index holds upstream's releases only, so resolving by our own version
+	// there fails after the cluster already exists; and the chart that matches
+	// this binary is the one compiled into it. An explicit --chart still wins,
+	// which is what makes local iteration on the chart possible.
+	if strings.TrimSpace(cfg.ChartPath) == "" {
+		chartDir, cleanup, chartErr := extractEmbeddedChart()
+		if chartErr != nil {
+			return chartErr
+		}
+		defer cleanup()
+		cfg.ChartPath = chartDir
+		cfg.chartEmbedded = true
 	}
 
 	cluster, err := DetectCluster(ctx, deps)
@@ -1256,8 +1277,16 @@ func InstallOberth(ctx context.Context, cfg Config, deps Deps, openbao OpenBaoRe
 		return result, nil
 	}
 	switch {
-	case strings.TrimSpace(cfg.ChartPath) != "":
-		// A local chart resolves from disk, so there is no repository to add.
+	case !cfg.chartEmbedded && strings.TrimSpace(cfg.ChartPath) != "":
+		// An operator-supplied chart is local iteration: the image usually
+		// comes from their own daemon rather than any registry.
+		//
+		// The embedded chart deliberately does not take this branch. It is the
+		// ordinary install, where the image is a published digest and the
+		// normal kind preparation (pull on the host, load into the node) is
+		// both what happened before the chart was embedded and the behaviour
+		// that does not need the kubelet to reach a registry at all.
+		//
 		// --image was assumed to name an image the node already has, which
 		// cannot hold when this installer is what created the node: put it
 		// there from the local daemon if the node lacks it.
@@ -1330,7 +1359,7 @@ func OberthHelmArgs(cfg Config, openbao OpenBaoResult, rekor RekorResult) []stri
 	}
 	chart := oberthRepoName + "/oberth"
 	if local := strings.TrimSpace(cfg.ChartPath); local != "" {
-		chart = local
+		chart = localChartReference(local)
 	}
 	args := []string{
 		"upgrade", "--install", "oberth", chart,

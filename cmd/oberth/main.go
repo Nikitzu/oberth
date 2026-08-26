@@ -19,6 +19,15 @@ var (
 	version = "dev"
 	commit  = "unknown"
 	date    = "unknown"
+
+	// imageRef is the digest-pinned server image built alongside this binary,
+	// stamped at release time. A release therefore knows which image goes with
+	// it, and `oberth install` needs no --image: the operator was otherwise
+	// asked to copy a 71-character digest out of the release notes, which is a
+	// step that exists only because the binary was not told.
+	//
+	// Empty in a development build, where the chart default applies.
+	imageRef = ""
 )
 
 func main() {

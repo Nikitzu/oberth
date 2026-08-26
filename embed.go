@@ -5,7 +5,9 @@
 // whose integrity is already proven by image signature verification.
 package oberth
 
-import _ "embed"
+import (
+	"embed"
+)
 
 // SetupSecretStoreScript is the canonical scripts/setup-secretstore.sh: the
 // one command an administrator runs NEXT TO their OpenBao (or Vault) to make
@@ -20,3 +22,18 @@ import _ "embed"
 //
 //go:embed scripts/setup-secretstore.sh
 var SetupSecretStoreScript []byte
+
+// ChartFS is the Oberth Helm chart, carried inside the binary that installs it.
+//
+// Without this an install needs the chart from somewhere else, and there is
+// nowhere good: the published oberth-charts index only ever holds upstream's
+// releases, so a fork build asking for its own version got "chart oberth
+// matching <tag> not found" after it had already created the cluster. Handing
+// the operator a .tgz to download and name with --chart works, but makes the
+// install a three-file exercise where the chart and the binary can drift.
+//
+// The binary knows its own version, so it should carry the chart that matches
+// it. --chart still overrides, for local iteration on the chart itself.
+//
+//go:embed all:charts/oberth
+var ChartFS embed.FS
