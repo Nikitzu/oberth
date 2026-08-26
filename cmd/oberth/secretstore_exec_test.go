@@ -561,3 +561,161 @@ func TestEmitSecretFetchMarkerEmptyFetch(t *testing.T) {
 		t.Fatalf("empty-fetch marker is not valid JSON: %v (%q)", err, line)
 	}
 }
+
+// --- #249: short secret redaction tests ---
+
+func TestExecChildRedactsShortSecret(t *testing.T) {
+	dir := t.TempDir()
+	secret := []byte("abc12") // 5 bytes, well below the old 8-byte threshold
+
+	script := filepath.Join(t.TempDir(), "echo-short.sh")
+	if err := os.WriteFile(script, []byte(
+		"#!/bin/sh\necho \"token=abc12\"\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout bytes.Buffer
+	err := execChild(dir, []string{script}, [][]byte{secret}, &stdout, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	output := stdout.String()
+	if strings.Contains(output, "abc12") {
+		t.Fatalf("short secret leaked to stdout: %q", output)
+	}
+	if !strings.Contains(output, "***") {
+		t.Fatalf("expected redaction marker in stdout, got: %q", output)
+	}
+}
+
+func TestMaterializeRedactsShortSecret(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "secrets")
+	t.Setenv("SHORT_TOKEN", "abc12") // 5 bytes
+
+	script := filepath.Join(t.TempDir(), "echo-short.sh")
+	if err := os.WriteFile(script, []byte(
+		"#!/bin/sh\necho \"token=abc12\"\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout bytes.Buffer
+	if err := runSecretStoreMaterialize(t.Context(), []string{
+		"-dir", dir,
+		"SHORT_TOKEN=short-token/value",
+		"--", script,
+	}, &stdout, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+
+	output := stdout.String()
+	if strings.Contains(output, "abc12") {
+		t.Fatalf("short secret value leaked to stdout: %q", output)
+	}
+	if !strings.Contains(output, "***") {
+		t.Fatalf("expected redaction marker in stdout, got: %q", output)
+	}
+}
+
+// --- #251: swap check tests ---
+
+func TestCheckSwapActiveWithDevices(t *testing.T) {
+	swapFile := filepath.Join(t.TempDir(), "swaps")
+	if err := os.WriteFile(swapFile, []byte(
+		"Filename\t\t\t\tType\t\tSize\t\tUsed\t\tPriority\n"+
+			"/dev/sda2                               partition\t8388604\t\t0\t\t-2\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if !checkSwapActive(swapFile) {
+		t.Fatal("expected swap to be detected as active")
+	}
+}
+
+func TestCheckSwapActiveHeaderOnly(t *testing.T) {
+	swapFile := filepath.Join(t.TempDir(), "swaps")
+	if err := os.WriteFile(swapFile, []byte(
+		"Filename\t\t\t\tType\t\tSize\t\tUsed\t\tPriority\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if checkSwapActive(swapFile) {
+		t.Fatal("expected no swap detected with header-only file")
+	}
+}
+
+func TestCheckSwapActiveMissingFile(t *testing.T) {
+	if checkSwapActive(filepath.Join(t.TempDir(), "nonexistent")) {
+		t.Fatal("expected false for missing file")
+	}
+}
+
+func TestExecWarnsOnActiveSwap(t *testing.T) {
+	// Fake /proc/swaps with an active swap device.
+	swapFile := filepath.Join(t.TempDir(), "swaps")
+	if err := os.WriteFile(swapFile, []byte(
+		"Filename\t\t\t\tType\t\tSize\t\tUsed\t\tPriority\n"+
+			"/dev/sda2                               partition\t8388604\t\t0\t\t-2\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	origSwap := swapCheckPath
+	swapCheckPath = swapFile
+	defer func() { swapCheckPath = origSwap }()
+
+	// Mock statfs to report tmpfs so the check passes.
+	origStatfs := secretExecStatfs
+	secretExecStatfs = func(_ string) (int64, error) {
+		return tmpfsMagic, nil
+	}
+	defer func() { secretExecStatfs = origStatfs }()
+
+	dir := t.TempDir()
+	t.Setenv("VAULT_ADDR", "https://vault.example:8200")
+	t.Setenv("OBERTH_VAULT_ROLE", "test-role")
+
+	var stderr bytes.Buffer
+	// The call will fail at Vault login (no real store), but the swap
+	// warning is emitted before the store connection attempt.
+	_ = runSecretStoreExec(t.Context(), []string{
+		"--dir=" + dir,
+		"--path=oberth/data/release/test",
+		"--", "true",
+	}, io.Discard, &stderr)
+
+	if !strings.Contains(stderr.String(), "swap is active") {
+		t.Fatalf("expected swap warning in stderr, got: %q", stderr.String())
+	}
+}
+
+func TestExecNoSwapWarningWhenInactive(t *testing.T) {
+	// Fake /proc/swaps with only the header (no swap devices).
+	swapFile := filepath.Join(t.TempDir(), "swaps")
+	if err := os.WriteFile(swapFile, []byte(
+		"Filename\t\t\t\tType\t\tSize\t\tUsed\t\tPriority\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	origSwap := swapCheckPath
+	swapCheckPath = swapFile
+	defer func() { swapCheckPath = origSwap }()
+
+	origStatfs := secretExecStatfs
+	secretExecStatfs = func(_ string) (int64, error) {
+		return tmpfsMagic, nil
+	}
+	defer func() { secretExecStatfs = origStatfs }()
+
+	dir := t.TempDir()
+	t.Setenv("VAULT_ADDR", "https://vault.example:8200")
+	t.Setenv("OBERTH_VAULT_ROLE", "test-role")
+
+	var stderr bytes.Buffer
+	_ = runSecretStoreExec(t.Context(), []string{
+		"--dir=" + dir,
+		"--path=oberth/data/release/test",
+		"--", "true",
+	}, io.Discard, &stderr)
+
+	if strings.Contains(stderr.String(), "swap") {
+		t.Fatalf("unexpected swap warning when swap is inactive: %q", stderr.String())
+	}
+}
