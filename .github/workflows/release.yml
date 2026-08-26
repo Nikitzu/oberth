@@ -6,11 +6,16 @@
 # `oberth install --image <digest>`.
 #
 # The image is pulled on the HOST and loaded into the kind node, not pulled by
-# the kubelet. That is deliberate: the package is private, and a node pulling
-# from a private registry would need an imagePullSecret wired into the chart.
-# Loading it host-side needs only `docker login ghcr.io`, and the installer's
-# --image flag already aliases a locally held image to the digest ref the chart
-# pins.
+# the kubelet. The installer's --image flag aliases a locally held image to the
+# digest ref the chart pins, so the node never resolves the name and no
+# imagePullSecret has to be threaded through the chart. That holds whether the
+# package is public or private, which is why it is worth doing even now that
+# the package is public.
+#
+# Publishing with GITHUB_TOKEN links the package to this repository, and a
+# package linked to a public repository is created public. GitHub's docs say
+# visibility is not inherited; the observed behaviour is that it is. Do not
+# assume the default here without checking the result.
 name: release
 
 on:
@@ -88,12 +93,23 @@ jobs:
 
           Install on a Mac with kind:
 
-              docker login ghcr.io
-              docker pull ${{ env.IMAGE }}@${DIGEST}
+              chmod +x oberth-darwin-arm64
               ./oberth-darwin-arm64 install --image ${{ env.IMAGE }}@${DIGEST}
 
-          The package is private, so \`docker login ghcr.io\` with a token
-          carrying \`read:packages\` is required before the pull.
+          That is the whole path. The installer creates the kind cluster,
+          installs Argo and OpenBao, deploys the chart and runs onboarding.
+
+          The package is public, so nothing needs a login. If the image is
+          already in the local Docker daemon the installer loads it into the
+          node and the kubelet never reaches out; otherwise the kubelet pulls
+          it anonymously. Pulling first is therefore optional, and only worth
+          it to front-load the download:
+
+              docker pull ${{ env.IMAGE }}@${DIGEST}
+
+          Verify the binary before running it:
+
+              shasum -a 256 -c oberth-darwin-arm64.sha256
           EOF
           gh release create "${GITHUB_REF_NAME}" \
             --title "${GITHUB_REF_NAME}" \
