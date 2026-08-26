@@ -1,11 +1,17 @@
 package installer
 
 import (
+	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
+	"net/url"
 	"os"
 	"path/filepath"
+	"time"
 )
 
 // Configuring an MCP client is not the same as making it able to reach the
@@ -129,11 +135,14 @@ type caTrustOutcome struct {
 
 // clientCATrust arranges the CA trust each configured client needs.
 //
+// verified says whether the CA actually completed a handshake with this
+// server, so a write that could not be checked never reads as success.
+//
 // Only Claude Code has a place in its own configuration to put it. Codex reads
 // no certificate from ~/.codex/config.toml, and Cursor's mcp.json has no such
 // field either, so for those two this returns the one line that says what to
 // do by hand.
-func clientCATrust(clientID, caPath string) caTrustOutcome {
+func clientCATrust(clientID, caPath string, verified bool) caTrustOutcome {
 	switch clientID {
 	case "claude":
 		detail, err := trustCAInClaudeCode(caPath)
@@ -144,6 +153,11 @@ func clientCATrust(clientID, caPath string) caTrustOutcome {
 				note: fmt.Sprintf("Claude Code: set %s=%s in the env object of ~/.claude/settings.json.",
 					nodeExtraCACerts, displayPath(caPath)),
 			}
+		}
+		// A write that could not be checked is reported as exactly that.
+		// Calling it success is how this step lied before.
+		if !verified {
+			return caTrustOutcome{detail: detail, status: "⚠ unverified"}
 		}
 		return caTrustOutcome{detail: detail, status: "✓ trusted"}
 	case "cursor":
@@ -163,4 +177,39 @@ func clientCATrust(clientID, caPath string) caTrustOutcome {
 	default:
 		return caTrustOutcome{}
 	}
+}
+
+// verifyServerTrust performs the handshake the configured client is about to
+// perform, with the same certificate pool the client was given and nothing
+// else in it.
+//
+// A file written is not a client that connects. Every earlier version of this
+// step reported success because a write returned no error, and the operator
+// found out at the first request that the certificate did not verify -- wrong
+// address in the certificate, a signer the Secret did not carry, a server not
+// listening on the NodePort. The only evidence worth printing is a completed
+// handshake, so this makes one.
+func verifyServerTrust(ctx context.Context, baseURL string, caPEM []byte) error {
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(caPEM) {
+		return errors.New("ca.crt holds no certificate")
+	}
+	parsed, err := url.Parse(baseURL)
+	if err != nil {
+		return err
+	}
+	address := parsed.Host
+	if parsed.Port() == "" {
+		address = net.JoinHostPort(address, "443")
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	dialer := &tls.Dialer{Config: &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12}}
+	conn, err := dialer.DialContext(ctx, "tcp", address)
+	if err != nil {
+		return err
+	}
+	return conn.Close()
 }

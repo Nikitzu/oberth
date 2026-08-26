@@ -151,6 +151,16 @@ func runClientAccessOffer(ctx context.Context, cfg Config, deps Deps, tw *tableW
 	baseURL := "https://" + clientReachableHost(deps) + ":" + httpsNodePort
 	tokenCommand, tokenHint := tokenCommandForHost()
 
+	// The evidence, not the exit code: the handshake a client is about to
+	// make, with the pool that client was just given.
+	trustVerified := true
+	if verifyErr := verifyServerTrust(ctx, baseURL, authority); verifyErr != nil {
+		trustVerified = false
+		tw.AppendRow("Server certificate", verifyErr.Error(), "⚠ unverified", false)
+	} else {
+		tw.AppendRow("Server certificate", "verified with "+displayPath(caPath), "✓ trusted", false)
+	}
+
 	// Store the credential the configuration below is about to depend on.
 	//
 	// Only on the path where a token was just minted: the other path runs
@@ -217,7 +227,7 @@ func runClientAccessOffer(ctx context.Context, cfg Config, deps Deps, tw *tableW
 				// Configured is not the same as able to connect: the server's
 				// signer is private, and a client that does not trust it fails
 				// the handshake and reports the server as unreachable.
-				trust := clientCATrust(client.id, caPath)
+				trust := clientCATrust(client.id, caPath, trustVerified)
 				if trust.status != "" {
 					tw.AppendRow(client.label+" CA trust", trust.detail, trust.status, false)
 				}

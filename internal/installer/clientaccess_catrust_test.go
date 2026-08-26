@@ -1,12 +1,22 @@
 package installer
 
 import (
+	"context"
+	"crypto/ed25519"
+	"crypto/rand"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
+	"math/big"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func readSettings(t *testing.T, path string) map[string]any {
@@ -125,7 +135,7 @@ func TestCATrustWritesTheSettingsFileClaudeCodeReads(t *testing.T) {
 	t.Setenv("HOME", home)
 	caPath := filepath.Join(home, ".config", "oberth", "ca.crt")
 
-	outcome := clientCATrust("claude", caPath)
+	outcome := clientCATrust("claude", caPath, true)
 	if outcome.status != "✓ trusted" {
 		t.Fatalf("status %q detail %q", outcome.status, outcome.detail)
 	}
@@ -141,7 +151,7 @@ func TestCATrustWritesTheSettingsFileClaudeCodeReads(t *testing.T) {
 func TestClientsWithoutACASettingSayWhatToDoByHand(t *testing.T) {
 	t.Parallel()
 	for _, id := range []string{"codex", "cursor"} {
-		outcome := clientCATrust(id, "/home/me/.config/oberth/ca.crt")
+		outcome := clientCATrust(id, "/home/me/.config/oberth/ca.crt", true)
 		if outcome.status != "⚠ manual" {
 			t.Errorf("%s: status %q, want manual", id, outcome.status)
 		}
@@ -149,4 +159,67 @@ func TestClientsWithoutACASettingSayWhatToDoByHand(t *testing.T) {
 			t.Errorf("%s: nothing was said about the CA", id)
 		}
 	}
+}
+
+// The rule this project keeps relearning: a write that returned no error is
+// not a client that connects. An unverified handshake must never print as
+// success, however well the file was written.
+func TestAWriteThatCouldNotBeVerifiedIsNotSuccess(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	outcome := clientCATrust("claude", filepath.Join(home, "ca.crt"), false)
+	if outcome.status != "⚠ unverified" {
+		t.Fatalf("status %q, want unverified", outcome.status)
+	}
+}
+
+// The verification is a real handshake, so a server this CA really signed is
+// the only thing that passes it.
+func TestServerTrustIsAnActualHandshake(t *testing.T) {
+	t.Parallel()
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {}))
+	defer server.Close()
+	authority := pem.EncodeToMemory(&pem.Block{
+		Type: "CERTIFICATE", Bytes: server.Certificate().Raw,
+	})
+
+	if err := verifyServerTrust(context.Background(), server.URL, authority); err != nil {
+		t.Fatalf("the server's own certificate did not verify it: %v", err)
+	}
+
+	if err := verifyServerTrust(context.Background(), server.URL, unrelatedCA(t)); err == nil {
+		t.Fatal("a server this CA never signed was reported as verified")
+	}
+}
+
+// A CA file that carries no certificate is the failure that produced an
+// "unable to verify the first certificate" hours later.
+func TestServerTrustRejectsAnEmptyPool(t *testing.T) {
+	t.Parallel()
+	if err := verifyServerTrust(context.Background(), "https://localhost:30443", []byte("not a certificate")); err == nil {
+		t.Fatal("an empty certificate pool was accepted")
+	}
+}
+
+// unrelatedCA is a certificate that signed nothing in this test: the pool a
+// client would have if it were pointed at another deployment's ca.crt.
+func unrelatedCA(t *testing.T) []byte {
+	t.Helper()
+	public, private, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	template := &x509.Certificate{
+		SerialNumber:          big.NewInt(1),
+		Subject:               pkix.Name{CommonName: "somebody else"},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().Add(time.Hour),
+		IsCA:                  true,
+		BasicConstraintsValid: true,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, template, template, public, private)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
 }
