@@ -7,10 +7,19 @@ image:
 # Job pods run the repository-declared runner image (default derived from the
 # repository's go.mod: golang:<version>-alpine) executing `go -C .oberth run .`.
 # The server admits only images matching one of these prefixes.
+# The toolchains a pipeline may run. A runner cannot install one at runtime
+# under a non-root read-only rootfs, so the image has to carry it, and the
+# prefix has to be allowed here before it can be named.
 runnerImagePrefixes:
   - "golang:"
   - "debian:"
   - "aquasec/trivy:"
+  # Node and Java, for the repositories this fork is used against. Playwright
+  # ships the browsers and their system libraries, which is the only way to run
+  # component tests in such a container.
+  - "node:"
+  - "maven:"
+  - "mcr.microsoft.com/playwright:"
 
 replicaCount: 1
 maxConcurrentJobs: 3
@@ -309,12 +318,16 @@ secretCreatePolicy:
 # Disable on clusters without a NetworkPolicy-capable CNI.
 # Force-sync an ordinary green branch run to the upstream forge.
 #
-# true is the original behaviour: green means published. false makes the gate
-# advisory, which is what a developer running Oberth on their own machine
-# usually wants: the verdict is recorded, nothing reaches the forge, and the
+# true is upstream's behaviour: green means published. false makes the gate
+# advisory: the verdict is recorded, nothing reaches the forge, and the
 # dashboard offers "push & open PR" on a green run. Promotion runs publish
 # either way, because publishing is what a promotion is for.
-publishOnGreen: true
+#
+# This fork defaults to false. The advisory gate is the reason the fork exists,
+# so shipping it off by default would mean every install had to be corrected
+# before it did the thing it was installed for. Set it to true to get
+# upstream's behaviour back.
+publishOnGreen: false
 
 networkPolicy:
   # Enabled by default for pipeline egress isolation: default-deny egress with
