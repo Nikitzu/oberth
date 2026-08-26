@@ -91,6 +91,7 @@ type serveOptions struct {
 	scheduleMaxEntries      int
 	maxConcurrent           int
 	publishOnGreen          bool
+	upstreamTokenFile       string
 	ciCacheRoot             string
 	releaseCacheRoot        string
 	secretStoreAddress      string
@@ -173,6 +174,8 @@ func parseServeOptions(arguments []string, output io.Writer) (serveOptions, erro
 	flags.IntVar(&options.scheduleMaxEntries, "schedule-max-entries", defaultScheduleMaxEntries, "most schedule entries one repository may declare")
 	flags.StringVar(&options.fragmentAllowlist, "fragment-allowlist", "", "comma-separated repositories usable as pipeline fragments; empty permits every registered repository")
 	flags.IntVar(&options.maxConcurrent, "max-concurrent-jobs", 3, "maximum concurrent Jobs")
+	flags.StringVar(&options.upstreamTokenFile, "upstream-token-file", "",
+		"file holding a personal access token used to authenticate HTTPS upstreams (re-read on every use, so rotating the file needs no restart)")
 	flags.BoolVar(&options.publishOnGreen, "publish-on-green", true,
 		"force-sync an ordinary green branch run to the upstream forge. Set false to keep the gate advisory: "+
 			"the run still goes green and is recorded, but nothing reaches the forge until it is published on request. "+
@@ -553,6 +556,10 @@ func serve(ctx context.Context, options serveOptions, logger *log.Logger) (resul
 		Env:             map[string]string{"GIT_SSH_COMMAND": sshCommand, "GIT_SSH_VARIANT": "ssh"},
 		Logger:          logger,
 		PreFinalizeGate: anchors.AllowMutation,
+		// Read per use rather than captured at startup, so rotating the
+		// mounted Secret takes effect without restarting the server. A
+		// Kubernetes Secret update lands in the volume within a minute.
+		UpstreamToken: upstreamTokenReader(options.upstreamTokenFile),
 	})
 	if err != nil {
 		return err
@@ -1620,3 +1627,23 @@ const (
 	defaultScheduleMinInterval  = 15 * time.Minute
 	defaultScheduleMaxEntries   = 8
 )
+
+// upstreamTokenReader returns the token an HTTPS upstream authenticates with,
+// or nil when none is configured.
+//
+// Errors answer empty rather than failing: an unreadable token file is a push
+// that fails with the forge's own authentication message, which says more than
+// a startup error would, and it must never take down a server whose other
+// upstreams need no token at all.
+func upstreamTokenReader(path string) func() string {
+	if strings.TrimSpace(path) == "" {
+		return nil
+	}
+	return func() string {
+		body, err := os.ReadFile(path) // #nosec G304 -- an operator-supplied path, as with every other credential file here.
+		if err != nil {
+			return ""
+		}
+		return strings.TrimSpace(string(body))
+	}
+}

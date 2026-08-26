@@ -205,14 +205,14 @@ func runOnboarding(ctx context.Context, cfg Config, deps Deps, tw *tableWriter, 
 	// deploy key would be a credential arranged for a connection that is never
 	// opened. That was the whole point of running CI locally.
 	keyProvided := false
-	if deploymentPublishes(ctx, cfg, deps) {
+	if upstreamUsesSSH(baseURL) {
 		provided, keyErr := promptDeployKey(ctx, cfg, deps, tw)
 		if keyErr != nil {
 			return keyErr
 		}
 		keyProvided = provided
-	} else {
-		tw.AppendRow("Deploy key", "not needed (advisory gate)", "— skipped", false)
+	} else if err := promptUpstreamToken(ctx, cfg, deps, tw); err != nil {
+		return err
 	}
 
 	// --- Register upstream (quiet, with result as table row) ---
@@ -362,23 +362,38 @@ func promptUpstream(ctx context.Context, deps Deps, tw *tableWriter) (baseURL, n
 func upstreamFromInput(raw string) (string, string, error) {
 	base := raw
 	if !strings.Contains(base, "://") {
-		base = "ssh://git@" + base
+		// HTTPS by default.
+		//
+		// ssh:// was the default, and it obliges this server to hold an SSH
+		// identity the forge accepts: a deploy key, which on an organisation
+		// repository only an administrator can install, and which grants this
+		// server standing write access thereafter. HTTPS authenticates with a
+		// personal access token instead, which reaches exactly the
+		// repositories its owner already reaches. An explicit ssh:// URL still
+		// selects the key path.
+		base = "https://" + base
 	}
 	parsed, err := url.Parse(base)
 	if err != nil {
 		return "", "", fmt.Errorf("invalid upstream %q: %w", raw, err)
 	}
-	if parsed.Scheme != "ssh" {
-		return "", "", fmt.Errorf("upstream must be host/organization or an ssh:// URL, got %q", raw)
+	if parsed.Scheme != "ssh" && parsed.Scheme != "https" {
+		return "", "", fmt.Errorf("upstream must be host/organization, or an ssh:// or https:// URL, got %q", raw)
 	}
 	if parsed.Hostname() == "" || strings.Trim(parsed.Path, "/") == "" {
 		return "", "", errors.New("upstream must include a host and an organization, e.g. github.com/your-org")
 	}
-	if parsed.User == nil || parsed.User.Username() == "" {
+	if parsed.Scheme == "ssh" && (parsed.User == nil || parsed.User.Username() == "") {
 		parsed.User = url.User("git")
 	}
 	name := strings.Split(parsed.Hostname(), ".")[0]
 	return name, parsed.String(), nil
+}
+
+// upstreamUsesSSH reports whether a registered upstream authenticates with a
+// key this server holds, rather than with a token belonging to a person.
+func upstreamUsesSSH(baseURL string) bool {
+	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(baseURL)), "ssh://")
 }
 
 // promptDeployKey asks whether to generate the deploy key in-pod or provide
@@ -571,11 +586,6 @@ func registerUpstreamQuiet(ctx context.Context, cfg Config, deps Deps, name, bas
 		run = DefaultRunCommand
 	}
 	addArgs := []string{"upstream", "add", "--yes", "--no-wait", name, baseURL}
-	if !deploymentPublishes(ctx, cfg, deps) {
-		// Nothing on this deployment pushes to the forge, so there is no
-		// connection to authenticate and no key to arrange.
-		addArgs = []string{"upstream", "add", "--yes", "--no-key", name, baseURL}
-	}
 	out, err := run(ctx, nil, "kubectl", kubectlOberthArgs(cfg, deps, false, addArgs...)...)
 	pubKey := extractDeployPublicKey(string(out))
 	if err != nil {

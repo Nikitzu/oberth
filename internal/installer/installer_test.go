@@ -3867,14 +3867,16 @@ func TestFinishInstallInteractiveOnboarding(t *testing.T) {
 	}
 	keyPath, pubKey := stageUplinkKeyPair(t)
 
-	// Input sequence for the table-driven onboarding (the probe accepts the
-	// key on the first upstream add, so no verification Enter is needed):
-	// 1. "codeberg.org/cloudtaser" → upstream URL prompt
+	// Input sequence. A bare host/org is an HTTPS upstream, so the credential
+	// asked for is a token belonging to the operator rather than a deploy key
+	// belonging to the server:
+	// 1. "ssh://git@codeberg.org/cloudtaser" → upstream URL prompt, SSH chosen
+	//    explicitly so this case still covers the deploy-key path
 	// 2. "g" → deploy key G/P prompt
 	// 3. keyPath → uplink public-key path prompt
 	// 4. "tester@box" → uplink identity prompt
 	// 5. "n" → SSH config prompt (decline)
-	input := strings.NewReader("codeberg.org/cloudtaser\ng\n" + keyPath + "\ntester@box\nn\n")
+	input := strings.NewReader("ssh://git@codeberg.org/cloudtaser\ng\n" + keyPath + "\ntester@box\nn\n")
 
 	var buf bytes.Buffer
 	deps := onboardingDeps(t, host, &buf, input, true)
@@ -4152,7 +4154,7 @@ func TestRegisterUpstreamQuietClassifiesOutcomes(t *testing.T) {
 			cfg := Config{}
 			_ = cfg.Validate()
 
-			registered, key, err := registerUpstreamQuiet(context.Background(), cfg, deps, "codeberg", "ssh://git@codeberg.org/cloudtaser")
+			registered, key, err := registerUpstreamQuiet(context.Background(), cfg, deps, "codeberg", "https://codeberg.org/cloudtaser")
 			if tc.wantErr != "" {
 				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
 					t.Fatalf("want error containing %q, got %v", tc.wantErr, err)
@@ -4214,10 +4216,17 @@ func TestUpstreamFromInput(t *testing.T) {
 		wantURL  string
 		wantErr  bool
 	}{
-		{raw: "codeberg.org/cloudtaser", wantName: "codeberg", wantURL: "ssh://git@codeberg.org/cloudtaser"},
-		{raw: "github.com/oberthci", wantName: "github", wantURL: "ssh://git@github.com/oberthci"},
+		// HTTPS by default: it authenticates with a token belonging to the
+		// person installing, rather than obliging an administrator to install
+		// a deploy key that grants this server standing write access.
+		{raw: "codeberg.org/cloudtaser", wantName: "codeberg", wantURL: "https://codeberg.org/cloudtaser"},
+		{raw: "github.com/oberthci", wantName: "github", wantURL: "https://github.com/oberthci"},
+		{raw: "https://codeberg.org/cloudtaser", wantName: "codeberg", wantURL: "https://codeberg.org/cloudtaser"},
+		// An explicit ssh:// URL still selects the key path, and still gains
+		// the git user when none was given.
 		{raw: "ssh://git@forge.example.eu:2222/org", wantName: "forge", wantURL: "ssh://git@forge.example.eu:2222/org"},
-		{raw: "https://codeberg.org/cloudtaser", wantErr: true},
+		{raw: "ssh://forge.example.eu/org", wantName: "forge", wantURL: "ssh://git@forge.example.eu/org"},
+		{raw: "git://codeberg.org/cloudtaser", wantErr: true},
 		{raw: "codeberg.org", wantErr: true},
 	} {
 		name, baseURL, err := upstreamFromInput(tc.raw)

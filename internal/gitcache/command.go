@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"sort"
 	"strings"
 	"syscall"
@@ -91,6 +92,32 @@ func (c *Cache) capture(ctx context.Context, dir string, args ...string) (string
 func (c *Cache) execute(ctx context.Context, spec commandSpec, capture bool) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, c.timeout)
 	defer cancel()
+
+	// A push to an HTTPS upstream is the one command that needs a credential
+	// this server does not otherwise hold. The helper and the token live in a
+	// directory created for this command and removed with it, so nothing is
+	// left on disk between pushes and nothing reaches argv.
+	if c.upstreamToken != nil && specTargetsHTTPS(spec) {
+		if token := c.upstreamToken(); token != "" {
+			dir, err := os.MkdirTemp("", "oberth-git-auth")
+			if err != nil {
+				return "", fmt.Errorf("prepare upstream credentials: %w", err)
+			}
+			defer func() { _ = os.RemoveAll(dir) }()
+			askpassEnv, askErr := writeAskpass(dir, token)
+			if askErr != nil {
+				return "", askErr
+			}
+			merged := map[string]string{}
+			for key, value := range spec.env {
+				merged[key] = value
+			}
+			for key, value := range askpassEnv {
+				merged[key] = value
+			}
+			spec.env = merged
+		}
+	}
 
 	// c.gitBinary is operator configuration and every argument is constructed
 	// by the validated Git layer; no shell is involved. Cancellation below
@@ -355,4 +382,43 @@ func (c *Cache) listRefsAtMost(ctx context.Context, path string, maximum int, pr
 		refs[parts[0]] = parts[1]
 	}
 	return refs, nil
+}
+
+// specTargetsHTTPS reports whether this command talks to an HTTPS remote.
+//
+// Resolved from the repository's configured remote rather than from the
+// arguments: a push names a remote by its short name, so the URL is not on the
+// command line to inspect.
+func specTargetsHTTPS(spec commandSpec) bool {
+	for _, arg := range spec.args {
+		if arg == "push" || arg == "fetch" || arg == "ls-remote" {
+			return remoteIsHTTPS(spec.dir)
+		}
+	}
+	return false
+}
+
+// remoteIsHTTPS reads the configured remotes of a repository and reports
+// whether any of them is an HTTPS URL. Reading the config file directly keeps
+// this free of a recursive git invocation from inside command construction.
+func remoteIsHTTPS(dir string) bool {
+	if strings.TrimSpace(dir) == "" {
+		return false
+	}
+	for _, candidate := range []string{filepath.Join(dir, "config"), filepath.Join(dir, ".git", "config")} {
+		body, err := os.ReadFile(candidate) // #nosec G304 -- a repository this package created, under its own root.
+		if err != nil {
+			continue
+		}
+		for _, line := range strings.Split(string(body), "\n") {
+			key, value, found := strings.Cut(strings.TrimSpace(line), "=")
+			if !found || strings.TrimSpace(key) != "url" {
+				continue
+			}
+			if upstreamNeedsToken(value) {
+				return true
+			}
+		}
+	}
+	return false
 }

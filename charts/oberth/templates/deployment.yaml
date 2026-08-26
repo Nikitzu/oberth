@@ -121,6 +121,9 @@ spec:
             - --tls-key=/etc/oberth/tls/tls.key
             - --ssh-host-key=/etc/oberth/ssh/ssh_host_key
             - --upstream-key=/etc/oberth/upstream-key/{{ .Values.upstream.keyFile }}
+            {{- if .Values.upstream.tokenSecret }}
+            - --upstream-token-file=/etc/oberth/upstream-token/token
+            {{- end }}
             - --known-hosts=/etc/oberth/known-hosts/{{ .Values.upstream.knownHostsKey }}
             - --namespace={{ .Release.Namespace }}
             {{- /*
@@ -266,6 +269,11 @@ spec:
             - name: upstream-key
               mountPath: /etc/oberth/upstream-key
               readOnly: true
+            {{- if .Values.upstream.tokenSecret }}
+            - name: upstream-token
+              mountPath: /etc/oberth/upstream-token
+              readOnly: true
+            {{- end }}
             - name: known-hosts
               mountPath: /etc/oberth/known-hosts
               readOnly: true
@@ -324,6 +332,13 @@ spec:
             secretName: {{ .Values.upstream.keySecret }}
             defaultMode: 0400
             optional: true
+        {{- if .Values.upstream.tokenSecret }}
+        - name: upstream-token
+          secret:
+            secretName: {{ .Values.upstream.tokenSecret }}
+            defaultMode: 0400
+            optional: true
+        {{- end }}
         - name: known-hosts
           secret:
             secretName: {{ .Values.upstream.knownHostsSecret }}

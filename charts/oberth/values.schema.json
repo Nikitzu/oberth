@@ -302,6 +302,10 @@
         },
         "knownHostsKey": {
           "$ref": "#/definitions/secretDataKey"
+        },
+        "tokenSecret": {
+          "type": "string",
+          "description": "Secret holding a personal access token (key: token) for an https:// upstream."
         }
       }
     },

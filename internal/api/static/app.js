@@ -852,16 +852,6 @@ async function publishThenCompare(button) {
   if (!runID || !compare) return;
   const original = button.textContent;
 
-  // Under the advisory gate this server pushes nothing and holds no forge
-  // credential to push with: the developer pushed the branch themselves, and
-  // the button's job is to open the compare page in a browser that is already
-  // signed in. Asking the server to publish first would be asking it to
-  // authenticate to a forge it was deliberately never given a key for.
-  if (state.status && state.status.publish_on_green === false) {
-    window.open(compare, "_blank", "noopener,noreferrer");
-    return;
-  }
-
   button.disabled = true;
   button.textContent = "pushing…";
   let failed = "";

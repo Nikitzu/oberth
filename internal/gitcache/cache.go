@@ -228,6 +228,7 @@ type Cache struct {
 	timeout         time.Duration
 	env             map[string]string
 	redact          []string
+	upstreamToken   func() string
 	logger          Logger
 	preFinalizeGate func(context.Context) error
 	locks           sync.Map
@@ -279,6 +280,7 @@ func New(config Config) (*Cache, error) {
 		timeout:         defaultTimeout(config.CommandTimeout),
 		env:             cloneMap(config.Env),
 		redact:          append([]string(nil), config.Redact...),
+		upstreamToken:   config.UpstreamToken,
 		logger:          logger,
 		preFinalizeGate: config.PreFinalizeGate,
 	}, nil

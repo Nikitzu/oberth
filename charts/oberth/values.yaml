@@ -145,6 +145,19 @@ upstream:
   keyFile: id_ed25519
   knownHostsSecret: oberth-known-hosts
   knownHostsKey: known_hosts
+  # Secret holding a personal access token, under the key `token`, used to
+  # authenticate an https:// upstream.
+  #
+  # It belongs to a person rather than to this server: it reaches exactly the
+  # repositories its owner reaches and needs no administrator to install it on
+  # a forge, which an SSH deploy key does. Empty leaves HTTPS upstreams
+  # unauthenticated, which is correct when they are only ever read.
+  # Named by default and mounted optionally, because the token is created
+  # during onboarding, after this chart is installed. The volume tolerates the
+  # Secret being absent, the server re-reads the file per push, and a Secret
+  # created later lands in the volume within about a minute. So the ordering
+  # works out without a second helm upgrade.
+  tokenSecret: oberth-upstream-token
 
 # Argo Workflows execution engine. This is not optional: every pipeline runs as
 # an Argo Workflow, so a cluster without a controller watching argo.namespace

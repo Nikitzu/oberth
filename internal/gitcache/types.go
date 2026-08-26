@@ -138,7 +138,13 @@ type Config struct {
 	CommandTimeout time.Duration
 	Env            map[string]string
 	Redact         []string
-	Logger         Logger
+	// UpstreamToken authenticates HTTPS upstreams. It belongs to a person
+	// rather than to this server: it reaches exactly the repositories its
+	// owner reaches, and needs no administrator to install it on a forge.
+	// Empty leaves HTTPS unauthenticated, which is correct for a public
+	// upstream that is only ever read.
+	UpstreamToken func() string
+	Logger        Logger
 	// PreFinalizeGate is an optional server-owned check invoked after
 	// receive-pack applies ref updates and BEFORE finalization records
 	// the delta in the durable outbox. When it returns an error,
