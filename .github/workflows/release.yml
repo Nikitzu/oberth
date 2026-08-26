@@ -27,6 +27,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # GHCR rejects an uppercase repository name, and github.repository
+      # preserves the owner's capitalisation.
+      - name: lowercase the image name
+        run: echo "IMAGE=ghcr.io/$(echo "$GITHUB_REPOSITORY" | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_ENV"
+
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
@@ -53,7 +58,7 @@ jobs:
           platforms: linux/amd64,linux/arm64
           provenance: false
           push: true
-          tags: ghcr.io/${{ github.repository }}:${{ github.ref_name }}
+          tags: ${{ env.IMAGE }}:${{ github.ref_name }}
           build-args: VERSION=${{ github.ref_name }}
 
       # The installer and CLI binary for the machine a teammate actually sits
@@ -75,17 +80,17 @@ jobs:
           DIGEST: ${{ steps.build.outputs.digest }}
         run: |
           cat > notes.md <<EOF
-          Image: \`ghcr.io/${{ github.repository }}:${GITHUB_REF_NAME}\`
+          Image: \`${{ env.IMAGE }}:${GITHUB_REF_NAME}\`
 
           Pinned reference for \`--image\`:
 
-              ghcr.io/${{ github.repository }}@${DIGEST}
+              ${{ env.IMAGE }}@${DIGEST}
 
           Install on a Mac with kind:
 
               docker login ghcr.io
-              docker pull ghcr.io/${{ github.repository }}@${DIGEST}
-              ./oberth-darwin-arm64 install --image ghcr.io/${{ github.repository }}@${DIGEST}
+              docker pull ${{ env.IMAGE }}@${DIGEST}
+              ./oberth-darwin-arm64 install --image ${{ env.IMAGE }}@${DIGEST}
 
           The package is private, so \`docker login ghcr.io\` with a token
           carrying \`read:packages\` is required before the pull.
