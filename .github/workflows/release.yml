@@ -76,6 +76,20 @@ jobs:
             -o oberth-darwin-arm64 ./cmd/oberth
           sha256sum oberth-darwin-arm64 > oberth-darwin-arm64.sha256
 
+      # The installer resolves the chart by its own version from the published
+      # oberth-charts index, which only ever carries upstream's releases. A
+      # fork's tag is not in there, so without this the install dies at
+      # "chart oberth matching <tag> not found" after having already built the
+      # cluster. Packaging the chart into the release gives --chart something
+      # to point at that does not require a clone.
+      - name: package the chart
+        run: |
+          helm package charts/oberth \
+            --version "${GITHUB_REF_NAME#v}" \
+            --app-version "${GITHUB_REF_NAME}" \
+            --destination .
+          ls -1 oberth-*.tgz
+
       # The digest goes in the release body because it is the one value the
       # install command cannot be written without, and reading it back off the
       # registry by hand is the step people get wrong.
@@ -94,7 +108,9 @@ jobs:
           Install on a Mac with kind:
 
               chmod +x oberth-darwin-arm64
-              ./oberth-darwin-arm64 install --image ${{ env.IMAGE }}@${DIGEST}
+              ./oberth-darwin-arm64 install \\
+                --chart oberth-${GITHUB_REF_NAME#v}.tgz \\
+                --image ${{ env.IMAGE }}@${DIGEST}
 
           That is the whole path. The installer creates the kind cluster,
           installs Argo and OpenBao, deploys the chart and runs onboarding.
@@ -114,4 +130,4 @@ jobs:
           gh release create "${GITHUB_REF_NAME}" \
             --title "${GITHUB_REF_NAME}" \
             --notes-file notes.md \
-            oberth-darwin-arm64 oberth-darwin-arm64.sha256
+            oberth-darwin-arm64 oberth-darwin-arm64.sha256 oberth-*.tgz
