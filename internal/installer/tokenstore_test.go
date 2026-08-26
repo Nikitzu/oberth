@@ -44,13 +44,14 @@ func TestTheTokenIsStoredRatherThanPrinted(t *testing.T) {
 	if !strings.Contains(joined, "-a "+account.Username) {
 		t.Fatalf("the account is not named, so the read may match another item: %s", joined)
 	}
-	// argv is readable by every process of the same user.
-	if strings.Contains(joined, "oberth_secret") {
-		t.Fatalf("the token was passed as an argument: %s", joined)
+	// Inline, because `security -w` with no value reads the controlling
+	// terminal rather than stdin: piping to it stops the install at a Keychain
+	// prompt asking for a password the install already holds.
+	if !strings.HasSuffix(joined, "-w oberth_secret") {
+		t.Fatalf("the token is not supplied to the command: %s", joined)
 	}
-	// security prompts for the value and then its confirmation.
-	if stdin != "oberth_secret\noberth_secret\n" {
-		t.Fatalf("stdin was %q, want the value twice", stdin)
+	if stdin != "" {
+		t.Fatalf("stdin was %q, want nothing: security does not read it", stdin)
 	}
 }
 

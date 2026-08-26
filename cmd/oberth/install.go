@@ -44,6 +44,8 @@ func runInstall(ctx context.Context, arguments []string, input io.Reader, output
 	flags.StringVar(&cfg.ArgoNamespace, "argo-namespace", "",
 		"namespace pipelines execute in; must differ from --namespace (default: oberth-argo)")
 	flags.StringVar(&cfg.ChartVersion, "chart-version", "", "Oberth chart version (default: binary version)")
+	flags.StringVar(&cfg.ClientAccess, "client-access", "",
+		"configure clients without prompting: both, cli, mcp or none")
 	flags.StringVar(&cfg.ChartPath, "chart", "",
 		"install the Oberth chart from this local directory or archive instead of the published repository")
 	flags.StringVar(&cfg.ImageRef, "image", imageRef,

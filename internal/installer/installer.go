@@ -183,6 +183,15 @@ type Config struct {
 	// rollout depends on: build the server image, install the working tree's
 	// chart, push, watch it run, change something, repeat — without a release
 	// in between.
+	// ClientAccess selects the CLI and MCP setup without a prompt: "both",
+	// "cli", "mcp" or "none". Empty asks, when there is a terminal to ask on.
+	//
+	// The offer was reachable only through an interactive prompt, which made a
+	// scripted install unable to configure a client at all, and made the whole
+	// path impossible to exercise outside a terminal -- so every fault in it
+	// was found by an operator rather than by a test.
+	ClientAccess string
+
 	ChartPath string
 
 	// chartEmbedded records that ChartPath was filled in from the chart this

@@ -86,9 +86,14 @@ func cursorClient() mcpClient {
 // chooseMCPClients asks which of the detected clients to configure. With a
 // single client there is no list worth showing, so it asks about that one
 // directly.
-func chooseMCPClients(ctx context.Context, deps Deps, color bool, detected []mcpClient) ([]mcpClient, error) {
+func chooseMCPClients(ctx context.Context, deps Deps, color bool, detected []mcpClient, ask bool) ([]mcpClient, error) {
 	if len(detected) == 0 {
 		return nil, nil
+	}
+	// Nothing to ask on, or nobody to ask: configure everything found. That is
+	// the answer the prompt defaults to, and the one a scripted install wants.
+	if !ask || deps.IsTerminal == nil || !deps.IsTerminal() || deps.Input == nil {
+		return detected, nil
 	}
 	if len(detected) == 1 {
 		options := []string{detected[0].label, "Write the file only"}

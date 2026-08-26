@@ -47,7 +47,10 @@ func offerClientAccess(ctx context.Context, cfg Config, deps Deps, tw *tableWrit
 	// not among what it needs. Asking for more than it uses would make it
 	// untestable on its own and would skip silently in a session that could in
 	// fact answer.
-	if deps.IsTerminal == nil || !deps.IsTerminal() || deps.Input == nil {
+	// A terminal is needed only to ask. With --client-access there is nothing
+	// to ask, so a scripted install configures its clients like any other.
+	if strings.TrimSpace(cfg.ClientAccess) == "" &&
+		(deps.IsTerminal == nil || !deps.IsTerminal() || deps.Input == nil) {
 		return nil
 	}
 	if strings.TrimSpace(token) == "" {
@@ -73,7 +76,10 @@ func offerClientAccess(ctx context.Context, cfg Config, deps Deps, tw *tableWrit
 // token exists on this path and none is needed: the files name a command that
 // reads one, they never hold it.
 func offerClientAccessToConfiguredDeployment(ctx context.Context, cfg Config, deps Deps, tw *tableWriter) error {
-	if deps.IsTerminal == nil || !deps.IsTerminal() || deps.Input == nil {
+	// Same rule as the first-install path: a terminal is needed only to ask,
+	// and --client-access has already answered.
+	if strings.TrimSpace(cfg.ClientAccess) == "" &&
+		(deps.IsTerminal == nil || !deps.IsTerminal() || deps.Input == nil) {
 		return nil
 	}
 	root, err := clientConfigRoot()
@@ -93,8 +99,15 @@ func runClientAccessOffer(ctx context.Context, cfg Config, deps Deps, tw *tableW
 	w := deps.Output
 	color := isColor(deps)
 
-	choice, err := selectOption(ctx, deps, color, "Client access",
-		[]string{"Both", "CLI only", "MCP only", "Neither"}, clientAccessBoth)
+	choice, err := clientAccessFromConfig(cfg)
+	if err != nil {
+		tw.AppendRow("Client access", err.Error(), "✗ invalid", false)
+		return nil
+	}
+	if choice < 0 {
+		choice, err = selectOption(ctx, deps, color, "Client access",
+			[]string{"Both", "CLI only", "MCP only", "Neither"}, clientAccessBoth)
+	}
 	if err != nil {
 		if errors.Is(err, ErrInterrupted) {
 			return ErrInterrupted
@@ -145,7 +158,11 @@ func runClientAccessOffer(ctx context.Context, cfg Config, deps Deps, tw *tableW
 	stored := false
 	if freshToken && strings.TrimSpace(token) != "" {
 		if err := storeUplinkToken(ctx, deps, token); err != nil {
-			tw.AppendRow("Bearer token", err.Error(), "⚠ manual", false)
+			// Deliberately not the error: the secret store takes the token as
+			// an argument, so a failure from it quotes the command, and the
+			// command contains the credential. The instruction printed below
+			// says what to do instead.
+			tw.AppendRow("Bearer token", "could not be saved", "⚠ manual", false)
 		} else {
 			tw.AppendRow("Bearer token", "saved to your secret store", "✓ stored", false)
 			stored = true
@@ -185,7 +202,7 @@ func runClientAccessOffer(ctx context.Context, cfg Config, deps Deps, tw *tableW
 			// is written as the record, and each client the operator picked is
 			// then configured where that client actually looks.
 			tw.AppendRow("MCP access", displayPath(path), "✓ written", false)
-			clients, chooseErr := chooseMCPClients(ctx, deps, color, detectMCPClients(deps))
+			clients, chooseErr := chooseMCPClients(ctx, deps, color, detectMCPClients(deps), strings.TrimSpace(cfg.ClientAccess) == "")
 			if errors.Is(chooseErr, ErrInterrupted) {
 				return ErrInterrupted
 			}
@@ -508,4 +525,22 @@ func claudeServerEntry(config []byte) ([]byte, error) {
 		return nil, errors.New("rendered configuration has no oberth server")
 	}
 	return entry, nil
+}
+
+// clientAccessFromConfig turns --client-access into a choice, or -1 to ask.
+func clientAccessFromConfig(cfg Config) (int, error) {
+	switch strings.ToLower(strings.TrimSpace(cfg.ClientAccess)) {
+	case "":
+		return -1, nil
+	case "both":
+		return clientAccessBoth, nil
+	case "cli":
+		return clientAccessCLI, nil
+	case "mcp":
+		return clientAccessMCP, nil
+	case "none", "neither":
+		return clientAccessNeither, nil
+	default:
+		return -1, fmt.Errorf("--client-access %q is not both, cli, mcp or none", cfg.ClientAccess)
+	}
 }
