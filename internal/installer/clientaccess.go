@@ -271,9 +271,20 @@ func serverCACertificate(ctx context.Context, cfg Config, deps Deps) ([]byte, er
 	if err != nil {
 		return nil, err
 	}
+	// ca.crt first: it is the signer, and the signer is what a client has to
+	// trust. tls.crt is the leaf, and handing a client the leaf as its trust
+	// anchor fails with "unable to verify the first certificate" -- the client
+	// is asked to trust a certificate whose issuer it still does not have.
+	//
+	// tls.crt remains the fallback for a Secret written before the chart kept
+	// the signer, and for one supplied through tls.existingSecret where the
+	// certificate may be its own root.
+	if authority, ok := secret.Data["ca.crt"]; ok && len(authority) > 0 {
+		return authority, nil
+	}
 	certificate, ok := secret.Data["tls.crt"]
 	if !ok || len(certificate) == 0 {
-		return nil, errors.New("oberth-tls carries no tls.crt")
+		return nil, errors.New("oberth-tls carries neither ca.crt nor tls.crt")
 	}
 	return certificate, nil
 }
@@ -292,8 +303,17 @@ func clientReachableHost(deps Deps) string {
 func tokenCommandForHost() (read string, store string) {
 	switch runtime.GOOS {
 	case "darwin":
-		return "security find-generic-password -s oberth-token -w",
-			`security add-generic-password -s oberth-token -a "$USER" -w`
+		// Both halves name the account.
+		//
+		// The store command already did and the read did not, so a Keychain
+		// holding more than one item under this service -- which is what
+		// repeated installs produce -- answered the read with whichever item
+		// came first. That is a token from an earlier deployment, so the
+		// request fails with 401, and an MCP client reads a 401 as "this
+		// server wants OAuth" and reports a registration failure instead of a
+		// bad credential.
+		return `security find-generic-password -s oberth-token -a "$USER" -w`,
+			`security add-generic-password -s oberth-token -a "$USER" -U -w`
 	default:
 		if _, err := exec.LookPath("secret-tool"); err == nil {
 			return "secret-tool lookup service oberth",
