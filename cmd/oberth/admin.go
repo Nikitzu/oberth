@@ -158,6 +158,7 @@ func runUpstreamWithDependencies(ctx context.Context, arguments []string, output
 	noWait := flags.Bool("no-wait", false, "print the deploy key and exit immediately instead of waiting for its registration")
 	autoYes := flags.Bool("yes", false, "auto-accept key generation and host-key prompts")
 	dedicatedKey := flags.Bool("dedicated-key", false, "provision a dedicated SSH identity for this upstream instead of the shared key (stored as an additional data key of the upstream-key Secret)")
+	noKey := flags.Bool("no-key", false, "record the upstream without an SSH identity: no key is minted and no forge authentication is attempted (for a deployment that never pushes, where the base URL exists only to build compare links)")
 	expectedHostFingerprint := flags.String("expected-host-fingerprint", "", "expected SSH host-key fingerprint (SHA256:...) for unattended bootstrap of unknown forges")
 	if err := flags.Parse(arguments[1:]); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -192,7 +193,18 @@ func runUpstreamWithDependencies(ctx context.Context, arguments []string, output
 	if *dedicatedKey && kind == "ssh" {
 		keyName = app.UpstreamKeyDataKey(filepath.Base(*upstreamKey), name)
 	}
-	if kind == "ssh" {
+	if *noKey && *dedicatedKey {
+		return fmt.Errorf("%w: --no-key and --dedicated-key are opposites", errUsage)
+	}
+	// --no-key records the base URL and stops.
+	//
+	// A deployment running the advisory gate never pushes: a green run is a
+	// verdict, the developer pushes their own branch with their own
+	// credentials, and the dashboard's compare link is a URL opened in their
+	// browser. The base URL is needed to build that link and for nothing else,
+	// so minting an identity and probing the forge asks an operator to arrange
+	// a deploy key for a connection this server will never open.
+	if kind == "ssh" && !*noKey {
 		privateKeyPath, privateDataKey, keyFieldManager := *upstreamKey, filepath.Base(*upstreamKey), ""
 		if keyName != "" {
 			// The dedicated identity lives beside the shared one: the fast

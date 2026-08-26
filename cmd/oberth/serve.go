@@ -689,6 +689,7 @@ func serve(ctx context.Context, options serveOptions, logger *log.Logger) (resul
 		health.SecretStoreCache = &app.SecretStoreProbeSnapshot{}
 	}
 	externallyAnchored := tsaClient != nil || rekorWitness != nil
+	health.PublishOnGreen = options.publishOnGreen
 	health.AuditMode = "local"
 	if externallyAnchored {
 		health.AuditMode = "anchored"

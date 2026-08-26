@@ -198,9 +198,21 @@ func runOnboarding(ctx context.Context, cfg Config, deps Deps, tw *tableWriter, 
 	}
 
 	// --- Deploy key ---
-	keyProvided, err := promptDeployKey(ctx, cfg, deps, tw)
-	if err != nil {
-		return err
+	//
+	// Only asked when this deployment will actually reach the forge. Under the
+	// advisory gate it never does: the developer pushes their own branch with
+	// their own credentials and the dashboard hands them a compare link, so a
+	// deploy key would be a credential arranged for a connection that is never
+	// opened. That was the whole point of running CI locally.
+	keyProvided := false
+	if deploymentPublishes(ctx, cfg, deps) {
+		provided, keyErr := promptDeployKey(ctx, cfg, deps, tw)
+		if keyErr != nil {
+			return keyErr
+		}
+		keyProvided = provided
+	} else {
+		tw.AppendRow("Deploy key", "not needed (advisory gate)", "— skipped", false)
 	}
 
 	// --- Register upstream (quiet, with result as table row) ---
@@ -559,6 +571,11 @@ func registerUpstreamQuiet(ctx context.Context, cfg Config, deps Deps, name, bas
 		run = DefaultRunCommand
 	}
 	addArgs := []string{"upstream", "add", "--yes", "--no-wait", name, baseURL}
+	if !deploymentPublishes(ctx, cfg, deps) {
+		// Nothing on this deployment pushes to the forge, so there is no
+		// connection to authenticate and no key to arrange.
+		addArgs = []string{"upstream", "add", "--yes", "--no-key", name, baseURL}
+	}
 	out, err := run(ctx, nil, "kubectl", kubectlOberthArgs(cfg, deps, false, addArgs...)...)
 	pubKey := extractDeployPublicKey(string(out))
 	if err != nil {

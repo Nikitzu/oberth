@@ -50,6 +50,10 @@ type Health struct {
 	// an external witness or timestamp authority is configured, "local" when
 	// only the SQLite hash chain runs.
 	AuditMode string
+
+	// PublishOnGreen mirrors the server's --publish-on-green, so the dashboard
+	// can tell a compare link from a push.
+	PublishOnGreen bool
 	// AuditChain optionally reports the local hash-chain head and the latest
 	// externally anchored checkpoint.
 	AuditChain func(context.Context) (AuditChainStatus, error)
@@ -92,18 +96,23 @@ type AuditChainStatus struct {
 }
 
 type HealthStatus struct {
-	Database     string             `json:"database"`
-	Upstreams    int                `json:"upstreams"`
-	Repositories int                `json:"repositories"`
-	VCS          string             `json:"vcs"`
-	Cluster      string             `json:"cluster"`
-	Audit        string             `json:"audit"`
-	AuditMode    string             `json:"audit_mode,omitempty"`
-	Version      string             `json:"version,omitempty"`
-	UpstreamInfo []UpstreamStatus   `json:"upstream_info,omitempty"`
-	SSHIdentity  string             `json:"ssh_identity,omitempty"`
-	SecretStore  *SecretStoreStatus `json:"secret_store,omitempty"`
-	AuditChain   *AuditChainStatus  `json:"audit_chain,omitempty"`
+	Database     string `json:"database"`
+	Upstreams    int    `json:"upstreams"`
+	Repositories int    `json:"repositories"`
+	VCS          string `json:"vcs"`
+	Cluster      string `json:"cluster"`
+	Audit        string `json:"audit"`
+	AuditMode    string `json:"audit_mode,omitempty"`
+	Version      string `json:"version,omitempty"`
+	// PublishOnGreen reports whether a green branch run is force-synced to the
+	// forge. False is the advisory gate: the verdict is recorded and nothing
+	// leaves the machine, so the dashboard's compare link is a link and not a
+	// push, and this server holds no forge credential to push with.
+	PublishOnGreen bool               `json:"publish_on_green"`
+	UpstreamInfo   []UpstreamStatus   `json:"upstream_info,omitempty"`
+	SSHIdentity    string             `json:"ssh_identity,omitempty"`
+	SecretStore    *SecretStoreStatus `json:"secret_store,omitempty"`
+	AuditChain     *AuditChainStatus  `json:"audit_chain,omitempty"`
 }
 
 // Ready gates the readiness probe. Like a vault before initialization, a
@@ -150,7 +159,7 @@ func requiresSSHIdentity(upstreams []model.Upstream) bool {
 }
 
 func (health Health) Status(ctx context.Context) (any, error) {
-	status := HealthStatus{Database: "unavailable", VCS: "unavailable", Cluster: "unavailable", Audit: "unavailable", AuditMode: health.AuditMode, Version: health.Version, SecretStore: health.SecretStore}
+	status := HealthStatus{Database: "unavailable", VCS: "unavailable", Cluster: "unavailable", Audit: "unavailable", AuditMode: health.AuditMode, Version: health.Version, PublishOnGreen: health.PublishOnGreen, SecretStore: health.SecretStore}
 	if health.Store == nil {
 		return status, nil
 	}
