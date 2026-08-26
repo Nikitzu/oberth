@@ -1462,9 +1462,45 @@ func (service *API) waitDuration(seconds int) (time.Duration, error) {
 	return requested, nil
 }
 
+// canonicalAccessRepo resolves any accepted repository spelling (bare,
+// org/repo, upstream/org/repo) onto the qualified persisted grant key the
+// v12 migration and the reconciler converge on. An ambiguous bare spelling
+// is refused — it names neither same-name repository. An unregistered or
+// syntactically unresolvable spelling is returned verbatim: grants for
+// unregistered repositories are stored and listed as spelled, and stay
+// inert until the repository registers (#245 BLOCKER B, #256).
+func (service *API) canonicalAccessRepo(ctx context.Context, repo string) (string, error) {
+	if service.repositories == nil {
+		return repo, nil
+	}
+	resolved, err := service.repositories.RepositoryByName(ctx, repo)
+	if err != nil {
+		if errors.Is(err, store.ErrAmbiguous) {
+			return "", fmt.Errorf("%w: %w", ErrInvalidInput, err)
+		}
+		// Unregistered or unparseable spellings keep their verbatim form.
+		return repo, nil
+	}
+	qualified, err := service.secretAccess.QualifiedRepoName(ctx, resolved.ID)
+	if err != nil {
+		return repo, nil
+	}
+	return qualified, nil
+}
+
 func (service *API) accessList(ctx context.Context, repo string, includeRevoked bool) (api.AccessListResponse, error) {
 	if service.secretAccess == nil {
 		return api.AccessListResponse{}, fmt.Errorf("%w: secret access", ErrUnavailable)
+	}
+	// A non-empty filter accepts every repository spelling; persisted rows
+	// key on the qualified form, so a bare filter passed through verbatim
+	// would string-match nothing and misreport an empty grant set (#256).
+	if strings.TrimSpace(repo) != "" {
+		canonical, err := service.canonicalAccessRepo(ctx, repo)
+		if err != nil {
+			return api.AccessListResponse{}, err
+		}
+		repo = canonical
 	}
 	grants, err := service.secretAccess.SecretAccessList(ctx, repo, includeRevoked)
 	if err != nil {
@@ -1489,19 +1525,11 @@ func (service *API) accessAllow(ctx context.Context, actor api.Actor, repo, step
 	}
 	// Resolve the repo name to its qualified form so same-name repos under
 	// different upstreams cannot alias each other's grants (#245 BLOCKER B).
-	// RepositoryByName rejects ambiguous bare names. If the repo is not
-	// registered yet (first push hasn't happened), the bare name is stored
-	// as-is; grants for non-existent repos are inert.
-	if service.repositories != nil {
-		resolved, resolveErr := service.repositories.RepositoryByName(ctx, repo)
-		if resolveErr == nil {
-			if qualified, qualErr := service.secretAccess.QualifiedRepoName(ctx, resolved.ID); qualErr == nil {
-				repo = qualified
-			}
-		} else if errors.Is(resolveErr, store.ErrAmbiguous) {
-			return api.AccessGrantResponse{}, fmt.Errorf("%w: %w", ErrInvalidInput, resolveErr)
-		}
+	canonical, err := service.canonicalAccessRepo(ctx, repo)
+	if err != nil {
+		return api.AccessGrantResponse{}, err
 	}
+	repo = canonical
 	// Validate the entry before touching the ConfigMap. Without this check a
 	// malformed entry (glob characters in repo/secret, or a non-wildcard step)
 	// would be written to the ConfigMap, and the next reconciliation would
@@ -1545,16 +1573,11 @@ func (service *API) accessRevoke(ctx context.Context, actor api.Actor, repo, ste
 	}
 	// Resolve the repo name to its qualified form for identity-safe
 	// lookup (#245 BLOCKER B).
-	if service.repositories != nil {
-		resolved, resolveErr := service.repositories.RepositoryByName(ctx, repo)
-		if resolveErr == nil {
-			if qualified, qualErr := service.secretAccess.QualifiedRepoName(ctx, resolved.ID); qualErr == nil {
-				repo = qualified
-			}
-		} else if errors.Is(resolveErr, store.ErrAmbiguous) {
-			return api.AccessGrantResponse{}, fmt.Errorf("%w: %w", ErrInvalidInput, resolveErr)
-		}
+	canonical, err := service.canonicalAccessRepo(ctx, repo)
+	if err != nil {
+		return api.AccessGrantResponse{}, err
 	}
+	repo = canonical
 	if service.secretAccessReconciler != nil {
 		// Read the grant before removal so we can return it.
 		grants, err := service.secretAccess.SecretAccessList(ctx, repo, false)
