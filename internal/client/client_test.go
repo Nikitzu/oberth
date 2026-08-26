@@ -13,6 +13,7 @@ import (
 	"errors"
 	"io"
 	"math/big"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -610,5 +611,44 @@ func TestNewErrorsWhenDefaultTransportCannotCarryTLS(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "Transport") {
 		t.Fatalf("the error does not name the transport problem: %v", err)
+	}
+}
+
+// --- #242: transport error classification preserves detail ---
+
+func TestTransportErrorPreservesConnectionRefused(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("OBERTH_BASE_URL", "https://127.0.0.1:1")
+	t.Setenv("OBERTH_TOKEN", secret)
+	api, err := New(t.Context(), FromEnv())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out struct{}
+	err = api.Get(context.Background(), "/api/runs", nil, &out)
+	if err == nil {
+		t.Fatal("a connection to port 1 succeeded")
+	}
+	if !strings.Contains(err.Error(), "connection refused") {
+		t.Fatalf("transport error lost the connection-refused detail: %v", err)
+	}
+	if strings.Contains(err.Error(), secret) {
+		t.Fatalf("transport error leaked the token: %v", err)
+	}
+}
+
+func TestClassifyTransportPreservesTimeoutDetail(t *testing.T) {
+	got := classifyTransport("/api/runs", context.DeadlineExceeded)
+	if !strings.Contains(got.Error(), "timed out") {
+		t.Fatalf("timeout detail lost: %v", got)
+	}
+}
+
+func TestClassifyTransportPreservesDNSDetail(t *testing.T) {
+	dnsErr := &net.DNSError{Err: "no such host", Name: "missing.invalid", IsNotFound: true}
+	inner := &net.OpError{Op: "dial", Net: "tcp", Err: dnsErr}
+	got := classifyTransport("/api/runs", inner)
+	if !strings.Contains(got.Error(), "resolve") || !strings.Contains(got.Error(), "missing.invalid") {
+		t.Fatalf("DNS detail lost: %v", got)
 	}
 }

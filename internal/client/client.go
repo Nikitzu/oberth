@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -248,7 +249,33 @@ func classifyTransport(path string, err error) error {
 	if strings.Contains(err.Error(), "x509") || strings.Contains(err.Error(), "certificate") {
 		return fmt.Errorf("client: the server's certificate could not be verified for %s", path)
 	}
+	// Preserve meaningful transport-level detail rather than collapsing
+	// every non-TLS failure to "cannot reach the server."
+	var dnsErr *net.DNSError
+	if errors.As(err, &dnsErr) {
+		return fmt.Errorf("client: cannot resolve %q for %s: %s", dnsErr.Name, path, dnsErr.Err)
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return fmt.Errorf("client: request timed out for %s", path)
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return fmt.Errorf("client: connection timed out for %s", path)
+	}
+	if detail := transportDetail(err); detail != "" {
+		return fmt.Errorf("client: %s for %s", detail, path)
+	}
 	return fmt.Errorf("client: cannot reach the server for %s", path)
+}
+
+// transportDetail extracts a short reason from a *net.OpError without
+// exposing the full URL or request metadata.
+func transportDetail(err error) string {
+	var opErr *net.OpError
+	if !errors.As(err, &opErr) || opErr.Err == nil {
+		return ""
+	}
+	return opErr.Err.Error()
 }
 
 func certificateNames(certificate *x509.Certificate) []string {

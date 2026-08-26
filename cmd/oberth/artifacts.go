@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"os"
 
 	"github.com/oberthci/oberth/internal/artifacts"
 	"github.com/oberthci/oberth/internal/client"
@@ -27,8 +28,19 @@ func runArtifacts(ctx context.Context, arguments []string, output io.Writer) err
 	if len(rest) == 0 || len(rest) > 2 {
 		return fmt.Errorf("%w: artifacts <run-id> [name]", errUsage)
 	}
-	if config := client.FromEnv(); config.Configured() {
+	// An explicit --data-root forces local mode even when OBERTH_BASE_URL
+	// is set, so the flag is never silently ignored.
+	localForced := false
+	flags.Visit(func(f *flag.Flag) {
+		if f.Name == "data-root" {
+			localForced = true
+		}
+	})
+	if config := client.FromEnv(); config.Configured() && !localForced {
 		return remoteArtifacts(ctx, config, rest, output)
+	}
+	if localForced && client.FromEnv().Configured() {
+		fmt.Fprintf(os.Stderr, "note: --data-root overrides OBERTH_BASE_URL; reading local store\n")
 	}
 	reportMode("local store")
 	store, err := artifacts.Open(*dataRoot + "/artifacts")
