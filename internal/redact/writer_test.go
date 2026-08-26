@@ -214,3 +214,66 @@ func TestWriterChainedOverlapBridge(t *testing.T) {
 		t.Fatalf("chained-overlap bridge: expected 0***1, got %q", got)
 	}
 }
+
+func TestWriterRedactsShortValues(t *testing.T) {
+	// Values shorter than 8 bytes must still be redacted when passed as
+	// exact secrets. The minFragmentLen threshold applies only to
+	// line-split fragments of multiline values, not to full values.
+	for _, tc := range []struct {
+		name   string
+		secret string
+		input  string
+		want   string
+	}{
+		{"5-byte", "abc12", "token=abc12 done", "token=*** done"},
+		{"3-byte", "key", "the key is key!", "the *** is ***!"},
+		{"1-byte", "X", "AXB", "A***B"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var output bytes.Buffer
+			writer := NewWriter(&output, [][]byte{[]byte(tc.secret)})
+			if _, err := writer.Write([]byte(tc.input)); err != nil {
+				t.Fatal(err)
+			}
+			if err := writer.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if got := output.String(); got != tc.want {
+				t.Fatalf("output = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestWriterShortLineFragmentNotRegistered(t *testing.T) {
+	// A multiline secret where one line is very short (3 bytes "v=1").
+	// The full value must be redacted, but the short line fragment alone
+	// should NOT cause false-positive redaction of unrelated occurrences.
+	multiline := []byte("long-enough-key=abc\nv=1\n")
+	var output bytes.Buffer
+	writer := NewWriter(&output, [][]byte{multiline})
+
+	// The full multiline value must be redacted.
+	if _, err := writer.Write(multiline); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if got := output.String(); !strings.Contains(got, "***") {
+		t.Fatalf("full multiline value was not redacted: %q", got)
+	}
+
+	// But the short fragment "v=1" alone in unrelated text should pass through.
+	var output2 bytes.Buffer
+	writer2 := NewWriter(&output2, [][]byte{multiline})
+	if _, err := writer2.Write([]byte("config: v=1 is fine")); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer2.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if got := output2.String(); got != "config: v=1 is fine" {
+		t.Fatalf("short line fragment caused false-positive redaction: %q", got)
+	}
+}

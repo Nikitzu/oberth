@@ -16,6 +16,13 @@ var ErrClosed = errors.New("redacting writer is closed")
 // Patterns shorter than this risk false-positive redactions.
 const minEncodedLen = 16
 
+// minFragmentLen is the minimum byte length a line-split fragment of a
+// multiline secret must reach before it is registered as a separate
+// redaction pattern. Shorter fragments from multiline secrets with very
+// short individual lines risk false-positive masking of ordinary build
+// output. The full original value is always registered regardless of length.
+const minFragmentLen = 8
+
 type Writer struct {
 	destination io.Writer
 	secrets     [][]byte
@@ -49,7 +56,12 @@ func NewWriter(destination io.Writer, values [][]byte) *Writer {
 		addRaw(bytes.TrimRight(value, "\r\n"))
 		normalized := bytes.ReplaceAll(value, []byte("\r\n"), []byte("\n"))
 		for _, line := range bytes.Split(normalized, []byte("\n")) {
-			addRaw(line)
+			// Individual line fragments from multiline secrets must meet
+			// the minimum length to avoid false-positive masking of short
+			// common strings. The full value is always registered above.
+			if len(line) >= minFragmentLen {
+				addRaw(line)
+			}
 		}
 	}
 
