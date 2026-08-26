@@ -67,9 +67,15 @@ func TestBuildUsesPerRepoIdentityForRelease(t *testing.T) {
 	}
 }
 
-// TestBuildUsesPerRepoIdentityForCI proves that a CI run with a per-repo
-// identity also uses it instead of the shared ci-secrets SA.
-func TestBuildUsesPerRepoIdentityForCI(t *testing.T) {
+// TestBuildCIKeepsSharedGrantFreeIdentityDespitePerRepo is the #200 trust-
+// tier regression test for per-repo identities: a per-repo identity's Vault
+// policy carries the repo's approval-table grants (release credentials), so
+// a BRANCH (CI) run must never bind to it — repository-authored code runs in
+// that pod, and its reachable policy would include release secrets. CI runs
+// keep the shared ci-secrets identity, whose policy is structurally
+// grant-free, and the shared CI Vault role, even when the repo has a
+// per-repo identity configured.
+func TestBuildCIKeepsSharedGrantFreeIdentityDespitePerRepo(t *testing.T) {
 	t.Parallel()
 	cfg := testConfigWithPerRepo()
 	path := "oberth/upstream/oberthci/oberth/test-secret"
@@ -83,8 +89,13 @@ func TestBuildUsesPerRepoIdentityForCI(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if wf.Spec.ServiceAccountName != testPerRepoSA {
-		t.Fatalf("CI ServiceAccount = %q, want per-repo %q", wf.Spec.ServiceAccountName, testPerRepoSA)
+	if wf.Spec.ServiceAccountName != testCISecretsAcct {
+		t.Fatalf("CI ServiceAccount = %q, want shared grant-free %q (a per-repo identity would put release grants in a branch pod's reachable policy)",
+			wf.Spec.ServiceAccountName, testCISecretsAcct)
+	}
+	env := environmentOf(t, wf, "main")
+	if env["OBERTH_VAULT_ROLE"] != testVaultCISecretsRole {
+		t.Fatalf("CI OBERTH_VAULT_ROLE = %q, want shared %q", env["OBERTH_VAULT_ROLE"], testVaultCISecretsRole)
 	}
 }
 

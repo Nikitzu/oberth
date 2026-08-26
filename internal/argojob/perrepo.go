@@ -1,9 +1,11 @@
 package argojob
 
 // Per-repo identity selection: when a repository has a per-repo Vault
-// identity (SA + policy + role), the submission path selects it instead
-// of the shared tier-wide identity. This scopes each repo's Vault access
-// to its own namespace and its own approved grants.
+// identity (SA + policy + role), the RELEASE-trigger submission path
+// selects it instead of the shared credentialed identity, scoping the
+// repo's Vault access to its own namespace and its own approved grants.
+// CI (branch) triggers always keep the shared grant-free ci-secrets
+// identity — see identityForWithRepo for the #200 boundary this preserves.
 
 import (
 	"github.com/oberthci/oberth/pkg/argoworkflow"
@@ -63,11 +65,19 @@ func (config Config) vaultRoleForPerRepo(upstreamName, org, repo string) string 
 	return perRepo.ServiceAccountName
 }
 
-// identityForWithRepo selects the ServiceAccount for a run, checking for
-// per-repo identities first. Per-repo identities are used for both CI and
-// release triggers when the repo has declared secret paths and a per-repo
-// identity exists. Falls back to the shared tier identity when no per-repo
-// identity is configured.
+// identityForWithRepo selects the ServiceAccount for a run, consulting
+// per-repo identities for the RELEASE trigger only.
+//
+// The tier restriction is the trust boundary, not an implementation detail:
+// a per-repo identity's Vault policy carries the repo's approval-table
+// grants — release credentials (issue #200). The shared model keeps branch
+// (CI) runs on the ci-secrets identity, whose policy is structurally
+// grant-free, so repository-authored code in a branch push can never reach
+// release secrets no matter what it declares. Selecting the per-repo
+// identity for a CI run would put those grants inside the pod's reachable
+// policy and collapse exactly that boundary. Until a separate grant-free
+// CI-tier per-repo identity family exists (tier-split, deferred from #246),
+// CI triggers always use the shared ci-secrets identity.
 //
 // For fragment runs, the caller must pass the HOST repo name (the repo that
 // declared the pipeline), not the fragment source's repo. This ensures the
@@ -79,20 +89,28 @@ func (config Config) identityForWithRepo(trigger periapsis.Trigger, hasSecretPat
 		return config.identityFor(trigger, false)
 	}
 
-	// Try per-repo identity first.
-	if identity, ok := config.identityForPerRepo(upstreamName, org, repo); ok {
-		return identity, nil
+	// Per-repo identities apply to the release tier only (see above).
+	if trigger == periapsis.TriggerRelease {
+		if identity, ok := config.identityForPerRepo(upstreamName, org, repo); ok {
+			return identity, nil
+		}
 	}
 
 	// Fall back to shared tier identity.
 	return config.identityFor(trigger, true)
 }
 
-// vaultRoleForWithRepo selects the Vault role, checking for per-repo roles
-// first. Falls back to the shared tier role.
+// vaultRoleForWithRepo selects the Vault role, consulting per-repo roles for
+// the RELEASE trigger only — the same tier restriction, for the same #200
+// reason, as identityForWithRepo. The two selections must stay in lockstep:
+// a shared-SA pod told to log in with a per-repo role would merely fail at
+// Vault (bound_service_account_names mismatch), but the admission record
+// would misstate the run's reachable credentials.
 func (config Config) vaultRoleForWithRepo(trigger periapsis.Trigger, upstreamName, org, repo string) string {
-	if role := config.vaultRoleForPerRepo(upstreamName, org, repo); role != "" {
-		return role
+	if trigger == periapsis.TriggerRelease {
+		if role := config.vaultRoleForPerRepo(upstreamName, org, repo); role != "" {
+			return role
+		}
 	}
 	return config.vaultRoleFor(trigger)
 }
