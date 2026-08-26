@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"io"
 	"os"
 	"path/filepath"
@@ -485,5 +486,78 @@ func TestMaterializeNonSecretOutputPassesThrough(t *testing.T) {
 	}
 	if got := strings.TrimSpace(stderr.String()); got != "nothing secret here" {
 		t.Errorf("stderr = %q, want %q", got, "nothing secret here")
+	}
+}
+
+// --- #248: structured fetch marker tests ---
+
+func TestEmitSecretFetchMarkerOmitsValues(t *testing.T) {
+	var out bytes.Buffer
+	fetched := map[string]map[string][]byte{
+		"oberth/data/release/cosign-secret": {
+			"COSIGN_KEY":      []byte("SUPER-SECRET-PEM-BYTES"),
+			"COSIGN_PASSWORD": []byte("hunter2"),
+		},
+		"oberth/data/release/r2-upload-token": {
+			"R2_UPLOAD_TOKEN": []byte("tok_value_9"),
+		},
+	}
+	paths := []string{
+		"oberth/data/release/cosign-secret",
+		"oberth/data/release/r2-upload-token",
+	}
+
+	emitSecretFetchMarker(&out, paths, fetched)
+
+	line := out.String()
+	if !strings.HasPrefix(line, "[oberth-secret-fetch] ") {
+		t.Fatalf("marker prefix missing, got: %q", line)
+	}
+	for _, secret := range []string{"SUPER-SECRET-PEM-BYTES", "hunter2", "tok_value_9"} {
+		if strings.Contains(line, secret) {
+			t.Fatalf("marker leaked a secret value %q: %q", secret, line)
+		}
+	}
+
+	var marker struct {
+		Paths []string            `json:"paths"`
+		Keys  map[string][]string `json:"keys"`
+		OK    bool                `json:"ok"`
+	}
+	payload := strings.TrimPrefix(strings.TrimSpace(line), "[oberth-secret-fetch] ")
+	if err := json.Unmarshal([]byte(payload), &marker); err != nil {
+		t.Fatalf("marker is not valid JSON: %v (%q)", err, payload)
+	}
+	if !marker.OK {
+		t.Fatal("marker ok = false, want true")
+	}
+	if len(marker.Paths) != 2 {
+		t.Fatalf("marker paths = %v, want both declared paths", marker.Paths)
+	}
+	wantKeys := map[string][]string{
+		"oberth/data/release/cosign-secret":   {"COSIGN_KEY", "COSIGN_PASSWORD"},
+		"oberth/data/release/r2-upload-token": {"R2_UPLOAD_TOKEN"},
+	}
+	for path, want := range wantKeys {
+		got := marker.Keys[path]
+		if len(got) != len(want) {
+			t.Fatalf("marker keys[%s] = %v, want %v", path, got, want)
+		}
+		for i := range want {
+			if got[i] != want[i] {
+				t.Fatalf("marker keys[%s] = %v, want sorted %v", path, got, want)
+			}
+		}
+	}
+}
+
+func TestEmitSecretFetchMarkerEmptyFetch(t *testing.T) {
+	var out bytes.Buffer
+	emitSecretFetchMarker(&out, nil, nil)
+	line := strings.TrimSpace(out.String())
+	payload := strings.TrimPrefix(line, "[oberth-secret-fetch] ")
+	var marker map[string]any
+	if err := json.Unmarshal([]byte(payload), &marker); err != nil {
+		t.Fatalf("empty-fetch marker is not valid JSON: %v (%q)", err, line)
 	}
 }

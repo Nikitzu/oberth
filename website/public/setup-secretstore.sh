@@ -610,7 +610,10 @@ fi
 # requires no external service. Enabling the audit device is safe: OpenBao
 # halts requests when ALL audit devices fail to log, so a single file device
 # blocks on write failure rather than silently dropping records.
-AUDIT_PATH="/vault/audit/audit.log"
+# /openbao/data is the chart's PersistentVolumeClaim mount; /openbao/logs and
+# /openbao/file are image-declared volumes that containerd backs with
+# container-lifetime storage, so a trail there would vanish on pod recreation.
+AUDIT_PATH="/openbao/data/audit.log"
 AUDIT_ENABLED="$("$CLI" audit list -format=json 2>/dev/null || true)"
 if printf '%s' "$AUDIT_ENABLED" | grep -q '"type":"file"'; then
   note "file audit device already enabled — keeping it"

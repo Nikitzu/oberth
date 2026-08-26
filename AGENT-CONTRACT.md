@@ -528,8 +528,9 @@ implementation detail disagree.
   three signals: the step exit code (`oberth secretstore exec` exits non-zero
   on any store error), a structured `oberth-secret-fetch` JSON marker emitted
   by `secretstore exec` to stderr (captured in the step log), and — when
-  enabled — the OpenBao file audit device (`setup-secretstore.sh` enables it at
-  `/vault/audit/audit.log`). Fetched values are redacted in-Pod by the oberth
+  enabled — the OpenBao file audit device (`setup-secretstore.sh` enables it
+  at `/openbao/data/audit.log`, on the store's persistent volume so the trail
+  survives pod recreation). Fetched values are redacted in-Pod by the oberth
   credential chain (`oberth secretstore exec` or `materialize`), which wraps
   each credentialed step's stdout and stderr with redact.NewWriter.
 - Every push, sync, promotion, and issue mutation is attributed to the acting

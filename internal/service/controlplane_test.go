@@ -3722,3 +3722,46 @@ func TestRepoRemoveSurfacesCacheCleanupFailure(t *testing.T) {
 		t.Fatalf("cache_warning = %q, want the cleanup failure surfaced", resultMap["cache_warning"])
 	}
 }
+
+func TestAccessRevokeResponseCarriesPolicySyncWarning(t *testing.T) {
+	t.Parallel()
+	fixture := newControlFixture(t)
+	secretStore := &stubSecretAccessStore{
+		grants: []store.SecretAccessGrant{
+			{ID: 1, Repo: "terraform", Step: "*", Secret: "terraform/credentials", ApprovedBy: "admin@host"},
+		},
+	}
+	service, err := NewAPI(APIConfig{
+		Runs: fixture.store, History: fixture.store, Repositories: fixture.store,
+		Issues: fixture.store, Promotions: fixture.store, PromotionRuns: fixture.store,
+		Enqueues: fixture.scheduler, Git: fixture.git, Refs: fixture.refs,
+		Logs: fixture.logs, Auditor: fixture.store,
+		Signals: fixture.signals, MaximumWait: 50 * time.Millisecond,
+		PromotionWorkspaceRoot: filepath.Join(fixture.root, "promotion-work"),
+		SecretAccess:           secretStore,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	admin := api.Actor{Identity: "admin@host", Fingerprint: "SHA256:admin", Admin: true}
+	result, err := service.CallTool(context.Background(), admin, "access_revoke",
+		json.RawMessage(`{"repo":"terraform","step":"*","secret":"terraform/credentials"}`))
+	if err != nil {
+		t.Fatalf("access_revoke error = %v", err)
+	}
+
+	// The revocation blocks new Oberth admissions immediately, but the Vault
+	// credentialed policy retains the path until an external re-sync. The
+	// response must say so, or the operator believes the path is fully closed.
+	response, ok := result.(api.AccessGrantResponse)
+	if !ok {
+		t.Fatalf("access_revoke result type = %T, want api.AccessGrantResponse", result)
+	}
+	if response.Warning == "" {
+		t.Fatal("access_revoke response carries no Vault policy re-sync warning")
+	}
+	if !strings.Contains(response.Warning, "install --install-secretstore --upgrade") {
+		t.Fatalf("warning does not name the re-sync command: %q", response.Warning)
+	}
+}
