@@ -170,6 +170,7 @@ func runClientAccessOffer(ctx context.Context, cfg Config, deps Deps, tw *tableW
 	}
 
 	cliNote := ""
+	var trustNotes []string
 	if choice == clientAccessBoth || choice == clientAccessCLI {
 		path := filepath.Join(root, "env")
 		if err := atomicWriteFile(path, []byte(renderClientEnv(baseURL, caPath, tokenCommand)), 0600); err != nil {
@@ -213,6 +214,16 @@ func runClientAccessOffer(ctx context.Context, cfg Config, deps Deps, tw *tableW
 					continue
 				}
 				tw.AppendRow(client.label, detail, "✓ ready", false)
+				// Configured is not the same as able to connect: the server's
+				// signer is private, and a client that does not trust it fails
+				// the handshake and reports the server as unreachable.
+				trust := clientCATrust(client.id, caPath)
+				if trust.status != "" {
+					tw.AppendRow(client.label+" CA trust", trust.detail, trust.status, false)
+				}
+				if trust.note != "" {
+					trustNotes = append(trustNotes, trust.note)
+				}
 				// An MCP server announces its own tools; a CLI announces
 				// nothing. Oberth's skills are how an agent learns that either
 				// surface exists, so they are installed where this particular
@@ -229,6 +240,7 @@ func runClientAccessOffer(ctx context.Context, cfg Config, deps Deps, tw *tableW
 	if cliNote != "" {
 		_, _ = fmt.Fprint(w, cliNote)
 	}
+	printCATrustNotes(w, trustNotes)
 	printClientAccessNotes(w, root, choice, tokenHint, freshToken && !stored)
 	return nil
 }
@@ -377,6 +389,18 @@ func displayPath(path string) string {
 		return path
 	}
 	return "~" + strings.TrimPrefix(path, home)
+}
+
+// printCATrustNotes says what is left to do for the clients whose trust the
+// installer could not arrange itself.
+func printCATrustNotes(w io.Writer, notes []string) {
+	if len(notes) == 0 {
+		return
+	}
+	_, _ = fmt.Fprint(w, "\nThis deployment's certificate is signed by its own CA, so each client has\nto be told about it:\n\n")
+	for _, note := range notes {
+		_, _ = fmt.Fprintf(w, "  %s\n", note)
+	}
 }
 
 func printClientAccessNotes(w io.Writer, root string, choice int, storeCommand string, freshToken bool) {
