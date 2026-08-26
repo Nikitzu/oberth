@@ -2,12 +2,14 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"syscall"
 
@@ -166,6 +168,12 @@ func runSecretStoreExec(ctx context.Context, arguments []string, standardOut, er
 			}
 		}
 	}
+
+	// Emit a structured oberth-secret-fetch marker to stderr so the server's
+	// step log captures the fetch outcome with the paths and field names but
+	// without any secret values. The marker is written before the child starts,
+	// so a step that crashes after a successful fetch still has the record.
+	emitSecretFetchMarker(errorOut, paths, fetched)
 
 	// Write files: <dir>/<last-path-segment>/<key>
 	// #nosec G703 -- the directory is an operator-set flag on the pipeline step,
@@ -548,6 +556,32 @@ func isMaterializeStoreCredential(name string) bool {
 	return strings.HasPrefix(name, "VAULT_") ||
 		strings.HasPrefix(name, "BAO_") ||
 		strings.HasPrefix(name, "CONSUL_")
+}
+
+// emitSecretFetchMarker writes one JSON marker line to stderr so the server's
+// retained step log captures the fetch outcome. Only paths and field names are
+// included; values are never part of the marker. The marker is best-effort:
+// a write failure does not block the credential chain.
+func emitSecretFetchMarker(w io.Writer, paths []string, fetched map[string]map[string][]byte) {
+	keys := make(map[string][]string, len(fetched))
+	for path, fields := range fetched {
+		names := make([]string, 0, len(fields))
+		for name := range fields {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		keys[path] = names
+	}
+	marker := struct {
+		Paths []string            `json:"paths"`
+		Keys  map[string][]string `json:"keys"`
+		OK    bool                `json:"ok"`
+	}{Paths: paths, Keys: keys, OK: true}
+	payload, err := json.Marshal(marker)
+	if err != nil {
+		return // best-effort
+	}
+	_, _ = fmt.Fprintf(w, "[oberth-secret-fetch] %s\n", payload)
 }
 
 // kvMountName resolves the KV mount holding Oberth's secrets.

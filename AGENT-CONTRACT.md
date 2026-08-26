@@ -520,13 +520,18 @@ implementation detail disagree.
   namespace, so the server's own workspace volume is never the pipeline's. The
   claim is owned by its Workflow and collected with it; unowned claims past a
   grace window are swept.
-- Every secret-store fetch is recorded in the audit chain as an actor-bound
-  intent and outcome (`release.secretstore.fetch.*`) attributed to the uplink
-  that pushed the tag, before and after OpenBao is contacted. No audit chain,
-  no attributable actor, or a failed intent write means no fetch. Fetched
-  values are redacted in-Pod by the oberth credential chain (`oberth
-  secretstore exec` or `materialize`), which wraps each credentialed step's
-  stdout and stderr with redact.NewWriter.
+- Secret-store fetch auditing spans two layers. Fetch INTENT is recorded
+  server-side in the audit chain as a `<trigger>.argo.submit.binding` action
+  attributed to the uplink that pushed the ref, with the declared secret paths
+  included in the binding details; no audit chain, no attributable actor, or a
+  failed intent write means no submission. Fetch OUTCOME is observed through
+  three signals: the step exit code (`oberth secretstore exec` exits non-zero
+  on any store error), a structured `oberth-secret-fetch` JSON marker emitted
+  by `secretstore exec` to stderr (captured in the step log), and — when
+  enabled — the OpenBao file audit device (`setup-secretstore.sh` enables it at
+  `/vault/audit/audit.log`). Fetched values are redacted in-Pod by the oberth
+  credential chain (`oberth secretstore exec` or `materialize`), which wraps
+  each credentialed step's stdout and stderr with redact.NewWriter.
 - Every push, sync, promotion, and issue mutation is attributed to the acting
   uplink in the same durable transaction as the state change where applicable.
 - In-pod upstream/uplink administration has no bootstrap exception: schema,
@@ -626,6 +631,16 @@ implementation detail disagree.
   `oberth-secret-access`; unnamed ConfigMap update, patch, or delete stay
   forbidden so audit-anchor continuity ConfigMaps remain unwritable by the
   server's own identity.
+- Grant revocation is immediately effective for Oberth admission (the sqlite
+  approval table is updated atomically with ConfigMap reconciliation), but the
+  Vault credentialed policy retains the exact-path read entry until a policy
+  re-sync. The server's own identity has no Vault policy-write capability, so
+  `access_revoke` includes an advisory in its response. To complete the
+  revocation at the Vault layer, re-run the installer with the current approval
+  table: `oberth install --install-secretstore --upgrade` (or the equivalent
+  `setup-secretstore.sh` with `--force`). Until re-synced, an already-running
+  credentialed step whose token was obtained before the revocation can still
+  read the path; new runs are blocked by Oberth's own admission gate.
 - Kubernetes access is namespace-scoped, with one documented exception: when
   `secretstore.enabled` is set, the chart may create a `system:auth-delegator`
   ClusterRoleBinding for the Oberth ServiceAccount so OpenBao validates login

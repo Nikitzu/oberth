@@ -22,6 +22,14 @@ import (
 
 const promotionCompensationTimeout = 30 * time.Second
 
+// revokePolicySyncAdvisory is the warning returned by access_revoke to inform
+// the caller that the Vault credentialed policy still has the exact-path grant.
+// The server's own identity has no Vault policy-write capability, so the resync
+// must be triggered externally.
+const revokePolicySyncAdvisory = "Revocation is effective for new Oberth admissions immediately. " +
+	"The Vault credentialed policy still has this path until re-synced: " +
+	"run `oberth install --install-secretstore --upgrade` to remove it from the Vault policy."
+
 type APIConfig struct {
 	Runs                   RunResolver
 	History                RunHistory
@@ -1546,20 +1554,26 @@ func (service *API) accessRevoke(ctx context.Context, actor api.Actor, repo, ste
 		}
 		for _, grant := range revoked {
 			if grant.ID == target.ID && grant.RevokedAt != nil {
-				return wireAccessGrant(grant), nil
+				response := wireAccessGrant(grant)
+				response.Warning = revokePolicySyncAdvisory
+				return response, nil
 			}
 		}
 		// Return the last known state with a synthetic revocation indicator.
 		target.RevokedBy = "configmap"
 		now := time.Now().UTC()
 		target.RevokedAt = &now
-		return wireAccessGrant(*target), nil
+		response := wireAccessGrant(*target)
+		response.Warning = revokePolicySyncAdvisory
+		return response, nil
 	}
 	grant, err := service.secretAccess.Revoke(ctx, repo, step, secret, actor.Identity)
 	if err != nil {
 		return api.AccessGrantResponse{}, err
 	}
-	return wireAccessGrant(grant), nil
+	response := wireAccessGrant(grant)
+	response.Warning = revokePolicySyncAdvisory
+	return response, nil
 }
 
 func (service *API) repoRemove(ctx context.Context, actor api.Actor, repo string) (any, error) {

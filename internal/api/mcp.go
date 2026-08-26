@@ -103,6 +103,7 @@ type AccessGrantResponse struct {
 	ApprovedAt string  `json:"approved_at"`
 	RevokedBy  string  `json:"revoked_by,omitempty"`
 	RevokedAt  *string `json:"revoked_at,omitempty"`
+	Warning    string  `json:"warning,omitempty"`
 }
 
 // AccessListResponse wraps a list of grants.

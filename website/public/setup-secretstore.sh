@@ -602,6 +602,23 @@ if [ "$WRITE_CI_ROLE" = "true" ]; then
     token_max_ttl=30m
 fi
 
+
+# --- 11. audit device (secret-fetch observability) ---------------------------
+# An OpenBao file audit device records every secret read (login, read, revoke)
+# with the caller identity, path, and timestamp. The audit log is written to
+# the OpenBao PVC; the file audit device is the only audit backend that
+# requires no external service. Enabling the audit device is safe: OpenBao
+# halts requests when ALL audit devices fail to log, so a single file device
+# blocks on write failure rather than silently dropping records.
+AUDIT_PATH="/vault/audit/audit.log"
+AUDIT_ENABLED="$("$CLI" audit list -format=json 2>/dev/null || true)"
+if printf '%s' "$AUDIT_ENABLED" | grep -q '"type":"file"'; then
+  note "file audit device already enabled — keeping it"
+else
+  note "enabling file audit device at $AUDIT_PATH"
+  run "$CLI" audit enable file file_path="$AUDIT_PATH"
+fi
+
 # --- summary -----------------------------------------------------------------
 HELM_ADDR="$STORE_ADDR"
 case "$STORE_ADDR" in
