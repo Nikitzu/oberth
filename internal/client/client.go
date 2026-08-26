@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -105,9 +106,25 @@ func New(ctx context.Context, config Config) (*Client, error) {
 	return &Client{
 		base:     base,
 		token:    token,
-		http:     &http.Client{Timeout: requestTimeout, Transport: transport},
-		download: &http.Client{Transport: transport},
+		http:     &http.Client{Timeout: requestTimeout, Transport: transport, CheckRedirect: refuseSchemeDowngrade},
+		download: &http.Client{Transport: transport, CheckRedirect: refuseSchemeDowngrade},
 	}, nil
+}
+
+// refuseSchemeDowngrade rejects any redirect that steps from https down to a
+// non-https scheme before the request is sent. Go's http.Client re-sends the
+// Authorization header on same-host redirects without considering the scheme,
+// so a hostile or misconfigured server could otherwise downgrade-redirect and
+// cause a cleartext bearer-token re-send. It also preserves the standard
+// library's default ten-redirect ceiling, which setting CheckRedirect replaces.
+func refuseSchemeDowngrade(request *http.Request, via []*http.Request) error {
+	if len(via) > 0 && via[len(via)-1].URL.Scheme == "https" && request.URL.Scheme != "https" {
+		return fmt.Errorf("%w (redirect target scheme %q)", errRedirectDowngrade, request.URL.Scheme)
+	}
+	if len(via) >= 10 {
+		return errors.New("client: stopped after 10 redirects")
+	}
+	return nil
 }
 
 // isLoopback reports whether host is a loopback address safe for plain HTTP.
@@ -233,7 +250,14 @@ func (client *Client) GetTo(ctx context.Context, path string, query map[string]s
 	return nil
 }
 
+// errRedirectDowngrade marks a refused https-to-http downgrade redirect so
+// classifyTransport can surface the reason instead of the generic bucket.
+var errRedirectDowngrade = errors.New("client: refusing a redirect from https to a cleartext scheme — the token would be transmitted in cleartext")
+
 func classifyTransport(path string, err error) error {
+	if errors.Is(err, errRedirectDowngrade) {
+		return fmt.Errorf("%w for %s", errRedirectDowngrade, path)
+	}
 	var hostname x509.HostnameError
 	if errors.As(err, &hostname) {
 		return fmt.Errorf("client: the server's certificate does not cover %q; it is issued for %s. "+
@@ -248,7 +272,33 @@ func classifyTransport(path string, err error) error {
 	if strings.Contains(err.Error(), "x509") || strings.Contains(err.Error(), "certificate") {
 		return fmt.Errorf("client: the server's certificate could not be verified for %s", path)
 	}
+	// Preserve meaningful transport-level detail rather than collapsing
+	// every non-TLS failure to "cannot reach the server."
+	var dnsErr *net.DNSError
+	if errors.As(err, &dnsErr) {
+		return fmt.Errorf("client: cannot resolve %q for %s: %s", dnsErr.Name, path, dnsErr.Err)
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return fmt.Errorf("client: request timed out for %s", path)
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return fmt.Errorf("client: connection timed out for %s", path)
+	}
+	if detail := transportDetail(err); detail != "" {
+		return fmt.Errorf("client: %s for %s", detail, path)
+	}
 	return fmt.Errorf("client: cannot reach the server for %s", path)
+}
+
+// transportDetail extracts a short reason from a *net.OpError without
+// exposing the full URL or request metadata.
+func transportDetail(err error) string {
+	var opErr *net.OpError
+	if !errors.As(err, &opErr) || opErr.Err == nil {
+		return ""
+	}
+	return opErr.Err.Error()
 }
 
 func certificateNames(certificate *x509.Certificate) []string {

@@ -73,3 +73,40 @@ func TestArtifactsModeLineNeverReachesStdout(t *testing.T) {
 		t.Fatalf("the mode line contaminated stdout:\n%s", out.String())
 	}
 }
+
+// --- #242: --data-root overrides OBERTH_BASE_URL ---
+
+func TestArtifactsExplicitDataRootForcesLocalMode(t *testing.T) {
+	// Both a remote server and a local store are configured.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"run_id":"r","artifacts":[{"name":"remote.txt","size":1,"modified":"2026-08-25T00:00:00Z"}]}`))
+	}))
+	defer server.Close()
+	configure(t, server) // sets OBERTH_BASE_URL
+
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "artifacts", "run-local"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "artifacts", "run-local", "local.txt"), []byte("local\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Without --data-root, reads the remote server.
+	var remoteOut bytes.Buffer
+	if err := runArtifacts(context.Background(), []string{"run-abc"}, &remoteOut); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(remoteOut.String(), "remote.txt") {
+		t.Fatalf("without --data-root, should read the remote:\n%s", remoteOut.String())
+	}
+
+	// With explicit --data-root, forces the local store.
+	var localOut bytes.Buffer
+	if err := runArtifacts(context.Background(), []string{"--data-root", root, "run-local"}, &localOut); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(localOut.String(), "local.txt") {
+		t.Fatalf("explicit --data-root should force local mode:\n%s", localOut.String())
+	}
+}

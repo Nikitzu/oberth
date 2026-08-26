@@ -2,6 +2,7 @@ package main
 
 import (
 	"os"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -84,7 +85,7 @@ func TestAFailedRunReportsItsReason(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(source), "Error      string") {
+	if !regexp.MustCompile(`Error\s+string`).Match(source) {
 		t.Fatal("remoteRun has no Error field, so the reason a run failed is decoded away")
 	}
 	if !strings.Contains(string(source), "failed in %s: %s") {
