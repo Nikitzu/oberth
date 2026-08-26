@@ -289,7 +289,7 @@ func runOnboarding(ctx context.Context, cfg Config, deps Deps, tw *tableWriter, 
 	if err := offerSSHConfig(ctx, deps, pubKeyPath, tw); err != nil {
 		return err
 	}
-	sshConfigured := sshHostBlockExists()
+	sshConfigured := sshHostBlockExists(deps)
 
 	// Collect the bearer token into the deferred credentials pool.
 	// When extraction fails, print the sanitized pod output instead —
@@ -780,7 +780,7 @@ func offerSSHConfig(ctx context.Context, deps Deps, pubKeyPath string, tw *table
 		return nil
 	}
 
-	home, err := os.UserHomeDir()
+	home, err := operatorHome(deps)
 	if err != nil {
 		tw.AppendRow("SSH config", "no home dir", "⚠ skip", false)
 		return nil
@@ -1429,8 +1429,8 @@ func validateUplinkIdentity(identity string) error {
 
 // sshHostBlockExists reports whether ~/.ssh/config already contains a
 // "Host oberth" block, used to decide the clone URL format in next-steps.
-func sshHostBlockExists() bool {
-	home, err := os.UserHomeDir()
+func sshHostBlockExists(deps Deps) bool {
+	home, err := operatorHome(deps)
 	if err != nil {
 		return false
 	}
@@ -1662,4 +1662,12 @@ func onboardAccessOnly(ctx context.Context, cfg Config, deps Deps, tw *tableWrit
 		return err
 	}
 	return PrintNextSteps(cfg, w)
+}
+
+// operatorHome resolves the home directory the installer writes into.
+func operatorHome(deps Deps) (string, error) {
+	if deps.HomeDir != nil {
+		return deps.HomeDir()
+	}
+	return os.UserHomeDir()
 }

@@ -331,6 +331,15 @@ type Deps struct {
 	// Kubernetes REST client is used directly.
 	PodLogs    func(ctx context.Context, namespace, pod string) ([]byte, error)
 	IsTerminal func() bool
+	// HomeDir resolves the operator's home directory. Injectable because two
+	// steps here write inside it, and a test that reaches the real one edits
+	// the developer's own machine: the SSH-config step once appended a Host
+	// block pointing at a temporary test directory, and left the file
+	// unparseable, which broke every git push until it was noticed.
+	//
+	// Nil means os.UserHomeDir, which is correct everywhere except a test.
+	HomeDir func() (string, error)
+
 	// LookPath resolves a host binary, so a step that adapts to what is
 	// installed can be tested without depending on the test machine's PATH.
 	// Nil selects exec.LookPath.

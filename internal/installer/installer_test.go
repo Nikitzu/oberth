@@ -3766,6 +3766,15 @@ func finishInstallTest(ctx context.Context, cfg Config, deps Deps, buf *bytes.Bu
 
 func onboardingDeps(t *testing.T, host *fakeOberthHost, buf *bytes.Buffer, input io.Reader, interactive bool) Deps {
 	t.Helper()
+	// A home directory of its own, per test.
+	//
+	// Onboarding writes an SSH Host block into ~/.ssh/config. Reaching the
+	// real one edited the developer's machine: a run left a block pointing at
+	// a temporary test directory and two truncated lines behind it, and ssh
+	// then refused to parse the file at all, breaking every git push until
+	// someone noticed. t.Setenv cannot fix it here because these tests run in
+	// parallel; injection can.
+	home := t.TempDir()
 	deps := Deps{
 		Output:       buf,
 		Input:        input,
@@ -3774,6 +3783,7 @@ func onboardingDeps(t *testing.T, host *fakeOberthHost, buf *bytes.Buffer, input
 		ContextName:  "test-ctx",
 		RunCommand:   host.run,
 		IsTerminal:   func() bool { return interactive },
+		HomeDir:      func() (string, error) { return home, nil },
 		PollInterval: time.Millisecond,
 	}
 	if interactive {
