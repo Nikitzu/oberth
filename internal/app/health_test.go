@@ -40,11 +40,20 @@ func TestHealthRequiresConfiguredUpstreamAndCluster(t *testing.T) {
 	if err := health.Ready(context.Background()); err == nil {
 		t.Fatal("readiness passed with an unavailable database")
 	}
-	health.Store = fakeHealthStore{upstreams: []model.Upstream{{ID: 1}}}
+	// Explicitly ssh: that is the only kind whose credentials this server
+	// holds, and so the only kind whose absence should hold readiness. An
+	// https upstream authenticates with a token belonging to a person and a
+	// local one with nothing at all.
+	health.Store = fakeHealthStore{upstreams: []model.Upstream{{ID: 1, Kind: "ssh"}}}
 	health.Configured = func(context.Context) error { return errors.New("credentials missing") }
 	if err := health.Ready(context.Background()); err == nil {
 		t.Fatal("readiness passed without durable upstream credentials")
 	}
+	health.Store = fakeHealthStore{upstreams: []model.Upstream{{ID: 1, Kind: "https"}}}
+	if err := health.Ready(context.Background()); err != nil {
+		t.Fatalf("an https upstream was held not-ready for want of an SSH identity: %v", err)
+	}
+	health.Store = fakeHealthStore{upstreams: []model.Upstream{{ID: 1, Kind: "ssh"}}}
 	health.Configured = func(context.Context) error { return nil }
 	health.VCS = func(context.Context, model.Upstream) error { return errors.New("VCS down") }
 	if err := health.Ready(context.Background()); err != nil {

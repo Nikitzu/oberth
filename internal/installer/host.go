@@ -49,6 +49,7 @@ type InstallDeps struct {
 	Input          io.Reader
 	GOOS           string
 	LookPath       func(string) (string, error)
+	HomeDir        func() (string, error)
 	RunCommand     CommandRunner
 	RunInteractive InteractiveRunner
 	IsTerminal     func() bool
@@ -190,12 +191,17 @@ func Execute(ctx context.Context, cfg Config, deps InstallDeps) error {
 	}()
 
 	return Run(ctx, cfg, Deps{
-		Output:          deps.Output,
-		Input:           deps.Input,
-		RunHelm:         deps.RunHelm,
-		RunCommand:      deps.RunCommand,
-		RunInteractive:  deps.RunInteractive,
-		IsTerminal:      deps.IsTerminal,
+		Output:         deps.Output,
+		Input:          deps.Input,
+		RunHelm:        deps.RunHelm,
+		RunCommand:     deps.RunCommand,
+		RunInteractive: deps.RunInteractive,
+		IsTerminal:     deps.IsTerminal,
+		// Carried across, or client detection sees a nil resolver and reports
+		// that this machine has no MCP client at all: the picker never runs,
+		// nothing is registered, and the install looks like it succeeded.
+		LookPath:        deps.LookPath,
+		HomeDir:         deps.HomeDir,
 		KubeClient:      kubeClient,
 		RestConfig:      restConfig,
 		ContextName:     selectedContext,

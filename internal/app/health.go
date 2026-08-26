@@ -149,9 +149,19 @@ func (health Health) Ready(ctx context.Context) error {
 
 // requiresSSHIdentity returns true when at least one upstream uses an SSH-based
 // transport (anything other than a local filesystem path).
+// requiresSSHIdentity reports whether any upstream authenticates with an SSH
+// key this server holds.
+//
+// Only ssh:// does. A local upstream is a directory on this volume, and an
+// https:// upstream authenticates with a token belonging to a person. Treating
+// everything except local as needing a key held readiness at 503 forever on a
+// deployment whose upstream was https and deliberately keyless: the check
+// demanded a credential the design had just removed, and the failure said
+// "upstream configuration is unavailable", which reads like a missing
+// upstream rather than a missing key.
 func requiresSSHIdentity(upstreams []model.Upstream) bool {
 	for _, upstream := range upstreams {
-		if upstream.Kind != "local" {
+		if upstream.Kind == "ssh" {
 			return true
 		}
 	}
