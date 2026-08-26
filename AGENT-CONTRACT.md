@@ -282,14 +282,34 @@ implementation detail disagree.
 - Three repository path spellings are accepted and validated segment-wise:
   `<repo>[.git]`, `<org>/<repo>[.git]`, and
   `<upstream-name>/<org>/<repo>[.git]`. All spellings of one repository
-  resolve to the same identity — the registered bare repository name — so one
-  repository has exactly one cache directory, one lock, and one durable
-  receive reservation regardless of spelling (qualified on-disk layout and
-  qualified persisted identity are deferred to the #245 G3 canonical-
-  persistence change). For a registered repository, a supplied upstream name
-  must equal the registered upstream's name and a supplied org must equal
-  that upstream's org identity; mismatches fail closed. Nested paths beyond
-  three segments are rejected.
+  resolve to the same identity — so one repository has exactly one cache
+  directory (flat `<root>/<repo>.git`; a qualified on-disk layout requires
+  its own explicit migration design), one lock, and one durable receive
+  reservation regardless of spelling. For a registered repository, a
+  supplied upstream name must equal the registered upstream's name and a
+  supplied org must equal that upstream's org identity; mismatches fail
+  closed. Nested paths beyond three segments are rejected.
+- Canonical persistence (#245 G3, schema v11/v12): `repositories` enforces
+  compound `UNIQUE(upstream_id, name)`, so the same bare name may exist
+  under different upstreams. Store lookups by name accept all three
+  spellings; a bare name matching repositories under multiple upstreams
+  returns an ambiguity error naming the candidates — nothing silently picks
+  one. Cross-repo persisted state keys on the qualified
+  `<upstream>/<org>/<repo>` form: `schedule_fires` rows (runtime reads and
+  writes resolve the qualified key first and skip the tick when resolution
+  fails — never a bare-key fallback write) and `secret_access` rows
+  (admission loads grants by repository ID through the qualified key ONLY;
+  a bare-keyed row is inert, never aliased onto same-name repositories).
+  The access reconciler canonicalizes ConfigMap entry spellings at the
+  converge boundary: resolvable entries key the diff by their qualified
+  form, an ambiguous bare entry is skipped fail-closed with a loud log,
+  and an entry for an unregistered repository stays verbatim and inert.
+  Migration discipline: shipped migration bodies are append-only — v10 was
+  released as a ledger-only no-op and is recorded on live databases, so
+  the canonical-persistence rebuild lives at v11 (FK-safe rebuild +
+  schedule-fire qualification) and v12 (grant qualification); replacing a
+  recorded version's body silently never runs on the databases that need
+  it (`TestMigrationLiveLineageAppliesRebuildAfterRecordedV10`).
 - Feature branches may be force-updated. Tags are creation-only: deletion,
   movement, upstream conflict, and commits outside the fresh upstream default
   branch are rejected before the public cache ref changes. The same branch/tag

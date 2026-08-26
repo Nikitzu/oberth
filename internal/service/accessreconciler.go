@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -122,8 +123,36 @@ func (r *AccessReconciler) reconcileLocked(ctx context.Context, actorPrefix stri
 		return fmt.Errorf("list active secret grants: %w", err)
 	}
 
+	// Canonicalize each entry's repository spelling BEFORE the converge
+	// diff. The persisted grant key is the qualified "upstream/org/repo"
+	// form (written by the v12 migration and the access allow/revoke
+	// handlers); ConfigMap entries may carry any accepted spelling,
+	// including the bare names every pre-G3 entry uses. Without this
+	// resolution the exact-tuple diff would treat a bare entry and its
+	// qualified sqlite row as different grants — revoking the qualified
+	// row and re-creating it bare on every converge, silently undoing the
+	// migration and reopening bare-key aliasing between same-name repos
+	// (#245 BLOCKER B).
+	//
+	// Resolution semantics, fail-closed on ambiguity:
+	//   - resolvable        -> qualified form keys the diff and the write
+	//   - ErrAmbiguous      -> entry skipped loudly; an ambiguous bare
+	//     spelling must never grant to either same-name repository
+	//   - ErrNotFound/ErrInvalid -> entry kept verbatim; grants for
+	//     unregistered repos are inert (admission resolves by repo ID and
+	//     only ever consults qualified keys)
 	desiredSet := make(map[string]SecretAccessGrantEntry, len(desired))
 	for _, entry := range desired {
+		canonical, ok, resolveErr := r.canonicalGrantRepo(ctx, entry.Repo)
+		if resolveErr != nil {
+			return fmt.Errorf("resolve grant repo %q: %w", entry.Repo, resolveErr)
+		}
+		if !ok {
+			r.logger.Printf("ERROR: grant entry repo %q is ambiguous across upstreams; skipping entry (fail-closed) — respell it as upstream/org/repo in ConfigMap %s/%s",
+				entry.Repo, r.namespace, secretAccessConfigMapName)
+			continue
+		}
+		entry.Repo = canonical
 		key := entry.Repo + "\x00" + entry.Step + "\x00" + entry.Secret
 		desiredSet[key] = entry
 	}
@@ -154,6 +183,32 @@ func (r *AccessReconciler) reconcileLocked(ctx context.Context, actorPrefix stri
 
 	r.reconcileSucceeded = true
 	return nil
+}
+
+// canonicalGrantRepo resolves one ConfigMap grant entry's repository
+// spelling to the qualified "upstream/org/repo" persisted form. The second
+// return is false only for an ambiguous bare spelling (two same-name repos
+// under different upstreams), which the caller must skip fail-closed. An
+// unregistered or syntactically unresolvable spelling is returned verbatim:
+// such grants are inert because admission looks grants up by repository ID
+// through the qualified key only. Any other store error aborts the
+// reconcile so it retries rather than converging on partial state.
+func (r *AccessReconciler) canonicalGrantRepo(ctx context.Context, repo string) (string, bool, error) {
+	repository, err := r.store.RepositoryByName(ctx, repo)
+	if err != nil {
+		if errors.Is(err, store.ErrAmbiguous) {
+			return "", false, nil
+		}
+		if errors.Is(err, store.ErrNotFound) || errors.Is(err, store.ErrInvalid) {
+			return repo, true, nil
+		}
+		return "", false, err
+	}
+	qualified, err := r.store.QualifiedRepoName(ctx, repository.ID)
+	if err != nil {
+		return "", false, err
+	}
+	return qualified, true, nil
 }
 
 func (r *AccessReconciler) revokeAllLocked(ctx context.Context, actor string) error {

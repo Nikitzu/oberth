@@ -3495,6 +3495,10 @@ func (s *stubSecretAccessStore) QualifiedRepoName(_ context.Context, _ int64) (s
 	return "stub/org/repo", nil
 }
 
+func (s *stubSecretAccessStore) RepositoryByName(_ context.Context, name string) (model.Repository, error) {
+	return model.Repository{}, fmt.Errorf("%w: repository %q", store.ErrNotFound, name)
+}
+
 func TestAccessAllowRequiresAdminUplink(t *testing.T) {
 	t.Parallel()
 	fixture := newControlFixture(t)

@@ -9,14 +9,14 @@ import (
 	"time"
 )
 
-// migrateV11SecretAccessQualifiedNames migrates the secret_access table's
+// migrateV12SecretAccessQualifiedNames migrates the secret_access table's
 // repo column from bare names to qualified "upstream/org/repo" names.
 // This prevents same-name repos under different upstreams from aliasing
 // each other's grants (#245 BLOCKER B).
 //
 // The migration is idempotent: already-qualified rows (containing "/")
 // are left untouched.
-func migrateV11SecretAccessQualifiedNames(ctx context.Context, db *sql.DB, _ func() time.Time) error {
+func migrateV12SecretAccessQualifiedNames(ctx context.Context, db *sql.DB, _ func() time.Time) error {
 	// Build the bare -> qualified name mapping from the current repo+upstream state.
 	qualifiedNames := make(map[string]string)
 	rows, err := db.QueryContext(ctx, `
@@ -24,15 +24,15 @@ func migrateV11SecretAccessQualifiedNames(ctx context.Context, db *sql.DB, _ fun
 		FROM repositories r
 		JOIN upstreams u ON u.id = r.upstream_id`)
 	if err != nil {
-		return fmt.Errorf("migration v11: read repo-upstream mapping: %w", err)
+		return fmt.Errorf("migration v12: read repo-upstream mapping: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
 	for rows.Next() {
 		var repoName, upstreamName, baseURL string
 		if err := rows.Scan(&repoName, &upstreamName, &baseURL); err != nil {
-			return fmt.Errorf("migration v11: scan repo-upstream row: %w", err)
+			return fmt.Errorf("migration v12: scan repo-upstream row: %w", err)
 		}
-		org := v11OrgFromBaseURL(baseURL)
+		org := v12OrgFromBaseURL(baseURL)
 		if org == "" {
 			org = upstreamName
 		}
@@ -45,19 +45,19 @@ func migrateV11SecretAccessQualifiedNames(ctx context.Context, db *sql.DB, _ fun
 		}
 	}
 	if err := rows.Err(); err != nil {
-		return fmt.Errorf("migration v11: read repo-upstream mapping: %w", err)
+		return fmt.Errorf("migration v12: read repo-upstream mapping: %w", err)
 	}
 
 	// Update secret_access rows that still use bare names.
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("migration v11: begin: %w", err)
+		return fmt.Errorf("migration v12: begin: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
 
 	saRows, err := tx.QueryContext(ctx, `SELECT id, repo FROM secret_access`)
 	if err != nil {
-		return fmt.Errorf("migration v11: read secret_access: %w", err)
+		return fmt.Errorf("migration v12: read secret_access: %w", err)
 	}
 	defer func() { _ = saRows.Close() }()
 	type saRow struct {
@@ -68,7 +68,7 @@ func migrateV11SecretAccessQualifiedNames(ctx context.Context, db *sql.DB, _ fun
 	for saRows.Next() {
 		var r saRow
 		if err := saRows.Scan(&r.id, &r.repo); err != nil {
-			return fmt.Errorf("migration v11: scan secret_access: %w", err)
+			return fmt.Errorf("migration v12: scan secret_access: %w", err)
 		}
 		// Skip rows that are already qualified (contain "/").
 		if strings.Contains(r.repo, "/") {
@@ -79,23 +79,23 @@ func migrateV11SecretAccessQualifiedNames(ctx context.Context, db *sql.DB, _ fun
 		}
 	}
 	if err := saRows.Err(); err != nil {
-		return fmt.Errorf("migration v11: iterate secret_access: %w", err)
+		return fmt.Errorf("migration v12: iterate secret_access: %w", err)
 	}
 
 	for _, r := range toUpdate {
 		qualified := qualifiedNames[r.repo]
 		if _, err := tx.ExecContext(ctx, `UPDATE secret_access SET repo = ? WHERE id = ?`, qualified, r.id); err != nil {
-			return fmt.Errorf("migration v11: update secret_access row %d: %w", r.id, err)
+			return fmt.Errorf("migration v12: update secret_access row %d: %w", r.id, err)
 		}
 	}
 
 	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("migration v11: commit: %w", err)
+		return fmt.Errorf("migration v12: commit: %w", err)
 	}
 	return nil
 }
 
-func v11OrgFromBaseURL(baseURL string) string {
+func v12OrgFromBaseURL(baseURL string) string {
 	base := strings.TrimSuffix(strings.TrimSpace(baseURL), "/")
 	if base == "" {
 		return ""
