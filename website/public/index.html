@@ -453,7 +453,10 @@ sudo install -m 755 oberth-linux-amd64 /usr/local/bin/oberth
       <div class="code"><div class="code-h"><span>server <em>deploy + bootstrap without the CLI</em></span><button class="cp">COPY</button></div><pre>helm repo add oberth https://charts.cloudtaser.io/oberth && helm repo update
 helm upgrade --install oberth oberth/oberth -n oberth --create-namespace
 kubectl exec -n oberth deploy/oberth -- oberth <span class="c-f">upstream add</span> codeberg ssh://git@codeberg.org/your-org
-kubectl exec -n oberth deploy/oberth -- oberth <span class="c-f">uplink add</span> "$(cat ~/.ssh/id_ed25519.pub)" <span class="c-y">agent@runner</span></pre></div>
+kubectl exec -n oberth deploy/oberth -- oberth <span class="c-f">uplink add</span> "$(cat ~/.ssh/id_ed25519.pub)" <span class="c-y">agent@runner</span>
+<span class="c-cm"># Clone a repo — paths match your upstream home</span>
+git clone ssh://git@YOUR_HOST:30022/<span class="c-f">codeberg/your-org/your-repo</span>.git
+<span class="c-cm"># Bare names and org/repo shorthands also work</span></pre></div>
     </div>
   </details>
 </div></section>
@@ -470,7 +473,7 @@ kubectl exec -n oberth deploy/oberth -- oberth <span class="c-f">uplink add</spa
     <div>
       <div class="lh rv">What works today</div>
       <div class="list">
-        <div class="li rv"><span class="m ok">✓</span><span>Git-over-SSH ingress with uplink identity &amp; clone-through cache</span></div>
+        <div class="li rv"><span class="m ok">✓</span><span>Git-over-SSH ingress with uplink identity, org-qualified clone paths &amp; clone-through cache</span></div>
         <div class="li rv"><span class="m ok">✓</span><span>Argo Workflow pipelines — one pod per DAG task, named logs, per-template exit codes</span></div>
         <div class="li rv"><span class="m ok">✓</span><span>Issue queue with dedupe, auto-close and uplink locks</span></div>
         <div class="li rv"><span class="m ok">✓</span><span>Green publication, WIP <code class="inline-c">sync</code>, exact-SHA <code class="inline-c">promote</code></span></div>
