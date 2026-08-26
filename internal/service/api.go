@@ -1487,6 +1487,21 @@ func (service *API) accessAllow(ctx context.Context, actor api.Actor, repo, step
 	if strings.TrimSpace(repo) == "" || strings.TrimSpace(step) == "" || strings.TrimSpace(secret) == "" {
 		return api.AccessGrantResponse{}, fmt.Errorf("%w: repo, step, and secret are required", ErrInvalidInput)
 	}
+	// Resolve the repo name to its qualified form so same-name repos under
+	// different upstreams cannot alias each other's grants (#245 BLOCKER B).
+	// RepositoryByName rejects ambiguous bare names. If the repo is not
+	// registered yet (first push hasn't happened), the bare name is stored
+	// as-is; grants for non-existent repos are inert.
+	if service.repositories != nil {
+		resolved, resolveErr := service.repositories.RepositoryByName(ctx, repo)
+		if resolveErr == nil {
+			if qualified, qualErr := service.secretAccess.QualifiedRepoName(ctx, resolved.ID); qualErr == nil {
+				repo = qualified
+			}
+		} else if errors.Is(resolveErr, store.ErrAmbiguous) {
+			return api.AccessGrantResponse{}, fmt.Errorf("%w: %w", ErrInvalidInput, resolveErr)
+		}
+	}
 	// Validate the entry before touching the ConfigMap. Without this check a
 	// malformed entry (glob characters in repo/secret, or a non-wildcard step)
 	// would be written to the ConfigMap, and the next reconciliation would
@@ -1527,6 +1542,18 @@ func (service *API) accessRevoke(ctx context.Context, actor api.Actor, repo, ste
 	}
 	if strings.TrimSpace(repo) == "" || strings.TrimSpace(step) == "" || strings.TrimSpace(secret) == "" {
 		return api.AccessGrantResponse{}, fmt.Errorf("%w: repo, step, and secret are required", ErrInvalidInput)
+	}
+	// Resolve the repo name to its qualified form for identity-safe
+	// lookup (#245 BLOCKER B).
+	if service.repositories != nil {
+		resolved, resolveErr := service.repositories.RepositoryByName(ctx, repo)
+		if resolveErr == nil {
+			if qualified, qualErr := service.secretAccess.QualifiedRepoName(ctx, resolved.ID); qualErr == nil {
+				repo = qualified
+			}
+		} else if errors.Is(resolveErr, store.ErrAmbiguous) {
+			return api.AccessGrantResponse{}, fmt.Errorf("%w: %w", ErrInvalidInput, resolveErr)
+		}
 	}
 	if service.secretAccessReconciler != nil {
 		// Read the grant before removal so we can return it.

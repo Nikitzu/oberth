@@ -8,7 +8,7 @@ type migration struct {
 }
 
 const (
-	latestMigrationVersion = 10
+	latestMigrationVersion = 11
 	// oberthSchemaIdentity is a compatibility-frozen opaque literal: every
 	// deployed database carries this exact identity row and a CHECK constraint
 	// on it. Renaming it is a breaking schema migration, not a string cleanup.
@@ -687,5 +687,9 @@ CREATE UNIQUE INDEX secret_access_active
 	{
 		version:  10,
 		rawApply: migrateV10CanonicalPersistence,
+	},
+	{
+		version:  11,
+		rawApply: migrateV11SecretAccessQualifiedNames,
 	},
 }

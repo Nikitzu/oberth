@@ -163,6 +163,10 @@ type SecretAccessStore interface {
 	SecretAccessList(ctx context.Context, repo string, includeRevoked bool) ([]store.SecretAccessGrant, error)
 	Grant(ctx context.Context, repo, step, secret, actor string) (store.SecretAccessGrant, error)
 	Revoke(ctx context.Context, repo, step, secret, actor string) (store.SecretAccessGrant, error)
+	// QualifiedRepoName resolves a repository ID to its canonical
+	// "upstream/org/repo" form. Used by access grant/revoke handlers to
+	// store grants with identity-safe keys (#245 BLOCKER B).
+	QualifiedRepoName(ctx context.Context, repoID int64) (string, error)
 }
 
 type SchedulerStore interface {

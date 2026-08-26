@@ -4,6 +4,8 @@ import (
 	"context"
 	"testing"
 	"time"
+
+	"github.com/oberthci/oberth/internal/model"
 )
 
 func TestSecretAccessGrantAndCheck(t *testing.T) {
@@ -180,6 +182,23 @@ func TestActiveSecretGrants(t *testing.T) {
 	s := testStore(t, &now)
 	ctx := context.Background()
 
+	// Create upstream + repo so QualifiedRepoName can resolve.
+	upstream, err := s.CreateUpstream(ctx, model.UpstreamSpec{
+		Name: "codeberg", Kind: "ssh", BaseURL: "ssh://git@codeberg.org/skipops",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo, err := s.CreateRepository(ctx, model.RepositorySpec{
+		Name: "terraform", UpstreamID: upstream.ID, DefaultBranch: "main",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Grants stored with the bare name (pre-migration) must still be
+	// resolved by ActiveSecretGrants through the backward-compatible
+	// bare-name fallback.
 	if _, err := s.Grant(ctx, "terraform", "plan", "terraform/credentials", "admin@localhost"); err != nil {
 		t.Fatal(err)
 	}
@@ -190,7 +209,7 @@ func TestActiveSecretGrants(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	grants, err := s.ActiveSecretGrants(ctx, "terraform")
+	grants, err := s.ActiveSecretGrants(ctx, repo.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -205,6 +224,69 @@ func TestActiveSecretGrants(t *testing.T) {
 	}
 	if !grants["apply"]["terraform/credentials"] {
 		t.Fatal("missing apply/terraform/credentials")
+	}
+}
+
+// TestActiveSecretGrantsIsolation verifies that same-name repos under
+// different upstreams do not share grants (#245 BLOCKER B).
+func TestActiveSecretGrantsIsolation(t *testing.T) {
+	now := time.Date(2026, 8, 26, 10, 0, 0, 0, time.UTC)
+	s := testStore(t, &now)
+	ctx := context.Background()
+
+	upstream1, err := s.CreateUpstream(ctx, model.UpstreamSpec{
+		Name: "codeberg", Kind: "ssh", BaseURL: "ssh://git@codeberg.org/skipops",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	upstream2, err := s.CreateUpstream(ctx, model.UpstreamSpec{
+		Name: "github", Kind: "ssh", BaseURL: "ssh://git@github.com/acme",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo1, err := s.CreateRepository(ctx, model.RepositorySpec{
+		Name: "terraform", UpstreamID: upstream1.ID, DefaultBranch: "main",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo2, err := s.CreateRepository(ctx, model.RepositorySpec{
+		Name: "terraform", UpstreamID: upstream2.ID, DefaultBranch: "main",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Grant with qualified name for repo1 only.
+	qualified1, err := s.QualifiedRepoName(ctx, repo1.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Grant(ctx, qualified1, "*", "release/cosign", "admin@localhost"); err != nil {
+		t.Fatal(err)
+	}
+
+	// repo1 sees the grant.
+	grants1, err := s.ActiveSecretGrants(ctx, repo1.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(grants1) != 1 {
+		t.Fatalf("repo1: expected 1 step, got %d", len(grants1))
+	}
+	if !grants1["*"]["release/cosign"] {
+		t.Fatal("repo1: missing */release/cosign")
+	}
+
+	// repo2 must NOT see repo1 grants.
+	grants2, err := s.ActiveSecretGrants(ctx, repo2.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(grants2) != 0 {
+		t.Fatalf("repo2: expected 0 steps, got %d (grant aliasing!)", len(grants2))
 	}
 }
 

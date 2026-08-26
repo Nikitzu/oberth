@@ -41,12 +41,20 @@ type ScheduleState interface {
 	RecordScheduleFire(ctx context.Context, repo, entry string, at time.Time, outcome string) error
 }
 
+// ScheduleUpstreamResolver provides upstream identity for schedule-fire
+// key construction. The qualified repo name is the key in schedule_fires
+// so same-name repos under different upstreams have independent schedules.
+type ScheduleUpstreamResolver interface {
+	Upstream(context.Context, int64) (model.Upstream, error)
+}
+
 type SchedulesConfig struct {
 	Repositories func(context.Context) ([]model.Repository, error)
 	Git          ScheduleGit
 	Runs         ScheduleRuns
 	Enqueuer     ScheduleEnqueuer
 	State        ScheduleState
+	Upstreams    ScheduleUpstreamResolver
 	MinInterval  time.Duration
 	MaxEntries   int
 }
@@ -58,6 +66,23 @@ type Schedules struct {
 
 func NewSchedules(config SchedulesConfig) *Schedules {
 	return &Schedules{config: config, observed: time.Now().UTC()}
+}
+
+// qualifiedRepoName constructs the "upstream/org/repo" key for schedule_fires.
+// Falls back to the bare name when the upstream cannot be resolved.
+func (schedules *Schedules) qualifiedRepoName(ctx context.Context, repository model.Repository) string {
+	if schedules.config.Upstreams == nil {
+		return repository.Name
+	}
+	upstream, err := schedules.config.Upstreams.Upstream(ctx, repository.UpstreamID)
+	if err != nil {
+		return repository.Name
+	}
+	org := upstream.Org()
+	if org == "" {
+		org = upstream.Name
+	}
+	return upstream.Name + "/" + org + "/" + repository.Name
 }
 
 func (schedules *Schedules) Run(ctx context.Context) error {
@@ -94,6 +119,7 @@ func (schedules *Schedules) tickRepository(ctx context.Context, repository model
 	if branch == "" {
 		return
 	}
+	qualifiedName := schedules.qualifiedRepoName(ctx, repository)
 	sha, err := schedules.config.Git.RefSHA(ctx, repository.Name, branch)
 	if err != nil {
 		return
@@ -106,16 +132,16 @@ func (schedules *Schedules) tickRepository(ctx context.Context, repository model
 		MinInterval: schedules.config.MinInterval, MaxEntries: schedules.config.MaxEntries,
 	}, schedules.observed)
 	if err != nil {
-		schedules.record(ctx, repository.Name, "", now, "refused")
+		schedules.record(ctx, qualifiedName, "", now, "refused")
 		return
 	}
 	for _, refusal := range file.Refused {
-		schedules.record(ctx, repository.Name, refusal.Name, now, "refused")
+		schedules.record(ctx, qualifiedName, refusal.Name, now, "refused")
 	}
 
 	last := map[string]time.Time{}
 	if schedules.config.State != nil {
-		if stored, stateErr := schedules.config.State.ScheduleFires(ctx, repository.Name); stateErr == nil {
+		if stored, stateErr := schedules.config.State.ScheduleFires(ctx, qualifiedName); stateErr == nil {
 			last = stored
 		}
 	}
@@ -125,7 +151,7 @@ func (schedules *Schedules) tickRepository(ctx context.Context, repository model
 	}
 	if schedules.busy(ctx, repository.ID) {
 		for _, entry := range due {
-			schedules.record(ctx, repository.Name, entry.Name, now, "skipped")
+			schedules.record(ctx, qualifiedName, entry.Name, now, "skipped")
 		}
 		return
 	}
@@ -137,6 +163,7 @@ func (schedules *Schedules) tickRepository(ctx context.Context, repository model
 func (schedules *Schedules) fire(
 	ctx context.Context, repository model.Repository, entry schedule.Entry, sha, defaultBranch string, now time.Time,
 ) {
+	qualifiedName := schedules.qualifiedRepoName(ctx, repository)
 	branch := entry.Branch
 	if branch == "" {
 		branch = defaultBranch
@@ -159,10 +186,10 @@ func (schedules *Schedules) fire(
 		Trigger:    "schedule",
 	})
 	if err != nil {
-		schedules.record(ctx, repository.Name, entry.Name, now, "failed")
+		schedules.record(ctx, qualifiedName, entry.Name, now, "failed")
 		return
 	}
-	schedules.record(ctx, repository.Name, entry.Name, now, "fired")
+	schedules.record(ctx, qualifiedName, entry.Name, now, "fired")
 }
 
 func (schedules *Schedules) busy(ctx context.Context, repoID int64) bool {

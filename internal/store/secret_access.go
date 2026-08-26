@@ -188,15 +188,22 @@ WHERE repo = ? AND step = ? AND secret = ? AND revoked_at IS NULL`,
 }
 
 // ActiveSecretGrants returns all active grants for a repository, keyed by
-// (step, secret). This is used at admission time to check all templates in one
-// pass.
-func (s *Store) ActiveSecretGrants(ctx context.Context, repo string) (map[string]map[string]bool, error) {
-	if strings.TrimSpace(repo) == "" {
-		return nil, fmt.Errorf("%w: repo is required", ErrInvalid)
+// (step, secret). The repository is identified by its durable ID so that
+// same-name repos under different upstreams cannot alias each other's
+// grants (#245 BLOCKER B).
+func (s *Store) ActiveSecretGrants(ctx context.Context, repoID int64) (map[string]map[string]bool, error) {
+	qualifiedName, err := s.QualifiedRepoName(ctx, repoID)
+	if err != nil {
+		return nil, fmt.Errorf("resolve qualified repo name for grants: %w", err)
 	}
+	// Query with the qualified name. For backward compatibility with
+	// pre-migration data, also check the bare name. The v11 migration
+	// migrates existing grants to qualified names, so the bare fallback
+	// covers only the transition window.
+	bareName := qualifiedName[strings.LastIndex(qualifiedName, "/")+1:]
 	rows, err := s.db.QueryContext(ctx, `
 SELECT step, secret FROM secret_access
-WHERE repo = ? AND revoked_at IS NULL`, repo)
+WHERE (repo = ? OR repo = ?) AND revoked_at IS NULL`, qualifiedName, bareName)
 	if err != nil {
 		return nil, fmt.Errorf("list active secret grants: %w", err)
 	}

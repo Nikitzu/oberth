@@ -82,17 +82,9 @@ func TestQualifiedCachePath(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 
-	qualifier := func(name string) (RepoQualification, bool) {
-		if name == "oberth" {
-			return RepoQualification{UpstreamName: "github", Org: "oberthci"}, true
-		}
-		return RepoQualification{}, false
-	}
-
 	cache, err := New(Config{
-		Root:          root,
-		Upstream:      func(repo string) (string, error) { return "/dev/null", nil },
-		RepoQualifier: qualifier,
+		Root:     root,
+		Upstream: func(repo string) (string, error) { return "/dev/null", nil },
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -102,11 +94,12 @@ func TestQualifiedCachePath(t *testing.T) {
 		input string
 		want  string
 	}{
-		// Fully qualified: upstream/org/repo
-		{"github/oberthci/oberth", filepath.Join(root, "github", "oberthci", "oberth.git")},
-		// Bare name with qualifier available
-		{"oberth", filepath.Join(root, "github", "oberthci", "oberth.git")},
-		// Bare name without qualifier (falls back to flat)
+		// All input forms resolve to the flat layout: <root>/<repo>.git.
+		// The upstream and org segments are validated but do not influence
+		// the on-disk path.
+		{"github/oberthci/oberth", filepath.Join(root, "oberth.git")},
+		{"oberthci/oberth", filepath.Join(root, "oberth.git")},
+		{"oberth", filepath.Join(root, "oberth.git")},
 		{"unknown", filepath.Join(root, "unknown.git")},
 	}
 

@@ -636,7 +636,7 @@ INSERT INTO repositories_v1 SELECT * FROM repositories;
 DROP TABLE repositories;
 ALTER TABLE repositories_v1 RENAME TO repositories;
 DROP TABLE IF EXISTS schedule_fires;
-DELETE FROM schema_migrations WHERE version IN (3, 4, 5, 6, 7, 8, 9, 10);
+DELETE FROM schema_migrations WHERE version IN (3, 4, 5, 6, 7, 8, 9, 10, 11);
 COMMIT;
 PRAGMA foreign_keys = ON;
 `); err != nil {
@@ -769,7 +769,7 @@ INSERT INTO repositories_v1 SELECT * FROM repositories;
 DROP TABLE repositories;
 ALTER TABLE repositories_v1 RENAME TO repositories;
 DROP TABLE IF EXISTS schedule_fires;
-DELETE FROM schema_migrations WHERE version IN (2, 3, 4, 5, 6, 7, 8, 9, 10);
+DELETE FROM schema_migrations WHERE version IN (2, 3, 4, 5, 6, 7, 8, 9, 10, 11);
 COMMIT;
 PRAGMA foreign_keys = ON;
 `); err != nil {

@@ -3491,6 +3491,10 @@ func (s *stubSecretAccessStore) Revoke(_ context.Context, repo, step, secret, ac
 	return store.SecretAccessGrant{}, fmt.Errorf("grant not found")
 }
 
+func (s *stubSecretAccessStore) QualifiedRepoName(_ context.Context, _ int64) (string, error) {
+	return "stub/org/repo", nil
+}
+
 func TestAccessAllowRequiresAdminUplink(t *testing.T) {
 	t.Parallel()
 	fixture := newControlFixture(t)

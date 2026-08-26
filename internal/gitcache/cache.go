@@ -224,7 +224,6 @@ type Cache struct {
 	outboxRoot      string
 	globalConfig    string
 	upstream        func(string) (string, error)
-	repoQualifier   func(string) (RepoQualification, bool)
 	gitBinary       string
 	timeout         time.Duration
 	env             map[string]string
@@ -276,7 +275,6 @@ func New(config Config) (*Cache, error) {
 		outboxRoot:      outboxRoot,
 		globalConfig:    globalConfig,
 		upstream:        config.Upstream,
-		repoQualifier:   config.RepoQualifier,
 		gitBinary:       gitBinary,
 		timeout:         defaultTimeout(config.CommandTimeout),
 		env:             cloneMap(config.Env),
@@ -906,26 +904,16 @@ func (c *Cache) path(input string) (string, string, error) {
 
 // qualifiedCachePath resolves the on-disk path for a repository's bare cache.
 //
-// The path layout is <root>/<upstream>/<org>/<repo>.git when the upstream and
-// org are known (either from the input or the repo qualifier), and falls back
-// to the flat <root>/<repo>.git layout when they are not.
-func (c *Cache) qualifiedCachePath(upstream, org, repo string) string {
-	if upstream != "" && org != "" {
-		return filepath.Join(c.root, upstream, org, repo+".git")
-	}
-	if org != "" && c.repoQualifier != nil {
-		// Org-qualified input -- resolve the upstream name.
-		if q, ok := c.repoQualifier(repo); ok && q.UpstreamName != "" && q.Org == org {
-			return filepath.Join(c.root, q.UpstreamName, org, repo+".git")
-		}
-	}
-	if upstream == "" && org == "" && c.repoQualifier != nil {
-		// Bare name -- resolve both from the registry.
-		if q, ok := c.repoQualifier(repo); ok && q.UpstreamName != "" && q.Org != "" {
-			return filepath.Join(c.root, q.UpstreamName, q.Org, repo+".git")
-		}
-	}
-	// Fallback: flat layout (pre-migration or resolver unavailable).
+// Currently the cache uses a flat layout (<root>/<repo>.git) regardless of
+// input form. The upstream and org from a 3-segment push are validated by
+// ParseRepoPath but do not influence the on-disk path. This ensures that
+// "codeberg/oberthci/oberth" and "oberth" resolve to the same cache
+// directory, preserving the "one repo, one cache" invariant without
+// requiring a startup migration or a RepoQualifier callback.
+//
+// A future qualified layout (<root>/<upstream>/<org>/<repo>.git) may be
+// introduced with an explicit migration step.
+func (c *Cache) qualifiedCachePath(_, _, repo string) string {
 	return filepath.Join(c.root, repo+".git")
 }
 

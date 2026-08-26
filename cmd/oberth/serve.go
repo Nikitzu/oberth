@@ -794,6 +794,7 @@ func serve(ctx context.Context, options serveOptions, logger *log.Logger) (resul
 		Runs:         database,
 		Enqueuer:     scheduler,
 		State:        database,
+		Upstreams:    database,
 		MinInterval:  options.scheduleMinInterval,
 		MaxEntries:   options.scheduleMaxEntries,
 	})

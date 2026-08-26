@@ -25,8 +25,8 @@ func (e sqliteResultError) Code() int { return int(e) }
 func TestSchemaMigrationsAreContiguous(t *testing.T) {
 	t.Parallel()
 
-	if latestMigrationVersion != 10 {
-		t.Fatalf("latest migration version = %d, want 10", latestMigrationVersion)
+	if latestMigrationVersion != 11 {
+		t.Fatalf("latest migration version = %d, want 11", latestMigrationVersion)
 	}
 	if len(migrations) != latestMigrationVersion {
 		t.Fatalf("migration count = %d, want %d", len(migrations), latestMigrationVersion)
@@ -578,7 +578,7 @@ CREATE UNIQUE INDEX uplinks_token_credential_idx ON uplinks(token_credential_id)
 ALTER TABLE upstreams DROP COLUMN key_name;
 ALTER TABLE runs DROP COLUMN credentialed;
 DROP TABLE schedule_fires;
-DELETE FROM schema_migrations WHERE version IN (2, 3, 4, 5, 6, 7, 8, 9, 10);`); err != nil {
+DELETE FROM schema_migrations WHERE version IN (2, 3, 4, 5, 6, 7, 8, 9, 10, 11);`); err != nil {
 		_ = raw.Close()
 		t.Fatal(err)
 	}
@@ -1206,7 +1206,7 @@ func TestOpenRejectsLegacyAndFutureSchemaVersions(t *testing.T) {
 		name    string
 		version int
 	}{
-		{name: "legacy migration chain", version: 11},
+		{name: "legacy migration chain", version: 12},
 		{name: "future schema", version: 99},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -1230,7 +1230,7 @@ INSERT INTO schema_migrations(version, applied_at) VALUES(?, 0);`, test.version)
 			if opened != nil {
 				_ = opened.Close()
 			}
-			if !errors.Is(err, ErrSchemaTooNew) || !strings.Contains(err.Error(), "binary=10") {
+			if !errors.Is(err, ErrSchemaTooNew) || !strings.Contains(err.Error(), "binary=11") {
 				t.Fatalf("OpenAdminClient version %d error = %v, want clear ErrSchemaTooNew", test.version, err)
 			}
 		})

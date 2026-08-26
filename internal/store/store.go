@@ -1226,6 +1226,41 @@ func scanRepository(row *sql.Row) (model.Repository, error) {
 	return value, nil
 }
 
+// QualifiedRepoName returns the canonical "upstream/org/repo" form for
+// a repository identified by its durable ID. This is the key used in
+// secret_access and schedule_fires for identity isolation — two repos with
+// the same bare name under different upstreams have different qualified
+// names and therefore cannot alias each other's grants or schedule state.
+func (s *Store) QualifiedRepoName(ctx context.Context, repoID int64) (string, error) {
+	var repoName, upstreamName, baseURL string
+	if err := s.db.QueryRowContext(ctx, `
+SELECT r.name, u.name, u.base_url
+FROM repositories r JOIN upstreams u ON u.id = r.upstream_id
+WHERE r.id = ?`, repoID).Scan(&repoName, &upstreamName, &baseURL); err != nil {
+		return "", translateNotFound("repository", err)
+	}
+	org := orgFromBaseURL(baseURL)
+	if org == "" {
+		org = upstreamName
+	}
+	return upstreamName + "/" + org + "/" + repoName, nil
+}
+
+// orgFromBaseURL extracts the trailing path component from a base URL.
+// This is the same derivation as model.Upstream.Org() but operates on a
+// raw string to avoid constructing a model object.
+func orgFromBaseURL(baseURL string) string {
+	base := strings.TrimSuffix(strings.TrimSpace(baseURL), "/")
+	if base == "" {
+		return ""
+	}
+	if filepath.IsAbs(base) {
+		return filepath.Base(base)
+	}
+	parts := strings.Split(base, "/")
+	return parts[len(parts)-1]
+}
+
 func (s *Store) AppendPromotion(ctx context.Context, spec model.PromotionSpec) (model.Promotion, error) {
 	return s.appendPromotion(ctx, spec, "")
 }
