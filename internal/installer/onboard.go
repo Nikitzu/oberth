@@ -187,8 +187,14 @@ func runOnboarding(ctx context.Context, cfg Config, deps Deps, tw *tableWriter, 
 		return err
 	}
 	if !ok {
-		_, _ = fmt.Fprintln(w, "No upstream given — skipping onboarding. Finish the setup manually:")
-		return PrintNextSteps(cfg, w)
+		// No forge does not mean no setup. The upstream is where code comes
+		// from; the uplink and the client configuration are how anyone talks
+		// to this server, and skipping one used to silently skip the others.
+		// A deployment with no upstream is still a deployment an agent has to
+		// reach.
+		_, _ = fmt.Fprintln(w, "No upstream given. Add one whenever you like:")
+		_, _ = fmt.Fprintf(w, "\n    oberth upstream add <name> github.com/<org>\n\n")
+		return onboardAccessOnly(ctx, cfg, deps, tw, creds)
 	}
 
 	// --- Deploy key ---
@@ -307,6 +313,12 @@ func runOnboarding(ctx context.Context, cfg Config, deps Deps, tw *tableWriter, 
 func promptUpstream(ctx context.Context, deps Deps, tw *tableWriter) (baseURL, name string, ok bool, err error) {
 	w := deps.Output
 	color := isColor(deps)
+
+	// Said once, above the prompt: the single question reads like a single-org
+	// product otherwise, and a second org is one command rather than a
+	// reinstall.
+	_, _ = fmt.Fprintln(w, "\nUpstream organisation. Enter to skip; more can be added later with")
+	_, _ = fmt.Fprintln(w, "`oberth upstream add <name> <host>/<org>`.")
 
 	for attempt := 0; attempt < 3; attempt++ {
 		startPrompt(w, color, "Upstream", "github.com/your-org: ")
@@ -1578,4 +1590,49 @@ func isSSHKeyFile(path string, wantPub bool) bool {
 			strings.HasPrefix(firstLine, "sk-ecdsa-")
 	}
 	return strings.HasPrefix(firstLine, "-----BEGIN")
+}
+
+// onboardAccessOnly runs the part of onboarding that has nothing to do with a
+// forge: register an uplink, and configure whatever clients this machine has.
+//
+// It exists because those steps used to sit downstream of the upstream prompt,
+// so answering nothing there left an installed server with no uplink, no CLI
+// configuration and no MCP registration, and a list of commands to run by
+// hand. Nothing about that follows from declining to name a forge.
+func onboardAccessOnly(ctx context.Context, cfg Config, deps Deps, tw *tableWriter, creds *heldCredentials) error {
+	w := deps.Output
+	color := isColor(deps)
+
+	pubKeyPath, identity, token, uplinkOutput, uplinkErr := onboardUplink(ctx, cfg, deps, tw)
+	if uplinkErr != nil {
+		ns := cfg.Namespace
+		if ns == "" {
+			ns = DefaultNamespace
+		}
+		_, _ = fmt.Fprintf(w, "Uplink setup did not complete (%v).\nAdd one later with:\n\n    kubectl exec -i -n %s deploy/oberth -- oberth uplink add - you@host < ~/.ssh/id_ed25519.pub\n\n", uplinkErr, ns)
+		return nil
+	}
+	tw.AppendRow("Uplink", identity, "✓ registered", false)
+
+	if err := offerSSHConfig(ctx, deps, pubKeyPath, tw); err != nil {
+		return err
+	}
+
+	if token != "" {
+		creds.add("Bearer token", token)
+	} else if strings.TrimSpace(uplinkOutput) != "" {
+		_, _ = fmt.Fprintln(w, strings.TrimRight(uplinkOutput, "\n"))
+	}
+
+	if err := offerClientAccess(ctx, cfg, deps, tw, token); err != nil {
+		return err
+	}
+
+	creds.flush(w, color)
+
+	_, _ = fmt.Fprintf(w, "\nWaiting for Oberth to become ready...\n")
+	if err := WaitForReady(ctx, cfg, deps); err != nil {
+		return err
+	}
+	return PrintNextSteps(cfg, w)
 }

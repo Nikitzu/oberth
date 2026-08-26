@@ -219,9 +219,16 @@ func promptSecretStoreChoice(ctx context.Context, cfg *Config, deps Deps) error 
 		return nil
 	}
 
+	// Skip is first, and is what Enter gives.
+	//
+	// A secret store exists to hand credentials to a release. This fork
+	// defaults to the advisory gate, where a green run publishes nothing, so
+	// the common install has no release to credential and every operator was
+	// answering the same question the same way. Anyone doing releases picks
+	// [2], and --install-secretstore adds it later without reinstalling.
 	_, _ = fmt.Fprintln(deps.Output, "\nInstall OpenBao for release secret management?")
-	_, _ = fmt.Fprintln(deps.Output, "  [1] Production mode (persistent storage, verified TLS) (Recommended)")
-	_, _ = fmt.Fprintln(deps.Output, "  [2] Skip — no secret store (branch CI only, releases will not work)")
+	_, _ = fmt.Fprintln(deps.Output, "  [1] Skip — no secret store (branch CI only; releases need one)")
+	_, _ = fmt.Fprintln(deps.Output, "  [2] Production mode (persistent storage, verified TLS)")
 
 	var chosen bool
 	for attempt := 0; attempt < 3; attempt++ {
@@ -232,11 +239,11 @@ func promptSecretStoreChoice(ctx context.Context, cfg *Config, deps Deps) error 
 		}
 		switch strings.TrimSpace(answer) {
 		case "", "1":
+			_, _ = fmt.Fprintln(deps.Output, "No secret store. Add one later with --install-secretstore.")
+			return nil
+		case "2":
 			cfg.InstallSecretStore = true
 			chosen = true
-		case "2":
-			_, _ = fmt.Fprintln(deps.Output, "Warning: releases will not work without a secret store. Re-run with --install-secretstore later to add one.")
-			return nil
 		default:
 			_, _ = fmt.Fprintln(deps.Output, "Please enter 1 or 2.")
 			continue

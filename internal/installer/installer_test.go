@@ -2955,7 +2955,7 @@ func existingKindCommandRunner(t *testing.T, inspectOutput []byte) CommandRunner
 
 // --- Secret-store prompt ---
 
-func TestPromptSecretStoreChoiceInteractiveDefaultsToProduction(t *testing.T) {
+func TestPromptSecretStoreChoiceInteractiveDefaultsToSkip(t *testing.T) {
 	t.Parallel()
 	var buf bytes.Buffer
 	cfg := Config{}
@@ -2969,8 +2969,10 @@ func TestPromptSecretStoreChoiceInteractiveDefaultsToProduction(t *testing.T) {
 	if err := promptSecretStoreChoice(context.Background(), &cfg, deps); err != nil {
 		t.Fatal(err)
 	}
-	if !cfg.InstallSecretStore {
-		t.Fatal("empty input should default to production mode")
+	// This fork defaults to the advisory gate, where a green run publishes
+	// nothing, so the common install has no release to credential.
+	if cfg.InstallSecretStore {
+		t.Fatal("empty input should default to skipping the secret store")
 	}
 	if cfg.InstallSecretStoreDev {
 		t.Fatal("InstallSecretStoreDev should not be set")
@@ -2991,7 +2993,7 @@ func TestPromptSecretStoreChoiceInteractiveExplicitProduction(t *testing.T) {
 	_ = cfg.Validate()
 	deps := Deps{
 		Output:     &buf,
-		Input:      strings.NewReader("1\n\n\n"),
+		Input:      strings.NewReader("2\n\n\n"),
 		IsTerminal: func() bool { return true },
 	}
 
@@ -2999,7 +3001,7 @@ func TestPromptSecretStoreChoiceInteractiveExplicitProduction(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !cfg.InstallSecretStore {
-		t.Fatal("choice 1 should set InstallSecretStore")
+		t.Fatal("choice 2 should set InstallSecretStore")
 	}
 }
 
@@ -3010,7 +3012,7 @@ func TestPromptSecretStoreChoiceInteractiveSkip(t *testing.T) {
 	_ = cfg.Validate()
 	deps := Deps{
 		Output:     &buf,
-		Input:      strings.NewReader("2\n"),
+		Input:      strings.NewReader("1\n"),
 		IsTerminal: func() bool { return true },
 	}
 
@@ -3018,10 +3020,10 @@ func TestPromptSecretStoreChoiceInteractiveSkip(t *testing.T) {
 		t.Fatal(err)
 	}
 	if cfg.InstallSecretStore || cfg.InstallSecretStoreDev {
-		t.Fatal("choice 2 should not set either secret store flag")
+		t.Fatal("choice 1 should not set either secret store flag")
 	}
-	if !strings.Contains(buf.String(), "Warning: releases will not work") {
-		t.Fatalf("skip should print warning, got:\n%s", buf.String())
+	if !strings.Contains(buf.String(), "Add one later with --install-secretstore") {
+		t.Fatalf("skip should say how to add one later, got:\n%s", buf.String())
 	}
 }
 
@@ -3073,7 +3075,7 @@ func TestPromptSecretStoreChoiceNamespaceOverride(t *testing.T) {
 	_ = cfg.Validate()
 	deps := Deps{
 		Output:     &buf,
-		Input:      strings.NewReader("1\ncustom-bao\ncustom-argo\n"),
+		Input:      strings.NewReader("2\ncustom-bao\ncustom-argo\n"),
 		IsTerminal: func() bool { return true },
 	}
 
@@ -3116,7 +3118,7 @@ func TestPromptSecretStoreChoiceRejectsArgoNamespaceCollision(t *testing.T) {
 	_ = cfg.Validate()
 	deps := Deps{
 		Output:     io.Discard,
-		Input:      strings.NewReader("1\nopenbao\noberth\n"),
+		Input:      strings.NewReader("2\nopenbao\noberth\n"),
 		IsTerminal: func() bool { return true },
 	}
 
@@ -3131,10 +3133,11 @@ func TestPromptSecretStoreChoiceUnrecognizedInputRetries(t *testing.T) {
 	var buf bytes.Buffer
 	cfg := Config{}
 	_ = cfg.Validate()
-	// Two garbage answers followed by a valid "1".
+	// Two garbage answers followed by a valid "2", which is now the
+	// production choice: [1] skips, and is what Enter gives.
 	deps := Deps{
 		Output:     &buf,
-		Input:      strings.NewReader("x\nfoo\n1\n\n\n"),
+		Input:      strings.NewReader("x\nfoo\n2\n\n\n"),
 		IsTerminal: func() bool { return true },
 	}
 
@@ -3342,8 +3345,9 @@ func TestRunPromptsWhenSecretStoreUndecided(t *testing.T) {
 		RunCommand: func(context.Context, []byte, string, ...string) ([]byte, error) {
 			return []byte("NAME\tKIND\tURL\nrepo\tgit\tssh://git@example.test/repo\n"), nil
 		},
-		IsTerminal:   func() bool { return true },
-		Input:        strings.NewReader("2\n"),
+		IsTerminal: func() bool { return true },
+		// [1] skips, and is what Enter gives.
+		Input:        strings.NewReader("1\n"),
 		PollInterval: time.Millisecond,
 	}
 	cfg := Config{Timeout: time.Second, SecretStoreUndecided: true}
@@ -3354,8 +3358,8 @@ func TestRunPromptsWhenSecretStoreUndecided(t *testing.T) {
 	if !strings.Contains(output, "Install OpenBao") {
 		t.Fatalf("prompt must appear when SecretStoreUndecided is true, got:\n%s", output)
 	}
-	if !strings.Contains(output, "Warning: releases will not work") {
-		t.Fatalf("skip warning missing:\n%s", output)
+	if !strings.Contains(output, "Add one later with --install-secretstore") {
+		t.Fatalf("skip guidance missing:\n%s", output)
 	}
 }
 
@@ -3923,11 +3927,15 @@ func TestFinishInstallInteractiveOnboarding(t *testing.T) {
 	}
 }
 
-func TestFinishInstallOnboardingSkipOnEmptyUpstream(t *testing.T) {
+// Declining a forge must not decline the rest. The upstream is where code
+// comes from; the uplink and the client configuration are how anyone reaches
+// this server, and a deployment with no upstream still has to be reachable.
+func TestEmptyUpstreamStillRegistersAnUplink(t *testing.T) {
 	t.Parallel()
 	host := &fakeOberthHost{t: t}
 	var buf bytes.Buffer
-	deps := onboardingDeps(t, host, &buf, strings.NewReader("\n"), true)
+	// Upstream skipped, then the SSH-config and client-access offers.
+	deps := onboardingDeps(t, host, &buf, strings.NewReader("\n\n\n\n"), true)
 	cfg := Config{}
 	_ = cfg.Validate()
 
@@ -3935,11 +3943,14 @@ func TestFinishInstallOnboardingSkipOnEmptyUpstream(t *testing.T) {
 		t.Fatal(err)
 	}
 	output := buf.String()
-	if !strings.Contains(output, "No upstream given — skipping onboarding.") {
-		t.Fatalf("output missing skip note:\n%s", output)
+	if strings.Contains(output, "skipping onboarding") {
+		t.Fatalf("declining a forge must not skip the rest of onboarding:\n%s", output)
 	}
 	if !strings.Contains(output, "oberth upstream add") {
-		t.Fatalf("skip path must print the manual steps:\n%s", output)
+		t.Fatalf("skip path must say how to add an upstream later:\n%s", output)
+	}
+	if len(host.uplinkArgv) == 0 {
+		t.Fatalf("no uplink was registered without an upstream:\n%s", output)
 	}
 }
 
