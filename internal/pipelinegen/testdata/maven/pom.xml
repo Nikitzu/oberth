@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Trimmed from coreapi-bookings: the parent, the coordinates, and nothing
+     else. The full pom is 400+ lines of dependencies that this generator
+     never reads. -->
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+	<modelVersion>4.0.0</modelVersion>
+	<parent>
+		<groupId>com.transferz</groupId>
+		<artifactId>springboot-4.0-parent</artifactId>
+		<version>1.0.2</version>
+		<relativePath/>
+	</parent>
+	<artifactId>coreapi-bookings</artifactId>
+	<version>1.2.0</version>
+	<name>coreapi-bookings</name>
+</project>
