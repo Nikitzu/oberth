@@ -39,15 +39,30 @@ func promptUpstreamToken(ctx context.Context, cfg Config, deps Deps, tw *tableWr
 
 	_, _ = fmt.Fprintln(w, "\nA token lets the dashboard push a green branch and open its pull request.")
 	_, _ = fmt.Fprintln(w, "It is yours, not this server's: it reaches the repositories you reach, and")
-	_, _ = fmt.Fprintln(w, "no administrator has to install anything on the forge. Enter to skip.")
+	_, _ = fmt.Fprintln(w, "no administrator has to install anything on the forge.")
 
-	startPrompt(w, color, "Upstream token", "personal access token: ")
-	token, err := readLine(ctx, deps.Input)
+	// Prefer somewhere the token already is.
+	//
+	// Asking someone to paste a credential trains them to paste credentials,
+	// and a pasted one lands in scrollback and in the terminal's own history
+	// of the session. Most people already keep this in an environment variable
+	// or a password manager, so look there first and say where it was found.
+	token, source := existingUpstreamToken()
+	if token != "" {
+		_, _ = fmt.Fprintf(w, "Found one in %s. Enter to use it, or paste a different one.\n", source)
+	} else {
+		_, _ = fmt.Fprintf(w, "Set %s in your shell profile and re-run to avoid pasting it.\n",
+			strings.Join(upstreamTokenEnvVars, " or "))
+		_, _ = fmt.Fprintln(w, "Enter to skip; input is not echoed.")
+	}
+
+	typed, err := readSecret(ctx, deps, w, color, "Upstream token", "personal access token: ")
 	if err != nil {
 		return fmt.Errorf("read upstream token: %w", err)
 	}
-	erasePromptLines(w, color, 1)
-	token = strings.TrimSpace(token)
+	if typed != "" {
+		token, source = typed, "entered"
+	}
 	if token == "" {
 		tw.AppendRow("Upstream token", "skipped; push & open PR will not push", "— skipped", false)
 		return nil
@@ -56,7 +71,7 @@ func promptUpstreamToken(ctx context.Context, cfg Config, deps Deps, tw *tableWr
 		tw.AppendRow("Upstream token", err.Error(), "✗ error", false)
 		return nil
 	}
-	tw.AppendRow("Upstream token", upstreamTokenSecretName, "✓ stored", false)
+	tw.AppendRow("Upstream token", "from "+source, "✓ stored", false)
 	return nil
 }
 
