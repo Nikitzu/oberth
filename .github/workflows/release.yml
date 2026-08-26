@@ -66,15 +66,25 @@ jobs:
           tags: ${{ env.IMAGE }}:${{ github.ref_name }}
           build-args: VERSION=${{ github.ref_name }}
 
-      # The installer and CLI binary for the machine a teammate actually sits
-      # at. CGO_ENABLED=0 so it needs nothing from the host.
-      - name: build the darwin-arm64 binary
+      # The installer and CLI binary, for every machine anyone here runs.
+      # CGO_ENABLED=0 so none of them needs anything from its host.
+      #
+      # Four, not one: Apple silicon and Intel Macs, and Linux on both
+      # architectures for the homeserver and for anyone not on a Mac. The
+      # server image is already built for both Linux architectures, so a
+      # binary that only ran on one kind of laptop was the odd one out.
+      - name: build the binaries
         run: |
-          CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build \
-            -trimpath -buildvcs=false \
-            -ldflags="-s -w -X main.version=${GITHUB_REF_NAME}" \
-            -o oberth-darwin-arm64 ./cmd/oberth
-          sha256sum oberth-darwin-arm64 > oberth-darwin-arm64.sha256
+          for target in darwin/arm64 darwin/amd64 linux/amd64 linux/arm64; do
+            os="${target%/*}"; arch="${target#*/}"
+            out="oberth-${os}-${arch}"
+            CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" go build \
+              -trimpath -buildvcs=false \
+              -ldflags="-s -w -X main.version=${GITHUB_REF_NAME}" \
+              -o "$out" ./cmd/oberth
+            sha256sum "$out" > "$out.sha256"
+          done
+          ls -1 oberth-*
 
       # The installer resolves the chart by its own version from the published
       # oberth-charts index, which only ever carries upstream's releases. A
@@ -105,15 +115,22 @@ jobs:
 
               ${{ env.IMAGE }}@${DIGEST}
 
-          Install on a Mac with kind:
+          Install (macOS builds a kind cluster; Linux uses k3s):
 
-              chmod +x oberth-darwin-arm64
-              ./oberth-darwin-arm64 install \\
+              # Pick the one for this machine:
+              #   oberth-darwin-arm64   Apple silicon Mac
+              #   oberth-darwin-amd64   Intel Mac
+              #   oberth-linux-amd64    Linux x86_64
+              #   oberth-linux-arm64    Linux aarch64
+              chmod +x oberth-<os>-<arch>
+              ./oberth-<os>-<arch> install \\
                 --chart oberth-${GITHUB_REF_NAME#v}.tgz \\
                 --image ${{ env.IMAGE }}@${DIGEST}
 
-          That is the whole path. The installer creates the kind cluster,
-          installs Argo and OpenBao, deploys the chart and runs onboarding.
+          That is the whole path. The installer prepares the cluster, installs
+          Argo and OpenBao, deploys the chart and runs onboarding. On macOS it
+          creates a kind cluster; on Linux it expects a k3s cluster it can
+          reach. Only the macOS path is exercised on every release.
 
           The package is public, so nothing needs a login. If the image is
           already in the local Docker daemon the installer loads it into the
@@ -123,11 +140,12 @@ jobs:
 
               docker pull ${{ env.IMAGE }}@${DIGEST}
 
-          Verify the binary before running it:
+          Verify the binary before running it, with shasum on macOS or
+          sha256sum on Linux:
 
-              shasum -a 256 -c oberth-darwin-arm64.sha256
+              shasum -a 256 -c oberth-<os>-<arch>.sha256
           EOF
           gh release create "${GITHUB_REF_NAME}" \
             --title "${GITHUB_REF_NAME}" \
             --notes-file notes.md \
-            oberth-darwin-arm64 oberth-darwin-arm64.sha256 oberth-*.tgz
+            oberth-darwin-* oberth-linux-* oberth-*.tgz
