@@ -195,7 +195,9 @@ function setConn(ok, msg) {
 function setVersion(ok, version) {
   const seg = document.getElementById("versionStatus"), label = document.getElementById("verLabel");
   const value = version || document.body.dataset.version || "dev";
-  if (label) label.textContent = value;
+  // The label truncates, so it carries the full string itself rather than
+  // relying on the parent's title reaching the pointer.
+  if (label) { label.textContent = value; label.title = value; }
   if (seg) {
     seg.className = "status-segment version-mode " + (ok ? "ok" : "unknown");
     const detail = ok ? `oberth ${value}` : `oberth ${value} (unconfirmed)`;
