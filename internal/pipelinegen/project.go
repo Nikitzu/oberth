@@ -50,8 +50,19 @@ type Project struct {
 	// Org is the upstream organization, which is what scopes the secret the
 	// private registry needs. Repo is the repository name Oberth catalogs it
 	// under, which is what a grant is keyed by.
+	//
+	// Org is NOT detected. It is the trailing segment of the base URL an
+	// upstream was registered with on the server, so only the server knows it;
+	// a checkout cloned from a local path or a mirror yields a different word,
+	// and the secret path built from that word is refused at admission. The
+	// caller supplies it.
 	Org  string
 	Repo string
+
+	// OriginOrg is what the origin remote suggests the org is. It is carried
+	// for one purpose: saying so in the generated file when it disagrees with
+	// the registered org. It is never used to build a path.
+	OriginOrg string
 
 	// Provenance and honesty.
 	Sources      []string
@@ -142,7 +153,7 @@ func DetectProject(root string) Project {
 		project.note("go.mod found")
 	}
 
-	project.Org, project.Repo = originIdentity(root)
+	project.OriginOrg, project.Repo = originIdentity(root)
 	return project
 }
 
@@ -221,10 +232,13 @@ var originPattern = regexp.MustCompile(`url\s*=\s*\S*?[/:]([^/\s]+)/([^/\s]+?)(?
 // originIdentity reads the org and repository name out of the origin remote in
 // .git/config.
 //
-// Both scope things the server checks: the org scopes a secret-store path and
-// the repository name is what a grant is keyed by. They are read from the
-// remote the push will go to rather than guessed from the directory name,
-// because a checkout is frequently in a directory named something else.
+// The repository name is what a grant is keyed by, and this is where it comes
+// from. The org is not: it is returned only so the generator can point out a
+// disagreement with the org the server has registered, which is the one
+// admission enforces. A checkout whose origin is a local path yields the
+// containing directory's name here, and a secret path built from that is
+// refused -- which is exactly the failure that took the org away from this
+// function.
 func originIdentity(root string) (org, repo string) {
 	raw, err := os.ReadFile(filepath.Join(root, ".git", "config"))
 	if err != nil {

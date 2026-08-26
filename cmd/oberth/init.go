@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/oberthci/oberth/internal/model"
 	"github.com/oberthci/oberth/internal/pipelinegen"
 )
 
@@ -20,13 +21,16 @@ var allProjectTypes = []pipelinegen.Kind{
 	pipelinegen.KindGo, pipelinegen.KindNode, pipelinegen.KindMaven, pipelinegen.KindUnknown,
 }
 
-func runInit(_ context.Context, arguments []string, output io.Writer) error {
+func runInit(ctx context.Context, arguments []string, output io.Writer) error {
 	var typeOverride string
+	var orgOverride string
 	var force bool
 	flags := flag.NewFlagSet("init", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	flags.StringVar(&typeOverride, "type", "",
 		"project type: go|node|maven|generic (default: read the repository's own build workflow and manifests)")
+	flags.StringVar(&orgOverride, "org", "",
+		"upstream organization scoping this repository's secrets (default: ask the server which one it has registered)")
 	flags.BoolVar(&force, "force", false, "overwrite existing .oberth/build.yaml")
 	if err := flags.Parse(arguments); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -43,7 +47,71 @@ func runInit(_ context.Context, arguments []string, output io.Writer) error {
 	if err != nil {
 		return fmt.Errorf("determine working directory: %w", err)
 	}
-	return executeInit(root, typeOverride, force, output)
+	return executeInit(ctx, root, typeOverride, orgOverride, force, output)
+}
+
+// resolveOrg answers which upstream organization scopes this repository's
+// secrets.
+//
+// It used to be read out of the origin remote, which is a guess. The org is
+// the trailing segment of the base URL an upstream was REGISTERED with, and
+// admission matches a declared secret path against that and nothing else. A
+// checkout whose origin is a local path produced the containing directory's
+// name -- "Documents" -- and the pipeline generated from it was refused at the
+// first push, naming a path nobody had ever typed.
+//
+// So it is asked for, or it is stated. It is never inferred.
+func resolveOrg(ctx context.Context, override string) (org, source string, err error) {
+	if named := strings.TrimSpace(override); named != "" {
+		return named, "--org", nil
+	}
+	org, err = registeredOrg(ctx)
+	if err != nil {
+		return "", "", fmt.Errorf(`cannot determine which upstream organization scopes this repository: %w
+
+The organization is registered on the server, not derivable from this
+checkout. Either point this command at the server (OBERTH_BASE_URL, plus
+OBERTH_TOKEN or OBERTH_TOKEN_COMMAND -- ~/.config/oberth/env sets all three),
+or name it: oberth init --org <name>`, err)
+	}
+	return org, "the upstream registered on the server", nil
+}
+
+// registeredOrg reads the org off the deployment's own upstream registration.
+func registeredOrg(ctx context.Context) (string, error) {
+	api, err := remoteClient(ctx)
+	if err != nil {
+		return "", err
+	}
+	var status struct {
+		UpstreamInfo []struct {
+			Name    string `json:"name"`
+			Kind    string `json:"kind"`
+			BaseURL string `json:"base_url"`
+		} `json:"upstream_info"`
+	}
+	if err := api.Get(ctx, "/api/status", nil, &status); err != nil {
+		return "", err
+	}
+	if len(status.UpstreamInfo) == 0 {
+		return "", errors.New("the server has no registered upstream")
+	}
+	if len(status.UpstreamInfo) > 1 {
+		var names []string
+		for _, upstream := range status.UpstreamInfo {
+			names = append(names, model.Upstream{BaseURL: upstream.BaseURL}.Org())
+		}
+		return "", fmt.Errorf("the server has %d upstreams registered (%s); say which one with --org",
+			len(status.UpstreamInfo), strings.Join(names, ", "))
+	}
+	// The same rule the server applies when it seeds the token and when it
+	// admits a path: the trailing segment of the registered base URL.
+	org := model.Upstream{BaseURL: status.UpstreamInfo[0].BaseURL}.Org()
+	if org == "" {
+		return "", fmt.Errorf("upstream %q has no organization in its base URL %q",
+			status.UpstreamInfo[0].Name, status.UpstreamInfo[0].BaseURL)
+	}
+	return org, nil
 }
 
 // executeInit reads the repository, generates its pipeline, and writes it.
@@ -54,10 +122,22 @@ func runInit(_ context.Context, arguments []string, output io.Writer) error {
 // exactly like one that works. Everything below either produces steps that
 // really run this repository's build, or says in the file and on the terminal
 // that it did not.
-func executeInit(root, typeOverride string, force bool, output io.Writer) error {
+func executeInit(ctx context.Context, root, typeOverride, orgOverride string, force bool, output io.Writer) error {
 	project := pipelinegen.DetectProject(root)
 	if workflow, ok := pipelinegen.FindBuildWorkflow(root); ok {
 		pipelinegen.Apply(workflow, &project)
+	}
+
+	// Only a pipeline that reads a secret needs the org, and asking for one
+	// costs a round trip and can fail. A repository that pulls nothing private
+	// is still initialized on a machine that cannot reach the server.
+	orgSource := ""
+	if project.PrivateRegistry {
+		org, source, err := resolveOrg(ctx, orgOverride)
+		if err != nil {
+			return err
+		}
+		project.Org, orgSource = org, source
 	}
 
 	reason := "the repository's own files"
@@ -76,7 +156,7 @@ func executeInit(root, typeOverride string, force bool, output io.Writer) error 
 		return err
 	}
 
-	return report(output, project, result, reason)
+	return report(output, project, result, reason, orgSource)
 }
 
 func parseProjectType(value string) (pipelinegen.Kind, error) {
@@ -149,7 +229,7 @@ func writePipeline(root, content string, force bool) error {
 // The old summary claimed "5 steps, 3 dependencies, ~30 seconds to run" for
 // every repository, which was true of the demo and of nothing else. These
 // numbers are counted from the document that was actually written.
-func report(output io.Writer, project pipelinegen.Project, result pipelinegen.Result, reason string) error {
+func report(output io.Writer, project pipelinegen.Project, result pipelinegen.Result, reason, orgSource string) error {
 	var out strings.Builder
 
 	kind := string(project.Kind)
@@ -178,6 +258,13 @@ func report(output io.Writer, project pipelinegen.Project, result pipelinegen.Re
 	if len(project.Untranslated) > 0 {
 		fmt.Fprintf(&out, "\n%d thing(s) could not be translated. They are listed at the top of the\n", len(project.Untranslated))
 		out.WriteString("file; read them before trusting a green run.\n")
+	}
+
+	if orgSource != "" {
+		fmt.Fprintf(&out, "\nupstream org: %s (%s)\n", project.Org, orgSource)
+		if project.OriginOrg != "" && project.OriginOrg != project.Org {
+			fmt.Fprintf(&out, "  the origin remote suggests %q; the registered org is what admission\n  matches, so it is the one used.\n", project.OriginOrg)
+		}
 	}
 
 	if result.SecretPath != "" {

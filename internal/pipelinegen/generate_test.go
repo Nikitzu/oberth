@@ -56,6 +56,9 @@ func generateFor(t *testing.T, fixture string) Result {
 	if workflow, ok := FindBuildWorkflow(root); ok {
 		Apply(workflow, &project)
 	}
+	// The org is the caller's to supply, the way `oberth init` supplies the
+	// one the server has registered. Detection deliberately does not set it.
+	project.Org = "transferz"
 	return Generate(project)
 }
 
@@ -239,4 +242,31 @@ func containsStep(steps []string, want string) bool {
 		}
 	}
 	return false
+}
+
+// The org is registered on the server and nowhere else. A checkout cloned from
+// a local path names its containing directory here, and a secret path built
+// from that word is refused at admission -- so detection must not produce one
+// at all, rather than produce a plausible wrong one.
+func TestDetectionDoesNotInventAnOrg(t *testing.T) {
+	t.Parallel()
+	project := DetectProject(materialize(t, "node"))
+	if project.Org != "" {
+		t.Fatalf("detection guessed an org: %q", project.Org)
+	}
+	if project.OriginOrg == "" {
+		t.Fatal("the origin's org was not kept for the disagreement note")
+	}
+}
+
+// A disagreement is information, not a failure: the file says which one is
+// enforced rather than silently using either.
+func TestADisagreementWithTheOriginIsSaidInTheFile(t *testing.T) {
+	t.Parallel()
+	project := DetectProject(materialize(t, "node"))
+	project.Org = "acme"
+	document := Generate(project).YAML
+	if !strings.Contains(document, "acme") || !strings.Contains(document, project.OriginOrg) {
+		t.Fatalf("the header does not name both orgs:\n%s", document)
+	}
 }

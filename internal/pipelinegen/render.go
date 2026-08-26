@@ -95,6 +95,11 @@ func writeHeader(out *strings.Builder, project Project, result Result) {
 		}
 		out.WriteString("#\n")
 	}
+	if project.OriginOrg != "" && project.Org != "" && project.OriginOrg != project.Org {
+		out.WriteString("# Note: this repository's origin remote suggests the org is `" + project.OriginOrg + "`,\n")
+		out.WriteString("# and the server has `" + project.Org + "` registered. The registered one is what\n")
+		out.WriteString("# admission matches a secret path against, so it is the one used here.\n#\n")
+	}
 	if result.SecretPath != "" {
 		out.WriteString("# This pipeline reads one secret, the forge token `oberth install` stored\n")
 		out.WriteString("# for this org:\n#\n#   " + result.SecretPath + "\n#\n")

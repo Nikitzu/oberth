@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,7 +15,7 @@ import (
 func readGenerated(t *testing.T, dir string, typeOverride string) (string, string) {
 	t.Helper()
 	var output bytes.Buffer
-	if err := executeInit(dir, typeOverride, false, &output); err != nil {
+	if err := executeInit(context.Background(), dir, typeOverride, "", false, &output); err != nil {
 		t.Fatal(err)
 	}
 	content, err := os.ReadFile(filepath.Join(dir, ".oberth", "build.yaml")) // #nosec G304 -- test temp dir
