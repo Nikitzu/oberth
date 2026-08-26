@@ -1,0 +1,96 @@
+# Tag-triggered release for the fork.
+#
+# The point is to remove `git clone`, `go build` and `docker build` from a
+# teammate's path. After this runs, getting a working deployment is: download
+# the binary from the release, `docker pull` the image, `kind load` it, and
+# `oberth install --image <digest>`.
+#
+# The image is pulled on the HOST and loaded into the kind node, not pulled by
+# the kubelet. That is deliberate: the package is private, and a node pulling
+# from a private registry would need an imagePullSecret wired into the chart.
+# Loading it host-side needs only `docker login ghcr.io`, and the installer's
+# --image flag already aliases a locally held image to the digest ref the chart
+# pins.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # linux/arm64 is what a kind node on Apple silicon runs. amd64 is built
+      # too so the same tag works on an Intel machine or a Linux homeserver.
+      #
+      # provenance:false keeps this a plain manifest list rather than attaching
+      # an attestation. The chart pins image.ref by digest and the kubelet
+      # resolves an index fine either way, but the attestation makes the digest
+      # harder to reason about when reading it back by hand.
+      - id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          provenance: false
+          push: true
+          tags: ghcr.io/${{ github.repository }}:${{ github.ref_name }}
+          build-args: VERSION=${{ github.ref_name }}
+
+      # The installer and CLI binary for the machine a teammate actually sits
+      # at. CGO_ENABLED=0 so it needs nothing from the host.
+      - name: build the darwin-arm64 binary
+        run: |
+          CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build \
+            -trimpath -buildvcs=false \
+            -ldflags="-s -w -X main.version=${GITHUB_REF_NAME}" \
+            -o oberth-darwin-arm64 ./cmd/oberth
+          sha256sum oberth-darwin-arm64 > oberth-darwin-arm64.sha256
+
+      # The digest goes in the release body because it is the one value the
+      # install command cannot be written without, and reading it back off the
+      # registry by hand is the step people get wrong.
+      - name: publish the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          cat > notes.md <<EOF
+          Image: \`ghcr.io/${{ github.repository }}:${GITHUB_REF_NAME}\`
+
+          Pinned reference for \`--image\`:
+
+              ghcr.io/${{ github.repository }}@${DIGEST}
+
+          Install on a Mac with kind:
+
+              docker login ghcr.io
+              docker pull ghcr.io/${{ github.repository }}@${DIGEST}
+              ./oberth-darwin-arm64 install --image ghcr.io/${{ github.repository }}@${DIGEST}
+
+          The package is private, so \`docker login ghcr.io\` with a token
+          carrying \`read:packages\` is required before the pull.
+          EOF
+          gh release create "${GITHUB_REF_NAME}" \
+            --title "${GITHUB_REF_NAME}" \
+            --notes-file notes.md \
+            oberth-darwin-arm64 oberth-darwin-arm64.sha256
