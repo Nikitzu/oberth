@@ -35,8 +35,18 @@ func TestSchemaMigrationsAreContiguous(t *testing.T) {
 		if item.version != index+1 {
 			t.Fatalf("migration %d version = %d, want %d", index, item.version, index+1)
 		}
-		if (item.sql == "") == (item.apply == nil) {
-			t.Fatalf("migration %d must define exactly one application method", item.version)
+		methods := 0
+		if item.sql != "" {
+			methods++
+		}
+		if item.apply != nil {
+			methods++
+		}
+		if item.rawApply != nil {
+			methods++
+		}
+		if methods != 1 {
+			t.Fatalf("migration %d must define exactly one application method (has %d)", item.version, methods)
 		}
 	}
 
@@ -1603,21 +1613,33 @@ VALUES('oberth', 'nightly', 1, 'fired');`); err != nil {
 		t.Fatalf("receive events after migration = %d, want 1", recvCount)
 	}
 
-	// Verify schedule_fires survived.
+	// Verify schedule_fires survived with qualified repo names.
 	var fireCount int
-	if err := opened.db.QueryRow(`SELECT count(*) FROM schedule_fires WHERE repo = 'oberth'`).Scan(&fireCount); err != nil {
+	if err := opened.db.QueryRow(`SELECT count(*) FROM schedule_fires WHERE repo = 'codeberg/cloudtaser/oberth'`).Scan(&fireCount); err != nil {
 		t.Fatal(err)
 	}
 	if fireCount != 1 {
 		t.Fatalf("schedule fires after migration = %d, want 1", fireCount)
 	}
 
-	// Verify UNIQUE(name) is still enforced (compound unique deferred to G3).
+	// Verify UNIQUE(upstream_id, name) is enforced.
 	_, err = opened.db.Exec(`
 INSERT INTO repositories(name, upstream_id, default_branch, created_at, updated_at)
 VALUES('oberth', 1, 'main', 2, 2)`)
 	if err == nil {
-		t.Fatal("UNIQUE(name) must still be enforced; duplicate repo name was accepted")
+		t.Fatal("UNIQUE(upstream_id, name) must reject duplicate (same name, same upstream)")
+	}
+
+	// Same name under a DIFFERENT upstream should now succeed.
+	if _, err := opened.db.Exec(`
+INSERT INTO upstreams(id, name, kind, base_url, created_at, updated_at)
+VALUES(2, 'github', 'ssh', 'ssh://git@github.com/oberthci', 1, 1)`); err != nil {
+		t.Fatalf("create second upstream: %v", err)
+	}
+	if _, err := opened.db.Exec(`
+INSERT INTO repositories(name, upstream_id, default_branch, created_at, updated_at)
+VALUES('oberth', 2, 'main', 2, 2)`); err != nil {
+		t.Fatalf("same name under different upstream should succeed after G3: %v", err)
 	}
 
 	// FK integrity check.

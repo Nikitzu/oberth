@@ -1101,16 +1101,27 @@ func (config Config) cacheRootFor(trigger periapsis.Trigger) string {
 // repoCacheSegment derives the single directory name a repository's cache lives
 // under, inside its tier's root.
 //
-// The repository name arrives from a push, so it is never used verbatim in a
-// node path. Only lowercase alphanumerics, '-' and '_' survive; '.' is
+// The digest key is the org-qualified identity (org/repo), so same-name repos
+// under different upstreams land in different cache directories. Upstream org
+// uniqueness is enforced at registration time, making org/repo sufficient for
+// isolation.
+//
+// The readable prefix and digest are both taken over the qualified form.
+// Only lowercase alphanumerics, '-' and '_' survive; '.' and '/' are
 // deliberately not in that set, which makes "." and ".." structurally
-// unreachable rather than filtered for. The trailing digest is taken over the
-// original name, so two repositories that sanitise or truncate to the same
-// readable prefix still land in different directories.
-func repoCacheSegment(repo string) string {
-	digest := sha256.Sum256([]byte(repo))
+// unreachable rather than filtered for.
+//
+// NOTE: This changed in v0.14 from bare-name to org-qualified digesting.
+// Existing build caches start cold after this change; old cache directories
+// are orphaned but harmless.
+func repoCacheSegment(repo, upstreamOrg string) string {
+	qualified := repo
+	if upstreamOrg != "" {
+		qualified = upstreamOrg + "/" + repo
+	}
+	digest := sha256.Sum256([]byte(qualified))
 	var safe strings.Builder
-	for _, character := range strings.ToLower(repo) {
+	for _, character := range strings.ToLower(qualified) {
 		switch {
 		case character >= 'a' && character <= 'z',
 			character >= '0' && character <= '9',
@@ -1146,7 +1157,7 @@ func cacheVolumeAndMount(config Config, request Request) (corev1.Volume, corev1.
 		Name: CacheVolumeName,
 		VolumeSource: corev1.VolumeSource{
 			HostPath: &corev1.HostPathVolumeSource{
-				Path: path.Join(root, repoCacheSegment(request.Repo)),
+				Path: path.Join(root, repoCacheSegment(request.Repo, request.UpstreamOrg)),
 				Type: &hostPathType,
 			},
 		},

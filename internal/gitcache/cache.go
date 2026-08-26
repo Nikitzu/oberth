@@ -224,6 +224,7 @@ type Cache struct {
 	outboxRoot      string
 	globalConfig    string
 	upstream        func(string) (string, error)
+	repoQualifier   func(string) (RepoQualification, bool)
 	gitBinary       string
 	timeout         time.Duration
 	env             map[string]string
@@ -275,6 +276,7 @@ func New(config Config) (*Cache, error) {
 		outboxRoot:      outboxRoot,
 		globalConfig:    globalConfig,
 		upstream:        config.Upstream,
+		repoQualifier:   config.RepoQualifier,
 		gitBinary:       gitBinary,
 		timeout:         defaultTimeout(config.CommandTimeout),
 		env:             cloneMap(config.Env),
@@ -890,24 +892,41 @@ func (c *Cache) isBare(ctx context.Context, path string) bool {
 }
 
 func (c *Cache) path(input string) (string, string, error) {
-	// ParseRepoPath validates and splits the input; the upstream and org
-	// segments route upstream resolution (configureRemote) but MUST NOT
-	// affect the cache identity or on-disk path. The canonical cache key
-	// is the bare repo name — one repository has one cache directory, one
-	// lock, and one reservation regardless of input spelling. Qualified
-	// paths (upstream/org/repo.git) are deferred to G3 canonical
-	// persistence (#245); until then, UNIQUE(name) in the schema prevents
-	// same-name repos across upstreams, so the bare name is unambiguous.
-	_, _, repo, err := ParseRepoPath(input)
+	upstream, org, repo, err := ParseRepoPath(input)
 	if err != nil {
 		return "", "", err
 	}
-	cachePath := filepath.Join(c.root, repo+".git")
+	cachePath := c.qualifiedCachePath(upstream, org, repo)
 	relative, err := filepath.Rel(c.root, cachePath)
 	if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
 		return "", "", fmt.Errorf("repository path escapes cache root")
 	}
 	return repo, cachePath, nil
+}
+
+// qualifiedCachePath resolves the on-disk path for a repository's bare cache.
+//
+// The path layout is <root>/<upstream>/<org>/<repo>.git when the upstream and
+// org are known (either from the input or the repo qualifier), and falls back
+// to the flat <root>/<repo>.git layout when they are not.
+func (c *Cache) qualifiedCachePath(upstream, org, repo string) string {
+	if upstream != "" && org != "" {
+		return filepath.Join(c.root, upstream, org, repo+".git")
+	}
+	if org != "" && c.repoQualifier != nil {
+		// Org-qualified input -- resolve the upstream name.
+		if q, ok := c.repoQualifier(repo); ok && q.UpstreamName != "" && q.Org == org {
+			return filepath.Join(c.root, q.UpstreamName, org, repo+".git")
+		}
+	}
+	if upstream == "" && org == "" && c.repoQualifier != nil {
+		// Bare name -- resolve both from the registry.
+		if q, ok := c.repoQualifier(repo); ok && q.UpstreamName != "" && q.Org != "" {
+			return filepath.Join(c.root, q.UpstreamName, q.Org, repo+".git")
+		}
+	}
+	// Fallback: flat layout (pre-migration or resolver unavailable).
+	return filepath.Join(c.root, repo+".git")
 }
 
 func (c *Cache) repoLock(repo string) *sync.Mutex {

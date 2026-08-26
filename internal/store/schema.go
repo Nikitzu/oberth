@@ -1,9 +1,10 @@
 package store
 
 type migration struct {
-	version int
-	sql     string
-	apply   migrationFunc
+	version  int
+	sql      string
+	apply    migrationFunc
+	rawApply connectionLevelMigration // runs outside the normal migration transaction
 }
 
 const (
@@ -684,12 +685,7 @@ CREATE UNIQUE INDEX secret_access_active
 ) WITHOUT ROWID;`,
 	},
 	{
-		version: 10,
-		sql: `-- Phase 1 of org-qualified identity (#245): reserved-name guards and
--- upstream namespace disjointness enforced in code. Compound unique on
--- (upstream_id, name) deferred to canonical persistence (G3); grants,
--- schedule_fires, and cache paths must key on the qualified form before
--- same-name repos across upstreams can be admitted.
-SELECT 1`,
+		version:  10,
+		rawApply: migrateV10CanonicalPersistence,
 	},
 }

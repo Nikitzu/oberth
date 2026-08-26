@@ -131,6 +131,13 @@ func (discardLogger) Printf(string, ...any) {}
 // Config constructs a cache rooted at Root. Upstream resolves a validated
 // repository name to a Git remote. Env is an operator-owned allowlist of
 // variables required by Git (for example, a fixed GIT_SSH_COMMAND).
+// RepoQualification carries the upstream and org identity for a repository,
+// used to determine the org-qualified cache directory path.
+type RepoQualification struct {
+	UpstreamName string
+	Org          string
+}
+
 type Config struct {
 	Root           string
 	Upstream       func(repo string) (string, error)
@@ -139,6 +146,11 @@ type Config struct {
 	Env            map[string]string
 	Redact         []string
 	Logger         Logger
+	// RepoQualifier resolves a bare repository name to its upstream name and
+	// org identity. It is used to determine the org-qualified cache directory
+	// path (<root>/<upstream>/<org>/<repo>.git). When nil, the cache falls
+	// back to the flat layout (<root>/<repo>.git).
+	RepoQualifier func(bareName string) (RepoQualification, bool)
 	// PreFinalizeGate is an optional server-owned check invoked after
 	// receive-pack applies ref updates and BEFORE finalization records
 	// the delta in the durable outbox. When it returns an error,

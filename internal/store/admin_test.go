@@ -327,7 +327,11 @@ func TestRegisterUpstreamRejectsNameOrgDisjointness(t *testing.T) {
 	}
 }
 
-func TestSameNameDifferentUpstreamRejectedUntilG3(t *testing.T) {
+// TestSameNameDifferentUpstreamAllowedAfterG3 verifies that the compound
+// UNIQUE(upstream_id, name) constraint (G3 canonical persistence) allows
+// same-name repositories under different upstreams while still rejecting
+// duplicates under the same upstream.
+func TestSameNameDifferentUpstreamAllowedAfterG3(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 8, 25, 3, 0, 0, 0, time.UTC)
 	database := testStore(t, &now)
@@ -353,22 +357,47 @@ func TestSameNameDifferentUpstreamRejectedUntilG3(t *testing.T) {
 		t.Fatalf("register terraform under codeberg: %v", err)
 	}
 
-	// Same name under a different upstream must be rejected while
-	// UNIQUE(name) is in effect — same-name repos need canonical
-	// persistence (G3) before the compound key replaces it.
-	_, err = database.RegisterRepository(ctx, "admin@localhost", model.RepositorySpec{
+	// G3: same name under a different upstream is now allowed.
+	repo2, err := database.RegisterRepository(ctx, "admin@localhost", model.RepositorySpec{
 		Name: "terraform", UpstreamID: upstream2.ID, DefaultBranch: "main",
 	})
-	if err == nil {
-		t.Fatal("same-name repo under different upstream should fail until G3 canonical persistence lands")
+	if err != nil {
+		t.Fatalf("same-name repo under different upstream should succeed after G3: %v", err)
+	}
+	if repo2.UpstreamID != upstream2.ID {
+		t.Fatalf("second terraform repo upstream = %d, want %d", repo2.UpstreamID, upstream2.ID)
 	}
 
-	// Same name under the same upstream should also fail.
+	// Same name under the same upstream must still fail.
 	_, err = database.RegisterRepository(ctx, "admin@localhost", model.RepositorySpec{
 		Name: "terraform", UpstreamID: upstream1.ID, DefaultBranch: "main",
 	})
 	if err == nil {
 		t.Fatal("duplicate name under same upstream should fail")
+	}
+
+	// Bare-name lookup should be ambiguous now.
+	_, err = database.RepositoryByName(ctx, "terraform")
+	if !errors.Is(err, ErrAmbiguous) {
+		t.Fatalf("bare-name lookup for ambiguous repo = %v, want ErrAmbiguous", err)
+	}
+
+	// Org-qualified lookup should resolve correctly.
+	found, err := database.RepositoryByName(ctx, "oberthci/terraform")
+	if err != nil {
+		t.Fatalf("org-qualified lookup: %v", err)
+	}
+	if found.ID != repo2.ID {
+		t.Fatalf("org-qualified lookup returned repo %d, want %d", found.ID, repo2.ID)
+	}
+
+	// Fully-qualified lookup should resolve correctly.
+	found, err = database.RepositoryByName(ctx, "codeberg/cloudtaser/terraform")
+	if err != nil {
+		t.Fatalf("fully-qualified lookup: %v", err)
+	}
+	if found.UpstreamID != upstream1.ID {
+		t.Fatalf("fully-qualified lookup upstream = %d, want %d", found.UpstreamID, upstream1.ID)
 	}
 }
 

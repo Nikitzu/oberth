@@ -261,7 +261,7 @@ func TestRepoCacheSegmentIsAContainedSingleSegment(t *testing.T) {
 	}
 	seen := map[string]string{}
 	for _, repo := range hostile {
-		segment := repoCacheSegment(repo)
+		segment := repoCacheSegment(repo, "testorg")
 		if strings.ContainsAny(segment, "/\x00") {
 			t.Fatalf("repo %q produced a segment with a separator: %q", repo, segment)
 		}
