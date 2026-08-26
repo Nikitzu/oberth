@@ -165,6 +165,14 @@ argo:
   # mounts its token into the executor container only.
   executorServiceAccount: "oberth-argo-executor"
 
+  # Per-repo Vault identities. Each entry creates a ServiceAccount in
+  # argo.namespace whose name doubles as the Vault role and policy name.
+  # The installer populates this list from the repo registry + grants;
+  # the chart creates the ServiceAccounts; the installer creates the
+  # Vault policies and roles. Empty means all repos use the shared
+  # credentialed / ci-secrets identities.
+  perRepoIdentities: []
+
   # Ceiling on a document's own activeDeadlineSeconds, and how long a finished
   # Workflow object is retained.
   workflowTimeout: 12h

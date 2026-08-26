@@ -259,5 +259,9 @@ func argoOberthHelmValues(cfg Config, openbao OpenBaoResult) []string {
 		strings.TrimSpace(openbao.CACertPEM) != "" {
 		values = append(values, "--set-string", "argo.vault.caCert="+openbao.CACertPEM)
 	}
+	// Per-repo identity ServiceAccount names, so the chart creates them.
+	for i, name := range PerRepoIdentityNames(cfg.PerRepoIdentities) {
+		values = append(values, "--set", fmt.Sprintf("argo.perRepoIdentities[%d]=%s", i, name))
+	}
 	return values
 }

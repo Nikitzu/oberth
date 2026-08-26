@@ -157,6 +157,11 @@ type Config struct {
 	// exact-path grants alongside the upstream/* wildcard. Populated from
 	// the approval table when the installer syncs the policy to OpenBao.
 	CredentialedSecretPaths []string
+	// PerRepoIdentities describes per-repo Vault identities to create.
+	// Each entry results in a ServiceAccount (via the chart), a Vault
+	// policy, and a Vault role (via ConfigurePerRepoIdentities). The
+	// installer populates this from the repo registry + approval table.
+	PerRepoIdentities []PerRepoIdentity
 	// NetworkPolicy controls pipeline egress NetworkPolicy enforcement:
 	// "auto" (default) enables on all CNIs except k3s's built-in kube-router
 	// (which has a DNAT incompatibility), "true" forces on, "false" forces off.

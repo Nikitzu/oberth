@@ -162,3 +162,23 @@ roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
   name: {{ $executor }}
+{{- /*
+Per-repo Vault identities. Each entry creates a ServiceAccount whose name
+is the same as its Vault role and policy. The installer populates
+argo.perRepoIdentities from the repo registry + grants; here we just
+create the ServiceAccounts. No Kubernetes permissions, no RBAC, and
+automountServiceAccountToken false — the server injects a projected token
+onto exactly the templates that need it, same as the shared identities.
+*/}}
+{{- range .Values.argo.perRepoIdentities }}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ . }}
+  namespace: {{ $namespace }}
+  labels:
+    {{- include "oberth.labels" $ | nindent 4 }}
+    oberth.ci/identity-type: per-repo
+automountServiceAccountToken: false
+{{- end }}

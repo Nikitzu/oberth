@@ -192,6 +192,13 @@ type Config struct {
 	// could write up to 512 * 32 MiB = 16 GiB to the shared server PVC.
 	// Default: 64 MiB.
 	MaxRunLogBytes int64
+
+	// PerRepoIdentities maps repository names to their per-repo Vault
+	// identities. When a credentialed run's repo has an entry here, the
+	// per-repo SA is used instead of the shared CredentialedServiceAccount
+	// or CISecretsServiceAccount. The per-repo SA name doubles as the Vault
+	// role name. Nil or empty means all repos use the shared identities.
+	PerRepoIdentities map[string]PerRepoIdentityConfig
 }
 
 func (config *Config) applyDefaults() {
@@ -508,7 +515,7 @@ func Build(config Config, request Request) (*wfv1.Workflow, error) {
 			request.Trigger, request.Repo, config.VaultAddress)
 	}
 
-	identity, err := config.identityFor(request.Trigger, len(declaredPaths) > 0)
+	identity, err := config.identityForWithRepo(request.Trigger, len(declaredPaths) > 0, request.Repo)
 	if err != nil {
 		return nil, err
 	}
@@ -540,7 +547,7 @@ func Build(config Config, request Request) (*wfv1.Workflow, error) {
 		if strings.TrimSpace(config.VaultAddress) == "" {
 			return nil, errors.New("argojob: credentialed pipeline requires a Vault address (argo.vault.address / --argo-vault-address)")
 		}
-		if config.vaultRoleFor(request.Trigger) == "" {
+		if config.vaultRoleForWithRepo(request.Trigger, request.Repo) == "" {
 			switch request.Trigger {
 			case periapsis.TriggerCI:
 				return nil, fmt.Errorf("argojob: refusing the CI run for %q: it declares secret-store paths but no "+
@@ -1716,7 +1723,7 @@ func injectRunEnvironment(workflow *wfv1.Workflow, config Config, request Reques
 		// the wrong tier.
 		environment = append(environment,
 			corev1.EnvVar{Name: "VAULT_ADDR", Value: config.VaultAddress},
-			corev1.EnvVar{Name: "OBERTH_VAULT_ROLE", Value: config.vaultRoleFor(request.Trigger)},
+			corev1.EnvVar{Name: "OBERTH_VAULT_ROLE", Value: config.vaultRoleForWithRepo(request.Trigger, request.Repo)},
 		)
 		if request.vaultCADelivered() {
 			// The path, never the bytes. envconsul's Vault client reads

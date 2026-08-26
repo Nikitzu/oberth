@@ -848,6 +848,15 @@ func ConfigureSecretStore(ctx context.Context, cfg Config, deps Deps, store open
 	}
 	result.Items = append(result.Items, configItem{Name: "ci-secrets policy", Status: "✓"})
 
+	// --- Per-repo identities: each secret-declaring repo gets its own ---
+	if len(cfg.PerRepoIdentities) > 0 {
+		perRepoItems, err := ConfigurePerRepoIdentities(ctx, store, rootToken, cfg.PerRepoIdentities, argoNS)
+		if err != nil {
+			return result, fmt.Errorf("per-repo identities: %w", err)
+		}
+		result.Items = append(result.Items, perRepoItems...)
+	}
+
 	// Reaching this point proves each production object was either observed
 	// with its exact managed shape or created through the exact bounded command
 	// above. Callers must carry this positive result into Oberth Helm enablement;
