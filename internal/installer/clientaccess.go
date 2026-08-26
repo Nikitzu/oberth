@@ -156,12 +156,20 @@ func runClientAccessOffer(ctx context.Context, cfg Config, deps Deps, tw *tableW
 			tw.AppendRow("MCP access", displayPath(path), "✗ error", false)
 		default:
 			// The file alone configures nothing: no client reads this path. It
-			// is written as the record, and the client is registered through
-			// its own documented command where one exists.
-			if registerWithClaudeCode(ctx, deps, body) {
-				tw.AppendRow("MCP access", "registered with Claude Code", "✓ ready", false)
-			} else {
-				tw.AppendRow("MCP access", displayPath(path), "✓ written", false)
+			// is written as the record, and each client the operator picked is
+			// then configured where that client actually looks.
+			tw.AppendRow("MCP access", displayPath(path), "✓ written", false)
+			clients, chooseErr := chooseMCPClients(ctx, deps, color, detectMCPClients(deps))
+			if errors.Is(chooseErr, ErrInterrupted) {
+				return ErrInterrupted
+			}
+			for _, client := range clients {
+				detail, configureErr := client.configure(ctx, deps, baseURL, tokenCommand, body)
+				if configureErr != nil {
+					tw.AppendRow(client.label, configureErr.Error(), "⚠ manual", false)
+					continue
+				}
+				tw.AppendRow(client.label, detail, "✓ ready", false)
 			}
 		}
 	}
@@ -185,7 +193,16 @@ func renderClientEnv(baseURL, caPath, tokenCommand string) string {
 export OBERTH_BASE_URL=%q
 export OBERTH_CA_CERT=%q
 export OBERTH_TOKEN_COMMAND=%q
-`, displayPath(filepath.Join(filepath.Dir(caPath), "env")), baseURL, caPath, tokenCommand)
+
+# Codex and Cursor read a header from an environment variable rather than
+# running a command for it, so they need the token itself in the environment.
+# It is resolved here at source time and still never written to a file.
+export %s="$(eval "$OBERTH_TOKEN_COMMAND")"
+
+# Go does not read the macOS trust store, and Node-based clients need to be
+# told about a private signer explicitly.
+export NODE_EXTRA_CA_CERTS=%q
+`, displayPath(filepath.Join(filepath.Dir(caPath), "env")), baseURL, caPath, tokenCommand, mcpTokenEnvVar, caPath)
 }
 
 // renderMCPConfig uses headersHelper rather than a literal Authorization
@@ -301,11 +318,16 @@ func printClientAccessNotes(w io.Writer, root string, choice int, storeCommand s
 		_, _ = fmt.Fprintf(w, "\nThen:  . %s\n", displayPath(filepath.Join(root, "env")))
 	}
 	if choice == clientAccessBoth || choice == clientAccessMCP {
+		// Claude Code runs headersHelper per request, so it needs nothing in
+		// the environment. Codex and Cursor resolve their header when they
+		// start, which means they have to be launched from a shell that has
+		// sourced the env file above. A Cursor started from the Dock has not.
 		_, _ = fmt.Fprintf(w,
-			"\nMCP: merge %s into your client's configuration. It uses headersHelper,\n"+
-				"which Claude Code implements; a client without it needs a literal\n"+
-				"\"Authorization\": \"Bearer <token>\" header instead.\n",
-			displayPath(filepath.Join(root, "mcp.json")))
+			"\nMCP: %s is the record of what was configured.\n"+
+				"Claude Code reads its token per request and needs nothing further.\n"+
+				"Codex and Cursor read %s from the environment when they start, so\n"+
+				"launch them from a shell that has sourced the env file above.\n",
+			displayPath(filepath.Join(root, "mcp.json")), mcpTokenEnvVar)
 	}
 }
 

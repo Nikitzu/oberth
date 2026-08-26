@@ -24,6 +24,7 @@ import (
 
 	"github.com/oberthci/oberth/internal/auth"
 	"github.com/oberthci/oberth/internal/store"
+	"github.com/oberthci/oberth/pkg/periapsis"
 )
 
 func TestParseServeOptionsRequiresSafeComposition(t *testing.T) {
@@ -34,7 +35,10 @@ func TestParseServeOptionsRequiresSafeComposition(t *testing.T) {
 	}
 	// External audit anchoring is opt-in: both URLs default to empty so a
 	// fresh install contacts no external service.
-	if options.runnerImagePrefixes != "golang:,debian:,aquasec/trivy:" || options.maxConcurrent != 3 ||
+	// Derived rather than spelled out, so extending the default allowlist is a
+	// one-place change and this test keeps checking composition rather than
+	// restating the list.
+	if options.runnerImagePrefixes != strings.Join(periapsis.DefaultRunnerImagePrefixes, ",") || options.maxConcurrent != 3 ||
 		options.auditTSAURL != "" || options.auditRekorURL != "" || options.auditRekorPubKey != "" ||
 		options.auditRekorInsecureHTTP ||
 		options.auditAnchorInterval != 10*time.Minute || options.auditAnchorMaxAge != 30*time.Minute {

@@ -156,9 +156,17 @@ func assertExists(t *testing.T, path string, want bool) {
 // install offers to run it rather than leaving the operator to merge JSON into
 // a file by hand.
 func TestClientAccessRegistersWithClaudeCodeWhenItIsPresent(t *testing.T) {
-	deps, _, _ := clientAccessDeps(t, "\n")
+	// Two answers: the access choice, then the client choice. Claude Code is
+	// the only client on this PATH, so the second prompt is about it alone and
+	// the default accepts it.
+	deps, _, _ := clientAccessDeps(t, "\n\n")
 	var ran [][]string
-	deps.LookPath = func(name string) (string, error) { return "/usr/local/bin/" + name, nil }
+	deps.LookPath = func(name string) (string, error) {
+		if name == "claude" {
+			return "/usr/local/bin/claude", nil
+		}
+		return "", errors.New("not found")
+	}
 	deps.RunCommand = func(_ context.Context, _ []byte, name string, args ...string) ([]byte, error) {
 		ran = append(ran, append([]string{name}, args...))
 		return nil, nil
