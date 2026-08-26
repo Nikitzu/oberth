@@ -48,7 +48,7 @@ const (
 // DAG. Argo lets the siblings of a failed DAG task run to completion, so a red
 // lint keeps a five-minute test suite running and the run reports minutes
 // after it already knew the answer. Chained steps stop at the first red.
-func Generate(project Project, repoName string) Result {
+func Generate(project Project) Result {
 	steps, complete := planSteps(project)
 
 	secretPath := ""
@@ -61,7 +61,7 @@ func Generate(project Project, repoName string) Result {
 		result.Steps = append(result.Steps, one.name)
 	}
 	if secretPath != "" {
-		name := repoName
+		name := project.Repo
 		if name == "" {
 			name = "<repo>"
 		}

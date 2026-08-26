@@ -49,14 +49,14 @@ func materialize(t *testing.T, fixture string) string {
 }
 
 // generateFor runs the whole path a real `oberth init` runs.
-func generateFor(t *testing.T, fixture, repoName string) Result {
+func generateFor(t *testing.T, fixture string) Result {
 	t.Helper()
 	root := materialize(t, fixture)
 	project := DetectProject(root)
 	if workflow, ok := FindBuildWorkflow(root); ok {
 		Apply(workflow, &project)
 	}
-	return Generate(project, repoName)
+	return Generate(project)
 }
 
 // admitGenerated is the point of this file: the generated document goes
@@ -76,7 +76,7 @@ func admitGenerated(t *testing.T, document string) {
 
 func TestGeneratedNodePipelineIsAdmitted(t *testing.T) {
 	t.Parallel()
-	result := generateFor(t, "node", "backoffice-portal")
+	result := generateFor(t, "node")
 	admitGenerated(t, result.YAML)
 
 	if !result.Complete {
@@ -106,7 +106,7 @@ func TestGeneratedNodePipelineIsAdmitted(t *testing.T) {
 
 func TestGeneratedNodePipelineDeclaresTheUpstreamTokenAndItsGrant(t *testing.T) {
 	t.Parallel()
-	result := generateFor(t, "node", "backoffice-portal")
+	result := generateFor(t, "node")
 
 	if result.SecretPath != "oberth/upstream/transferz/github-token" {
 		t.Fatalf("SecretPath = %q", result.SecretPath)
@@ -133,7 +133,7 @@ func TestGeneratedNodePipelineDeclaresTheUpstreamTokenAndItsGrant(t *testing.T) 
 
 func TestGeneratedMavenPipelineIsAdmitted(t *testing.T) {
 	t.Parallel()
-	result := generateFor(t, "maven", "coreapi-bookings")
+	result := generateFor(t, "maven")
 	admitGenerated(t, result.YAML)
 
 	if !result.Complete {
@@ -166,7 +166,7 @@ func TestGeneratedPipelinesRecordWhatWasNotTranslated(t *testing.T) {
 	for _, fixture := range []string{"node", "maven"} {
 		t.Run(fixture, func(t *testing.T) {
 			t.Parallel()
-			result := generateFor(t, fixture, "repo")
+			result := generateFor(t, fixture)
 			if !strings.Contains(result.YAML, "What was NOT translated") {
 				t.Fatalf("the header must list what was not translated:\n%s", result.YAML)
 			}
@@ -188,7 +188,7 @@ func TestUnknownProjectFailsLoudlyInsteadOfPassingQuietly(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 	project := DetectProject(root)
-	result := Generate(project, "mystery")
+	result := Generate(project)
 	admitGenerated(t, result.YAML)
 
 	if result.Complete {

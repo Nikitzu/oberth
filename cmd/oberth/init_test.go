@@ -94,8 +94,8 @@ func TestInitTypeOverride(t *testing.T) {
 	if err := executeInit(dir, "go", false, &output); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(output.String(), "--type go") {
-		t.Fatalf("output = %q, want --type go", output.String())
+	if !strings.Contains(output.String(), "detected: go (--type go)") {
+		t.Fatalf("output = %q, want the override named as the reason", output.String())
 	}
 }
 
@@ -103,7 +103,7 @@ func TestInitInvalidType(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	var output bytes.Buffer
-	err := executeInit(dir, "rust", false, &output)
+	err := executeInit(dir, "erlang", false, &output)
 	if err == nil || !strings.Contains(err.Error(), "unknown project type") {
 		t.Fatalf("error = %v, want unknown project type", err)
 	}
@@ -177,62 +177,84 @@ func TestInitSummaryOutput(t *testing.T) {
 	if !strings.Contains(out, "wrote: .oberth/build.yaml") {
 		t.Fatalf("output missing 'wrote' line: %q", out)
 	}
-	if !strings.Contains(out, "5 steps") {
-		t.Fatalf("output missing step count: %q", out)
+	// The count is counted from the document that was written. The summary
+	// this replaces claimed "5 steps, 3 dependencies, ~30 seconds" for every
+	// repository, which was true of the demo and of nothing else.
+	if !strings.Contains(out, "4 steps") {
+		t.Fatalf("output missing the real step count: %q", out)
 	}
-	if !strings.Contains(out, "fetch") || !strings.Contains(out, "report") {
-		t.Fatalf("output missing DAG step names: %q", out)
+	if !strings.Contains(out, "copy-source -> vet -> test -> build") {
+		t.Fatalf("output missing the real chain: %q", out)
 	}
 }
 
-func TestInitDAGDiagramInOutput(t *testing.T) {
+// TestInitChainIsSequentialNotADAG guards the ordering decision. Argo lets the
+// siblings of a failed DAG task run to completion, so a red early step would
+// keep a long test suite running and report minutes after it knew the answer.
+func TestInitChainIsSequentialNotADAG(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
+	writeTestFile(t, filepath.Join(dir, "go.mod"), "module test\n")
+
 	var output bytes.Buffer
-	if err := executeInit(dir, "generic", false, &output); err != nil {
+	if err := executeInit(dir, "", false, &output); err != nil {
 		t.Fatal(err)
 	}
-	out := output.String()
-	for _, step := range []string{"fetch", "analyze", "validate", "report", "notify"} {
-		if !strings.Contains(out, step) {
-			t.Errorf("DAG diagram missing step %q", step)
-		}
+	content, err := os.ReadFile(filepath.Join(dir, ".oberth", "build.yaml")) // #nosec G304 -- test temp dir
+	if err != nil {
+		t.Fatal(err)
 	}
-	if !strings.Contains(out, "DAG:") {
-		t.Errorf("output missing DAG label")
+	text := string(content)
+	if strings.Contains(text, "dag:") {
+		t.Fatalf("generated pipeline must chain its steps, not fan them out:\n%s", text)
+	}
+	if !strings.Contains(text, "steps:") {
+		t.Fatalf("generated pipeline has no step chain:\n%s", text)
+	}
+	for _, step := range []string{"copy-source", "vet", "test", "build"} {
+		if !strings.Contains(text, "name: "+step) {
+			t.Errorf("generated YAML missing step %q", step)
+		}
+		if !strings.Contains(text, "template: "+step) {
+			t.Errorf("generated YAML missing template reference for %q", step)
+		}
 	}
 }
 
-func TestInitAllTypesGenerateSameTemplate(t *testing.T) {
+// TestInitEachTypeGeneratesItsOwnTemplate is the inversion of the test it
+// replaces, which asserted every project type produced the SAME document.
+// That was true, and it was the defect: the document was a demo that had
+// nothing to do with any of them.
+func TestInitEachTypeGeneratesItsOwnTemplate(t *testing.T) {
 	t.Parallel()
-	var contents []string
-	for _, projType := range allProjectTypes {
+	seen := map[string]string{}
+	for _, projType := range []string{"go", "node", "maven", "generic"} {
 		dir := t.TempDir()
 		var output bytes.Buffer
-		if err := executeInit(dir, string(projType), false, &output); err != nil {
+		if err := executeInit(dir, projType, false, &output); err != nil {
 			t.Fatalf("init %s: %v", projType, err)
 		}
-		content, err := os.ReadFile(filepath.Join(dir, ".oberth", "build.yaml"))
+		content, err := os.ReadFile(filepath.Join(dir, ".oberth", "build.yaml")) // #nosec G304 -- test temp dir
 		if err != nil {
 			t.Fatal(err)
 		}
-		contents = append(contents, string(content))
-	}
-	for i := 1; i < len(contents); i++ {
-		if contents[i] != contents[0] {
-			t.Fatalf("template for %s differs from %s", allProjectTypes[i], allProjectTypes[0])
+		for other, text := range seen {
+			if text == string(content) {
+				t.Fatalf("%s and %s generated an identical pipeline", projType, other)
+			}
 		}
+		seen[projType] = string(content)
 	}
 }
 
 func TestInitAllTemplatesUseAllowlistedImages(t *testing.T) {
 	t.Parallel()
-	for _, projType := range allProjectTypes {
-		t.Run(string(projType), func(t *testing.T) {
+	for _, projType := range []string{"go", "node", "maven", "generic"} {
+		t.Run(projType, func(t *testing.T) {
 			t.Parallel()
 			dir := t.TempDir()
 			var output bytes.Buffer
-			if err := executeInit(dir, string(projType), false, &output); err != nil {
+			if err := executeInit(dir, projType, false, &output); err != nil {
 				t.Fatal(err)
 			}
 			content, err := os.ReadFile(filepath.Join(dir, ".oberth", "build.yaml"))
@@ -257,7 +279,7 @@ func TestInitAllTemplatesUseAllowlistedImages(t *testing.T) {
 // mandatory-digest admission does not reject them on first push.
 func TestInitAllTemplatesHaveDigestPinnedImages(t *testing.T) {
 	t.Parallel()
-	for _, projType := range []string{"go", "node", "python", "generic"} {
+	for _, projType := range []string{"go", "node", "maven", "generic"} {
 		t.Run(projType, func(t *testing.T) {
 			t.Parallel()
 			dir := t.TempDir()
@@ -328,43 +350,24 @@ func TestInitDemoTemplatePassesAdmission(t *testing.T) {
 	}
 }
 
-func TestInitDemoDAGStepNames(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	var output bytes.Buffer
-	if err := executeInit(dir, "generic", false, &output); err != nil {
-		t.Fatal(err)
-	}
-	content, err := os.ReadFile(filepath.Join(dir, ".oberth", "build.yaml"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	text := string(content)
-	for _, step := range []string{"fetch", "analyze", "validate", "report", "notify"} {
-		if !strings.Contains(text, "name: "+step) {
-			t.Errorf("generated YAML missing step %q", step)
-		}
-		if !strings.Contains(text, "template: "+step) {
-			t.Errorf("generated YAML missing template reference for %q", step)
-		}
-	}
-}
-
-func TestInitDetectedLanguageDemoSuffix(t *testing.T) {
+// TestInitNamesWhatItDetectedAndWhy replaces the test that asserted every
+// recognized language got the suffix "generating demo pipeline". There is no
+// demo any more, so what the line has to carry is the kind and the evidence.
+func TestInitNamesWhatItDetectedAndWhy(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
-		projType   string
+		kind       string
 		markerFile string
 		markerData string
-		wantSuffix bool
+		wantSource string
 	}{
-		{"go", "go.mod", "module test\ngo 1.22\n", true},
-		{"node", "package.json", "{}\n", true},
-		{"python", "pyproject.toml", "[project]\nname = \"test\"\n", true},
-		{"generic", "", "", false},
+		{"go", "go.mod", "module test\ngo 1.22\n", "go.mod found"},
+		{"node", "package.json", `{"scripts":{"test":"vitest"}}` + "\n", "package.json"},
+		{"maven", "pom.xml", "<project><artifactId>svc</artifactId></project>\n", "pom.xml found"},
+		{"generic", "", "", ""},
 	}
 	for _, tc := range tests {
-		t.Run(tc.projType, func(t *testing.T) {
+		t.Run(tc.kind, func(t *testing.T) {
 			t.Parallel()
 			dir := t.TempDir()
 			if tc.markerFile != "" {
@@ -375,12 +378,11 @@ func TestInitDetectedLanguageDemoSuffix(t *testing.T) {
 				t.Fatal(err)
 			}
 			out := output.String()
-			hasSuffix := strings.Contains(out, "generating demo pipeline")
-			if tc.wantSuffix && !hasSuffix {
-				t.Fatalf("output for %s missing demo suffix: %q", tc.projType, out)
+			if !strings.Contains(out, "detected: "+tc.kind) {
+				t.Fatalf("output for %s does not name the kind: %q", tc.kind, out)
 			}
-			if !tc.wantSuffix && hasSuffix {
-				t.Fatalf("output for %s has unexpected demo suffix: %q", tc.projType, out)
+			if tc.wantSource != "" && !strings.Contains(out, tc.wantSource) {
+				t.Fatalf("output for %s does not name its evidence %q: %q", tc.kind, tc.wantSource, out)
 			}
 		})
 	}

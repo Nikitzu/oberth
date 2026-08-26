@@ -98,6 +98,8 @@ func writeHeader(out *strings.Builder, project Project, result Result) {
 		out.WriteString("# This pipeline declares a secret. Grant it once, before the first push:\n")
 		out.WriteString("#\n#   " + result.GrantCommand + "\n#\n")
 	}
+	out.WriteString("# Images are pinned by digest, because a tag can be moved between\n")
+	out.WriteString("# admission and the node pull. Refresh digest: crane digest <image>\n#\n")
 	out.WriteString("# Steps run in order and stop at the first red:\n#\n#   ")
 	out.WriteString(strings.Join(result.Steps, " -> "))
 	out.WriteString("\n#\n")

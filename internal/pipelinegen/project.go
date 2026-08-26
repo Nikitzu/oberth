@@ -48,8 +48,10 @@ type Project struct {
 	Registry        string
 
 	// Org is the upstream organization, which is what scopes the secret the
-	// private registry needs.
-	Org string
+	// private registry needs. Repo is the repository name Oberth catalogs it
+	// under, which is what a grant is keyed by.
+	Org  string
+	Repo string
 
 	// Provenance and honesty.
 	Sources      []string
@@ -86,7 +88,11 @@ func DetectProject(root string) Project {
 		if json.Unmarshal(raw, &manifest) == nil {
 			project.Kind = KindNode
 			project.Scripts = manifest.Scripts
-			project.note("package.json: " + strings.Join(scriptNames(manifest.Scripts), ", "))
+			if names := scriptNames(manifest.Scripts); len(names) > 0 {
+				project.note("package.json scripts: " + strings.Join(names, ", "))
+			} else {
+				project.note("package.json found, with no scripts")
+			}
 			if major := majorVersion(manifest.Engines.Node); major != "" {
 				project.NodeMajor = major
 				project.note("package.json engines.node: " + major)
@@ -110,6 +116,9 @@ func DetectProject(root string) Project {
 	}
 
 	if raw, err := os.ReadFile(filepath.Join(root, "pom.xml")); err == nil {
+		// A pom outranks a package.json: a service with a web asset pipeline
+		// is still built by Maven, and building only its front end would go
+		// green without compiling a line of the service.
 		project.Kind = KindMaven
 		project.note("pom.xml found")
 		if major := pomJavaVersion(string(raw)); major != "" {
@@ -126,12 +135,14 @@ func DetectProject(root string) Project {
 		}
 	}
 
-	if _, err := os.Stat(filepath.Join(root, "go.mod")); err == nil && project.Kind == KindUnknown {
+	// go.mod outranks both, which is the precedence this command has always
+	// had: a Go repository with a JavaScript front end is a Go repository.
+	if _, err := os.Stat(filepath.Join(root, "go.mod")); err == nil {
 		project.Kind = KindGo
 		project.note("go.mod found")
 	}
 
-	project.Org = originOrg(root)
+	project.Org, project.Repo = originIdentity(root)
 	return project
 }
 
@@ -205,16 +216,19 @@ func publicMavenGroup(group string) bool {
 	return false
 }
 
-var originPattern = regexp.MustCompile(`url\s*=\s*\S*?[/:]([^/\s]+)/[^/\s]+?(?:\.git)?\s*$`)
+var originPattern = regexp.MustCompile(`url\s*=\s*\S*?[/:]([^/\s]+)/([^/\s]+?)(?:\.git)?\s*$`)
 
-// originOrg reads the org out of the origin remote in .git/config.
+// originIdentity reads the org and repository name out of the origin remote in
+// .git/config.
 //
-// The org is what scopes a secret-store path, so it is read from the same
-// place the push will come from rather than guessed from the directory name.
-func originOrg(root string) string {
+// Both scope things the server checks: the org scopes a secret-store path and
+// the repository name is what a grant is keyed by. They are read from the
+// remote the push will go to rather than guessed from the directory name,
+// because a checkout is frequently in a directory named something else.
+func originIdentity(root string) (org, repo string) {
 	raw, err := os.ReadFile(filepath.Join(root, ".git", "config"))
 	if err != nil {
-		return ""
+		return "", ""
 	}
 	inOrigin := false
 	for _, line := range strings.Split(string(raw), "\n") {
@@ -226,11 +240,11 @@ func originOrg(root string) string {
 		if !inOrigin {
 			continue
 		}
-		if match := originPattern.FindStringSubmatch(trimmed); len(match) == 2 {
-			return match[1]
+		if match := originPattern.FindStringSubmatch(trimmed); len(match) == 3 {
+			return match[1], match[2]
 		}
 	}
-	return ""
+	return "", ""
 }
 
 func sortStrings(values []string) {
