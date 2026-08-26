@@ -193,10 +193,11 @@ type Config struct {
 	// Default: 64 MiB.
 	MaxRunLogBytes int64
 
-	// PerRepoIdentities maps repository names to their per-repo Vault
-	// identities. When a credentialed run's repo has an entry here, the
-	// per-repo SA is used instead of the shared CredentialedServiceAccount
-	// or CISecretsServiceAccount. The per-repo SA name doubles as the Vault
+	// PerRepoIdentities maps canonical "upstream/org/repo" identity strings
+	// to their per-repo Vault identities. When a credentialed run's repo
+	// has an entry here (keyed by its canonical form), the per-repo SA is
+	// used instead of the shared CredentialedServiceAccount or
+	// CISecretsServiceAccount. The per-repo SA name doubles as the Vault
 	// role name. Nil or empty means all repos use the shared identities.
 	PerRepoIdentities map[string]PerRepoIdentityConfig
 }
@@ -421,12 +422,13 @@ type Request struct {
 	// Name is the durable, deterministic object name the scheduler already
 	// persisted for this run. Both engines use it, so recovery can find the
 	// object without knowing which engine created it.
-	Name        string
-	Repo        string
-	UpstreamOrg string
-	Ref         string
-	SHA         string
-	Trigger     periapsis.Trigger
+	Name         string
+	Repo         string
+	UpstreamName string
+	UpstreamOrg  string
+	Ref          string
+	SHA          string
+	Trigger      periapsis.Trigger
 	// Source is the exact bytes of the repository's pipeline document for
 	// this trigger, read from the immutable run workspace.
 	Source []byte
@@ -515,7 +517,7 @@ func Build(config Config, request Request) (*wfv1.Workflow, error) {
 			request.Trigger, request.Repo, config.VaultAddress)
 	}
 
-	identity, err := config.identityForWithRepo(request.Trigger, len(declaredPaths) > 0, request.Repo)
+	identity, err := config.identityForWithRepo(request.Trigger, len(declaredPaths) > 0, request.UpstreamName, request.UpstreamOrg, request.Repo)
 	if err != nil {
 		return nil, err
 	}
@@ -547,7 +549,7 @@ func Build(config Config, request Request) (*wfv1.Workflow, error) {
 		if strings.TrimSpace(config.VaultAddress) == "" {
 			return nil, errors.New("argojob: credentialed pipeline requires a Vault address (argo.vault.address / --argo-vault-address)")
 		}
-		if config.vaultRoleForWithRepo(request.Trigger, request.Repo) == "" {
+		if config.vaultRoleForWithRepo(request.Trigger, request.UpstreamName, request.UpstreamOrg, request.Repo) == "" {
 			switch request.Trigger {
 			case periapsis.TriggerCI:
 				return nil, fmt.Errorf("argojob: refusing the CI run for %q: it declares secret-store paths but no "+
@@ -1723,7 +1725,7 @@ func injectRunEnvironment(workflow *wfv1.Workflow, config Config, request Reques
 		// the wrong tier.
 		environment = append(environment,
 			corev1.EnvVar{Name: "VAULT_ADDR", Value: config.VaultAddress},
-			corev1.EnvVar{Name: "OBERTH_VAULT_ROLE", Value: config.vaultRoleForWithRepo(request.Trigger, request.Repo)},
+			corev1.EnvVar{Name: "OBERTH_VAULT_ROLE", Value: config.vaultRoleForWithRepo(request.Trigger, request.UpstreamName, request.UpstreamOrg, request.Repo)},
 		)
 		if request.vaultCADelivered() {
 			// The path, never the bytes. envconsul's Vault client reads

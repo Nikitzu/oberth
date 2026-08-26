@@ -3,7 +3,7 @@ package argojob
 // Per-repo identity selection: when a repository has a per-repo Vault
 // identity (SA + policy + role), the submission path selects it instead
 // of the shared tier-wide identity. This scopes each repo's Vault access
-// to its own org namespace and its own approved grants.
+// to its own namespace and its own approved grants.
 
 import (
 	"github.com/oberthci/oberth/pkg/argoworkflow"
@@ -18,14 +18,25 @@ type PerRepoIdentityConfig struct {
 	ServiceAccountName string
 }
 
+// canonicalRepoKey constructs the map key for PerRepoIdentities from
+// the upstream name, org, and bare repo name. This is the same canonical
+// "upstream/org/repo" form used for grant storage (#245 BLOCKER B).
+func canonicalRepoKey(upstreamName, org, repo string) string {
+	if upstreamName == "" || org == "" {
+		return repo
+	}
+	return upstreamName + "/" + org + "/" + repo
+}
+
 // identityForPerRepo selects the per-repo identity for a credentialed run.
 // It returns the per-repo identity if one exists for this repo; otherwise
 // it returns false and the caller falls back to the shared tier identity.
-func (config Config) identityForPerRepo(repo string) (argoworkflow.Identity, bool) {
+func (config Config) identityForPerRepo(upstreamName, org, repo string) (argoworkflow.Identity, bool) {
 	if config.PerRepoIdentities == nil {
 		return argoworkflow.Identity{}, false
 	}
-	perRepo, exists := config.PerRepoIdentities[repo]
+	key := canonicalRepoKey(upstreamName, org, repo)
+	perRepo, exists := config.PerRepoIdentities[key]
 	if !exists || perRepo.ServiceAccountName == "" {
 		return argoworkflow.Identity{}, false
 	}
@@ -40,11 +51,12 @@ func (config Config) identityForPerRepo(repo string) (argoworkflow.Identity, boo
 // vaultRoleForPerRepo returns the per-repo Vault role name if one exists.
 // The per-repo SA name IS the role name (they share the same name by
 // convention). Returns empty string if no per-repo identity exists.
-func (config Config) vaultRoleForPerRepo(repo string) string {
+func (config Config) vaultRoleForPerRepo(upstreamName, org, repo string) string {
 	if config.PerRepoIdentities == nil {
 		return ""
 	}
-	perRepo, exists := config.PerRepoIdentities[repo]
+	key := canonicalRepoKey(upstreamName, org, repo)
+	perRepo, exists := config.PerRepoIdentities[key]
 	if !exists {
 		return ""
 	}
@@ -61,14 +73,14 @@ func (config Config) vaultRoleForPerRepo(repo string) string {
 // declared the pipeline), not the fragment source's repo. This ensures the
 // fragment runs under the host's identity, because the host's pipeline is
 // what declared the secrets and the host's approval table is what was checked.
-func (config Config) identityForWithRepo(trigger periapsis.Trigger, hasSecretPaths bool, repo string) (argoworkflow.Identity, error) {
+func (config Config) identityForWithRepo(trigger periapsis.Trigger, hasSecretPaths bool, upstreamName, org, repo string) (argoworkflow.Identity, error) {
 	if !hasSecretPaths {
 		// No secrets: always the pipeline SA, regardless of per-repo config.
 		return config.identityFor(trigger, false)
 	}
 
 	// Try per-repo identity first.
-	if identity, ok := config.identityForPerRepo(repo); ok {
+	if identity, ok := config.identityForPerRepo(upstreamName, org, repo); ok {
 		return identity, nil
 	}
 
@@ -78,8 +90,8 @@ func (config Config) identityForWithRepo(trigger periapsis.Trigger, hasSecretPat
 
 // vaultRoleForWithRepo selects the Vault role, checking for per-repo roles
 // first. Falls back to the shared tier role.
-func (config Config) vaultRoleForWithRepo(trigger periapsis.Trigger, repo string) string {
-	if role := config.vaultRoleForPerRepo(repo); role != "" {
+func (config Config) vaultRoleForWithRepo(trigger periapsis.Trigger, upstreamName, org, repo string) string {
+	if role := config.vaultRoleForPerRepo(upstreamName, org, repo); role != "" {
 		return role
 	}
 	return config.vaultRoleFor(trigger)

@@ -282,6 +282,10 @@ type JobRequest struct {
 	JobName    string
 	Run        model.Run
 	Repository model.Repository
+	// UpstreamName is the registered name of the repository's upstream,
+	// resolved by the scheduler for all credentialed runs. Used to
+	// construct canonical per-repo identity keys.
+	UpstreamName string
 	// UpstreamOrg is the registered org of the repository's upstream
 	// (model.Upstream.Org), resolved by the scheduler for release runs and
 	// empty otherwise. Release admission matches repository-declared

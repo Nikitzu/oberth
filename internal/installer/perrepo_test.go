@@ -94,17 +94,17 @@ func TestPerRepoNameTruncatesLongNames(t *testing.T) {
 	}
 }
 
-func TestPerRepoPolicyContainsOrgScopedPath(t *testing.T) {
+func TestPerRepoPolicyContainsRepoScopedPath(t *testing.T) {
 	t.Parallel()
-	policy := PerRepoPolicy("oberth", "oberthci", nil)
-	if !strings.Contains(policy, `path "oberth/data/upstream/oberthci/*"`) {
-		t.Fatalf("policy missing org-scoped path:\n%s", policy)
+	policy := PerRepoPolicy("oberth", "oberthci", "oberth", nil)
+	if !strings.Contains(policy, `path "oberth/data/upstream/oberthci/oberth/*"`) {
+		t.Fatalf("policy missing repo-scoped path:\n%s", policy)
 	}
 }
 
 func TestPerRepoPolicyDoesNotContainAllUpstreamsWildcard(t *testing.T) {
 	t.Parallel()
-	policy := PerRepoPolicy("oberth", "oberthci", nil)
+	policy := PerRepoPolicy("oberth", "oberthci", "oberth", nil)
 	if strings.Contains(policy, `path "oberth/data/upstream/*"`) {
 		t.Fatalf("per-repo policy must not contain the all-upstreams wildcard:\n%s", policy)
 	}
@@ -112,7 +112,7 @@ func TestPerRepoPolicyDoesNotContainAllUpstreamsWildcard(t *testing.T) {
 
 func TestPerRepoPolicyContainsGrantPaths(t *testing.T) {
 	t.Parallel()
-	policy := PerRepoPolicy("oberth", "oberthci", []string{"release/cosign-secret", "release/r2-token"})
+	policy := PerRepoPolicy("oberth", "oberthci", "oberth", []string{"release/cosign-secret", "release/r2-token"})
 	if !strings.Contains(policy, `path "oberth/data/release/cosign-secret"`) {
 		t.Fatalf("policy missing grant path for cosign-secret:\n%s", policy)
 	}
@@ -123,7 +123,7 @@ func TestPerRepoPolicyContainsGrantPaths(t *testing.T) {
 
 func TestPerRepoPolicyDeduplicatesGrants(t *testing.T) {
 	t.Parallel()
-	policy := PerRepoPolicy("oberth", "oberthci", []string{"release/cosign-secret", "release/cosign-secret"})
+	policy := PerRepoPolicy("oberth", "oberthci", "oberth", []string{"release/cosign-secret", "release/cosign-secret"})
 	count := strings.Count(policy, `path "oberth/data/release/cosign-secret"`)
 	if count != 1 {
 		t.Fatalf("duplicate grant path appeared %d times, want 1:\n%s", count, policy)
@@ -132,7 +132,7 @@ func TestPerRepoPolicyDeduplicatesGrants(t *testing.T) {
 
 func TestPerRepoPolicyContainsRevokeSelf(t *testing.T) {
 	t.Parallel()
-	policy := PerRepoPolicy("oberth", "oberthci", nil)
+	policy := PerRepoPolicy("oberth", "oberthci", "oberth", nil)
 	if !strings.Contains(policy, `path "auth/token/revoke-self"`) {
 		t.Fatalf("policy missing revoke-self:\n%s", policy)
 	}
@@ -141,7 +141,7 @@ func TestPerRepoPolicyContainsRevokeSelf(t *testing.T) {
 func TestPerRepoPolicyCrossRepoReadRefused(t *testing.T) {
 	t.Parallel()
 	// A per-repo policy for org "oberthci" must not grant access to org "skipops"
-	policy := PerRepoPolicy("oberth", "oberthci", nil)
+	policy := PerRepoPolicy("oberth", "oberthci", "oberth", nil)
 	if strings.Contains(policy, "skipops") {
 		t.Fatalf("per-repo policy for oberthci must not reference skipops:\n%s", policy)
 	}
@@ -223,7 +223,7 @@ func TestConfigurePerRepoIdentitiesSkipsExistingMatchingRole(t *testing.T) {
 	t.Parallel()
 
 	name := PerRepoName("codeberg", "oberthci", "oberth")
-	wantPolicy := PerRepoPolicy(defaultKVPrefix, "oberthci", nil)
+	wantPolicy := PerRepoPolicy(defaultKVPrefix, "oberthci", "oberth", nil)
 
 	responses := map[string]fakeBaoResponse{
 		"policy read " + name: {out: wantPolicy},
@@ -336,7 +336,7 @@ func TestGrantlessRepoGetsNoPerRepoSA(t *testing.T) {
 	// appear in the per-repo identities at all. This test verifies the policy
 	// generation still works (produces an org-scoped-only policy) but the
 	// caller's responsibility is to not include grantless repos.
-	policy := PerRepoPolicy("oberth", "oberthci", nil)
+	policy := PerRepoPolicy("oberth", "oberthci", "oberth", nil)
 	// Only the org wildcard and revoke-self should be present
 	lines := strings.Split(policy, "\n")
 	pathCount := 0

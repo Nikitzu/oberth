@@ -14,7 +14,7 @@ const (
 func testConfigWithPerRepo() Config {
 	cfg := testConfig()
 	cfg.PerRepoIdentities = map[string]PerRepoIdentityConfig{
-		"oberth": {ServiceAccountName: testPerRepoSA},
+		"codeberg/oberthci/oberth": {ServiceAccountName: testPerRepoSA},
 	}
 	return cfg
 }
@@ -45,9 +45,11 @@ spec:
 func TestBuildUsesPerRepoIdentityForRelease(t *testing.T) {
 	t.Parallel()
 	cfg := testConfigWithPerRepo()
-	path := "oberth/upstream/skipops/oberth/test-secret"
+	path := "oberth/upstream/oberthci/oberth/test-secret"
 	req := testRequest(periapsis.TriggerRelease, perRepoCredentialedDocument(path))
 	req.Repo = "oberth"
+	req.UpstreamName = "codeberg"
+	req.UpstreamOrg = "oberthci"
 	req.ApprovedSecrets = map[string]bool{path: true}
 	req.SourceVolume = SourceVolume{
 		ClaimName:      "test-claim",
@@ -70,9 +72,11 @@ func TestBuildUsesPerRepoIdentityForRelease(t *testing.T) {
 func TestBuildUsesPerRepoIdentityForCI(t *testing.T) {
 	t.Parallel()
 	cfg := testConfigWithPerRepo()
-	path := "oberth/upstream/skipops/oberth/test-secret"
+	path := "oberth/upstream/oberthci/oberth/test-secret"
 	req := testRequest(periapsis.TriggerCI, perRepoCredentialedDocument(path))
 	req.Repo = "oberth"
+	req.UpstreamName = "codeberg"
+	req.UpstreamOrg = "oberthci"
 	req.ApprovedSecrets = map[string]bool{path: true}
 
 	wf, err := Build(cfg, req)
@@ -92,6 +96,7 @@ func TestBuildFallsBackToSharedIdentityForUnknownRepo(t *testing.T) {
 	path := "oberth/upstream/skipops/other-repo/test-secret"
 	req := testRequest(periapsis.TriggerRelease, perRepoCredentialedDocument(path))
 	req.Repo = "other-repo"
+	req.UpstreamName = "codeberg"
 	req.UpstreamOrg = "skipops"
 	req.ApprovedSecrets = map[string]bool{path: true}
 	req.SourceVolume = SourceVolume{
@@ -132,9 +137,11 @@ func TestBuildWithoutSecretsStillUsesPipelineSA(t *testing.T) {
 func TestPerRepoVaultRoleIsInjected(t *testing.T) {
 	t.Parallel()
 	cfg := testConfigWithPerRepo()
-	path := "oberth/upstream/skipops/oberth/test-secret"
+	path := "oberth/upstream/oberthci/oberth/test-secret"
 	req := testRequest(periapsis.TriggerRelease, perRepoCredentialedDocument(path))
 	req.Repo = "oberth"
+	req.UpstreamName = "codeberg"
+	req.UpstreamOrg = "oberthci"
 	req.ApprovedSecrets = map[string]bool{path: true}
 	req.SourceVolume = SourceVolume{
 		ClaimName:      "test-claim",
@@ -161,9 +168,11 @@ func TestPerRepoVaultRoleIsInjected(t *testing.T) {
 func TestFragmentRunUsesHostRepoIdentity(t *testing.T) {
 	t.Parallel()
 	cfg := testConfigWithPerRepo()
-	path := "oberth/upstream/skipops/oberth/test-secret"
+	path := "oberth/upstream/oberthci/oberth/test-secret"
 	req := testRequest(periapsis.TriggerRelease, perRepoCredentialedDocument(path))
 	req.Repo = "oberth" // HOST repo
+	req.UpstreamName = "codeberg"
+	req.UpstreamOrg = "oberthci"
 	req.ApprovedSecrets = map[string]bool{path: true}
 	req.SourceVolume = SourceVolume{
 		ClaimName:      "test-claim",
@@ -188,13 +197,14 @@ func TestCrossRepoReadRefusedByPerRepoRole(t *testing.T) {
 	t.Parallel()
 	cfg := testConfig()
 	cfg.PerRepoIdentities = map[string]PerRepoIdentityConfig{
-		"repo-a": {ServiceAccountName: "oberth-argo-upstream-org-repo-a-aaa111222333"},
-		"repo-b": {ServiceAccountName: "oberth-argo-upstream-org-repo-b-bbb444555666"},
+		"codeberg/org/repo-a": {ServiceAccountName: "oberth-argo-upstream-org-repo-a-aaa111222333"},
+		"codeberg/org/repo-b": {ServiceAccountName: "oberth-argo-upstream-org-repo-b-bbb444555666"},
 	}
 
 	pathA := "oberth/upstream/org/repo-a/test-secret"
 	reqA := testRequest(periapsis.TriggerRelease, perRepoCredentialedDocument(pathA))
 	reqA.Repo = "repo-a"
+	reqA.UpstreamName = "codeberg"
 	reqA.UpstreamOrg = "org"
 	reqA.ApprovedSecrets = map[string]bool{pathA: true}
 	reqA.SourceVolume = SourceVolume{
@@ -212,6 +222,7 @@ func TestCrossRepoReadRefusedByPerRepoRole(t *testing.T) {
 	pathB := "oberth/upstream/org/repo-b/test-secret"
 	reqB := testRequest(periapsis.TriggerRelease, perRepoCredentialedDocument(pathB))
 	reqB.Repo = "repo-b"
+	reqB.UpstreamName = "codeberg"
 	reqB.UpstreamOrg = "org"
 	reqB.ApprovedSecrets = map[string]bool{pathB: true}
 	reqB.SourceVolume = SourceVolume{

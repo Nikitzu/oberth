@@ -88,14 +88,17 @@ func PerRepoName(upstream, org, repo string) string {
 //   - Token self-revocation
 //
 // Compared to the shared credentialed policy which has path "oberth/data/upstream/*"
-// (all orgs), this scopes to one org only: path "oberth/data/upstream/<org>/*".
-func PerRepoPolicy(kvPrefix, org string, grantPaths []string) string {
+// (all orgs), this scopes to the exact repo's namespace only:
+// path "oberth/data/upstream/<org>/<repo>/*". The grant paths from the
+// secret access table are added as exact-path rules for release-tier
+// credentials.
+func PerRepoPolicy(kvPrefix, org, repo string, grantPaths []string) string {
 	var builder strings.Builder
-	fmt.Fprintf(&builder, `# Per-repo identity: read-only on this repo's upstream org namespace.
+	fmt.Fprintf(&builder, `# Per-repo identity: read-only on this repo's namespace.
 # Managed by oberth install --install-secretstore. Do not edit manually.
-path "%s/data/upstream/%s/*" {
+path "%s/data/upstream/%s/%s/*" {
   capabilities = ["read"]
-}`, kvPrefix, org)
+}`, kvPrefix, org, repo)
 
 	seen := make(map[string]struct{}, len(grantPaths))
 	for _, p := range grantPaths {
@@ -146,7 +149,7 @@ func ConfigurePerRepoIdentities(ctx context.Context, store openBaoExec, rootToke
 			return items, fmt.Errorf("per-repo %s: %w", name, err)
 		}
 
-		wantPolicy := PerRepoPolicy(defaultKVPrefix, id.Org, grantPaths)
+		wantPolicy := PerRepoPolicy(defaultKVPrefix, id.Org, id.Repo, grantPaths)
 		havePolicy, policyExists, err := store.policyRead(ctx, rootToken, name)
 		if err != nil {
 			return items, fmt.Errorf("per-repo policy read %s: %w", name, err)
