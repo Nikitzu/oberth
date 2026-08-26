@@ -18,14 +18,14 @@ func annotated(value string) *wfv1.Workflow {
 }
 
 func TestParseFileRefAcceptsAPinnedReference(t *testing.T) {
-	ref, err := ParseFileRef("tzmem@v1:graph/repos.yml")
+	ref, err := ParseFileRef("depgraph@v1:graph/repos.yml")
 	if err != nil {
 		t.Fatalf("ParseFileRef: %v", err)
 	}
-	if ref.Repo != "tzmem" || ref.Version != "v1" || ref.Path != "graph/repos.yml" {
+	if ref.Repo != "depgraph" || ref.Version != "v1" || ref.Path != "graph/repos.yml" {
 		t.Fatalf("parsed %+v", ref)
 	}
-	if got := ref.String(); got != "tzmem@v1:graph/repos.yml" {
+	if got := ref.String(); got != "depgraph@v1:graph/repos.yml" {
 		t.Fatalf("String() = %q", got)
 	}
 }
@@ -36,25 +36,25 @@ func TestParseFileRefRefusesMalformedReferences(t *testing.T) {
 	// their guards deleted.
 	cases := map[string]string{
 		"empty":            "",
-		"no version":       "tzmem:graph/repos.yml",
-		"no path":          "tzmem@v1",
-		"empty path":       "tzmem@v1:",
+		"no version":       "depgraph:graph/repos.yml",
+		"no path":          "depgraph@v1",
+		"empty path":       "depgraph@v1:",
 		"empty repo":       "@v1:graph/repos.yml",
-		"empty version":    "tzmem@:graph/repos.yml",
-		"two at signs":     "tzmem@v1@v2:graph/repos.yml",
-		"parent escape":    "tzmem@v1:../etc/passwd",
-		"parent mid path":  "tzmem@v1:graph/../../etc/passwd",
-		"absolute path":    "tzmem@v1:/etc/passwd",
-		"option shaped":    "tzmem@v1:--upload-pack=x",
-		"backslash":        `tzmem@v1:graph\repos.yml`,
-		"newline":          "tzmem@v1:graph/repos\n.yml",
-		"nul byte":         "tzmem@v1:graph/repos\x00.yml",
-		"comma in path":    "tzmem@v1:graph,repos.yml",
-		"dot segment":      "tzmem@v1:./repos.yml",
-		"double slash":     "tzmem@v1:graph//repos.yml",
-		"trailing slash":   "tzmem@v1:graph/",
-		"version is path":  "tzmem@v1/v2:graph/repos.yml",
-		"repo is absolute": "/tzmem@v1:graph/repos.yml",
+		"empty version":    "depgraph@:graph/repos.yml",
+		"two at signs":     "depgraph@v1@v2:graph/repos.yml",
+		"parent escape":    "depgraph@v1:../etc/passwd",
+		"parent mid path":  "depgraph@v1:graph/../../etc/passwd",
+		"absolute path":    "depgraph@v1:/etc/passwd",
+		"option shaped":    "depgraph@v1:--upload-pack=x",
+		"backslash":        `depgraph@v1:graph\repos.yml`,
+		"newline":          "depgraph@v1:graph/repos\n.yml",
+		"nul byte":         "depgraph@v1:graph/repos\x00.yml",
+		"comma in path":    "depgraph@v1:graph,repos.yml",
+		"dot segment":      "depgraph@v1:./repos.yml",
+		"double slash":     "depgraph@v1:graph//repos.yml",
+		"trailing slash":   "depgraph@v1:graph/",
+		"version is path":  "depgraph@v1/v2:graph/repos.yml",
+		"repo is absolute": "/depgraph@v1:graph/repos.yml",
 	}
 	for name, ref := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -70,14 +70,14 @@ func TestParseFileRefRefusesMalformedReferences(t *testing.T) {
 }
 
 func TestFileRefsReadsTheAnnotationAndDeduplicates(t *testing.T) {
-	refs, err := FileRefs(annotated("tzmem@v1:graph/repos.yml\npolicy@v3:ci/images.txt, tzmem@v1:graph/repos.yml\n\n"))
+	refs, err := FileRefs(annotated("depgraph@v1:graph/repos.yml\npolicy@v3:ci/images.txt, depgraph@v1:graph/repos.yml\n\n"))
 	if err != nil {
 		t.Fatalf("FileRefs: %v", err)
 	}
 	if len(refs) != 2 {
 		t.Fatalf("got %d refs, want 2: %+v", len(refs), refs)
 	}
-	if refs[0].String() != "tzmem@v1:graph/repos.yml" || refs[1].String() != "policy@v3:ci/images.txt" {
+	if refs[0].String() != "depgraph@v1:graph/repos.yml" || refs[1].String() != "policy@v3:ci/images.txt" {
 		t.Fatalf("refs %+v are not in declaration order", refs)
 	}
 }
@@ -107,14 +107,14 @@ func TestFileRefsRefusesMoreThanTheLimit(t *testing.T) {
 }
 
 func TestResolveFilesRefusesADeclarationWithNoBytes(t *testing.T) {
-	_, err := ResolveFiles(annotated("tzmem@v1:graph/repos.yml"), nil)
+	_, err := ResolveFiles(annotated("depgraph@v1:graph/repos.yml"), nil)
 	if err == nil {
 		t.Fatal("ResolveFiles accepted an unloaded declaration")
 	}
 	if !errors.Is(err, ErrFileRefused) {
 		t.Fatalf("error %v does not wrap ErrFileRefused", err)
 	}
-	if !strings.Contains(err.Error(), "tzmem@v1:graph/repos.yml") {
+	if !strings.Contains(err.Error(), "depgraph@v1:graph/repos.yml") {
 		t.Fatalf("error %v does not name the reference", err)
 	}
 }
@@ -206,13 +206,13 @@ func TestParseFileRefExplainsWhyItRefused(t *testing.T) {
 	// for their wording, so the wording is what the test pins. Without this,
 	// deleting them changes nothing a test can see.
 	cases := []struct{ ref, want string }{
-		{"tzmem@v1:/etc/passwd", "must be relative to the repository root"},
-		{"tzmem@v1:--upload-pack=x", "looks like an option"},
-		{"tzmem@v1:../etc/passwd", `must not contain ".."`},
-		{"tzmem@v1:graph,repos.yml", "separates declarations"},
-		{`tzmem@v1:graph\repos.yml`, "contains forbidden characters"},
-		{"tzmem:graph/repos.yml", "has no @version"},
-		{"tzmem@v1", "has no :path"},
+		{"depgraph@v1:/etc/passwd", "must be relative to the repository root"},
+		{"depgraph@v1:--upload-pack=x", "looks like an option"},
+		{"depgraph@v1:../etc/passwd", `must not contain ".."`},
+		{"depgraph@v1:graph,repos.yml", "separates declarations"},
+		{`depgraph@v1:graph\repos.yml`, "contains forbidden characters"},
+		{"depgraph:graph/repos.yml", "has no @version"},
+		{"depgraph@v1", "has no :path"},
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.ref, func(t *testing.T) {

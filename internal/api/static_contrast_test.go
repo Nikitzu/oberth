@@ -60,7 +60,7 @@ func TestLightThemeStatusInkClearsAA(t *testing.T) {
 // --acc is link text on a panel in five rules and a button background in two,
 // so one value has to clear 4.5:1 against the surface and its --acc-ink has to
 // clear 4.5:1 against itself. A brand colour picked as a fill is very likely to
-// fail the first: the Transferz accent measured 2.54:1 as link text while
+// fail the first: one fork's brand accent measured 2.54:1 as link text while
 // looking perfectly deliberate.
 func TestTheAccentIsReadableBothWays(t *testing.T) {
 	css := string(staticAssets["app.css"].body)
@@ -167,7 +167,7 @@ func themeBlock(t *testing.T, css, marker string) string {
 
 // token resolves a custom property to a literal colour, following one level of
 // var() indirection. A fork names its brand palette once and refers to it, so
-// --pass:var(--tz-green-ink) is the normal shape and a test that only reads
+// --pass:var(--brand-ink) is the normal shape and a test that only reads
 // hex would report the tokens missing rather than checking them.
 func token(t *testing.T, block, name string) string {
 	t.Helper()

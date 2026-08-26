@@ -15,7 +15,7 @@ syntax, pinned to a tag.
 steps:
   - - name: verify
       templateRef:
-        name: transferz/maven-verify@v3
+        name: acme/maven-verify@v3
         template: verify
 ```
 
@@ -66,13 +66,13 @@ policy list, an identifier map -- declare a file dependency instead:
 metadata:
   annotations:
     oberth.ci/files: |
-      tzmem@v1:graph/repos.yml
+      depgraph@v1:graph/repos.yml
       policy@v3:ci/allowed-images.txt
 ```
 
 Read it under `$OBERTH_FILES`, which is `/work/files`. The layout under it is
 the repository name then the file's own path, so the first of those lands at
-tzmem/graph/repos.yml inside that directory.
+depgraph/graph/repos.yml inside that directory.
 
 The same pinning rule applies: `repository@version:path`, always a tag. The
 server resolves and reads it, so the pipeline needs no credential -- which is

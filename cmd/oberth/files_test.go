@@ -25,7 +25,7 @@ func TestFilesRefusesAnUnknownSubcommand(t *testing.T) {
 
 func TestFilesShowRefusesAnUnpinnedReference(t *testing.T) {
 	var output bytes.Buffer
-	err := runFilesShow(context.Background(), []string{"--database", "/nonexistent", "tzmem:graph/repos.yml"}, &output)
+	err := runFilesShow(context.Background(), []string{"--database", "/nonexistent", "depgraph:graph/repos.yml"}, &output)
 	if err == nil {
 		t.Fatal("files show accepted an unpinned reference")
 	}

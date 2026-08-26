@@ -26,7 +26,7 @@ apiVersion: argoproj.io/v1alpha1
 kind: Workflow
 metadata:
   annotations:
-    oberth.ci/files: tzmem@v1:graph/repos.yml
+    oberth.ci/files: depgraph@v1:graph/repos.yml
 spec:
   entrypoint: main
   activeDeadlineSeconds: 999999
@@ -37,7 +37,7 @@ spec:
         command: [/bin/true]
 `
 
-var registryRef = argoworkflow.FileRef{Repo: "tzmem", Version: "v1", Path: "graph/repos.yml"}
+var registryRef = argoworkflow.FileRef{Repo: "depgraph", Version: "v1", Path: "graph/repos.yml"}
 
 func requestWithFiles(source string) Request {
 	request := testRequest(periapsis.TriggerCI, source)
@@ -56,7 +56,7 @@ func TestBuildRefusesADeclarationItCouldNotResolve(t *testing.T) {
 	if err == nil {
 		t.Fatal("Build submitted a document whose file dependency was never loaded")
 	}
-	if !strings.Contains(err.Error(), "tzmem@v1:graph/repos.yml") {
+	if !strings.Contains(err.Error(), "depgraph@v1:graph/repos.yml") {
 		t.Fatalf("error %v does not name the reference", err)
 	}
 }
@@ -67,7 +67,7 @@ func TestBuildStampsTheResolvedLock(t *testing.T) {
 		t.Fatalf("Build: %v", err)
 	}
 	raw := workflow.Annotations[argoworkflow.FilesAnnotation]
-	if raw == "tzmem@v1:graph/repos.yml" {
+	if raw == "depgraph@v1:graph/repos.yml" {
 		t.Fatal("the annotation still holds the declaration; the lock never replaced it")
 	}
 	var lock argoworkflow.FileLock
@@ -258,8 +258,8 @@ func TestSeedWritesFileDependenciesIntoTheClaim(t *testing.T) {
 		members[header.Name] = string(body)
 	}
 
-	if got := members["tzmem/graph/repos.yml"]; got != "repos: []\n" {
-		t.Fatalf("tzmem/graph/repos.yml = %q", got)
+	if got := members["depgraph/graph/repos.yml"]; got != "repos: []\n" {
+		t.Fatalf("depgraph/graph/repos.yml = %q", got)
 	}
 	if got := members["policy/ci/images.txt"]; got != "golang\n" {
 		t.Fatalf("policy/ci/images.txt = %q", got)

@@ -11,14 +11,14 @@ declares a file dependency and the server delivers it.
 metadata:
   annotations:
     oberth.ci/files: |
-      tzmem@v1:graph/repos.yml
+      depgraph@v1:graph/repos.yml
       policy@v3:ci/allowed-images.txt
 ```
 
 Entries separate on newlines or commas. Read them under `$OBERTH_FILES`:
 
 ```
-/work/files/tzmem/graph/repos.yml
+/work/files/depgraph/graph/repos.yml
 /work/files/policy/ci/allowed-images.txt
 ```
 
@@ -99,7 +99,7 @@ it, and cannot shadow a delivered file with one of its own.
 ## Inspecting
 
 ```
-oberth files show tzmem@v1:graph/repos.yml
+oberth files show depgraph@v1:graph/repos.yml
 ```
 
 In-pod, reading the git cache directly, needing no running server.

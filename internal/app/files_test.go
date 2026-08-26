@@ -52,17 +52,17 @@ func (stub stubRegistry) RepositoryRegistered(_ context.Context, name string) (b
 func testFileLoader(t *testing.T, allowlist ...string) (*GitFileLoader, *stubBlobs) {
 	t.Helper()
 	blobs := &stubBlobs{
-		shas:  map[string]string{"tzmem@v1": strings.Repeat("a", 40)},
-		blobs: map[string][]byte{"tzmem:graph/repos.yml": []byte("repos: []\n")},
+		shas:  map[string]string{"depgraph@v1": strings.Repeat("a", 40)},
+		blobs: map[string][]byte{"depgraph:graph/repos.yml": []byte("repos: []\n")},
 	}
-	loader, err := NewGitFileLoader(blobs, stubRegistry{"tzmem": true, "other": true}, allowlist)
+	loader, err := NewGitFileLoader(blobs, stubRegistry{"depgraph": true, "other": true}, allowlist)
 	if err != nil {
 		t.Fatalf("NewGitFileLoader: %v", err)
 	}
 	return loader, blobs
 }
 
-var testRef = argoworkflow.FileRef{Repo: "tzmem", Version: "v1", Path: "graph/repos.yml"}
+var testRef = argoworkflow.FileRef{Repo: "depgraph", Version: "v1", Path: "graph/repos.yml"}
 
 func TestFileLoaderReadsAPinnedBlob(t *testing.T) {
 	loader, blobs := testFileLoader(t)
@@ -109,7 +109,7 @@ func TestFileLoaderRefusesARepositoryOutsideTheAllowlist(t *testing.T) {
 func TestFileLoaderRefusesAMissingTag(t *testing.T) {
 	loader, _ := testFileLoader(t)
 	_, err := loader.Load(context.Background(), argoworkflow.FileRef{
-		Repo: "tzmem", Version: "v99", Path: "graph/repos.yml",
+		Repo: "depgraph", Version: "v99", Path: "graph/repos.yml",
 	})
 	if err == nil || !strings.Contains(err.Error(), "v99") {
 		t.Fatalf("Load on a missing tag = %v", err)
@@ -121,7 +121,7 @@ apiVersion: argoproj.io/v1alpha1
 kind: Workflow
 metadata:
   annotations:
-    oberth.ci/files: tzmem@v1:graph/repos.yml
+    oberth.ci/files: depgraph@v1:graph/repos.yml
 spec:
   entrypoint: main
   activeDeadlineSeconds: 999999
@@ -154,14 +154,14 @@ func TestLoadFilesRefusesWhenNoLoaderIsConfigured(t *testing.T) {
 	if err == nil {
 		t.Fatal("loadFiles ran a declaration with no loader")
 	}
-	if !strings.Contains(err.Error(), "tzmem@v1:graph/repos.yml") {
+	if !strings.Contains(err.Error(), "depgraph@v1:graph/repos.yml") {
 		t.Fatalf("error %v does not name the reference", err)
 	}
 }
 
 func TestLoadFilesIsEmptyWithoutADeclaration(t *testing.T) {
 	files, err := loadFiles(context.Background(), nil, []byte(strings.Replace(
-		filesDocument, "    oberth.ci/files: tzmem@v1:graph/repos.yml\n", "", 1)))
+		filesDocument, "    oberth.ci/files: depgraph@v1:graph/repos.yml\n", "", 1)))
 	if err != nil || files != nil {
 		t.Fatalf("loadFiles on a document declaring none = %+v, %v", files, err)
 	}
