@@ -369,27 +369,28 @@ func isInMemoryStorage(status baoStatus) bool {
 // SetupDevSecretStore waits for the auto-unsealed dev OpenBao and configures
 // the secret store through kubectl exec with the well-known dev root token,
 // which is then printed so the operator can seed release secrets.
-func SetupDevSecretStore(ctx context.Context, cfg Config, deps Deps, openbao OpenBaoResult) error {
+func SetupDevSecretStore(ctx context.Context, cfg Config, deps Deps, openbao OpenBaoResult) (SecretStoreResult, error) {
 	if err := waitForPodReady(ctx, deps, openbao.Namespace, openBaoPodSelector, cfg.Timeout); err != nil {
-		return fmt.Errorf("wait for OpenBao: %w", err)
+		return SecretStoreResult{}, fmt.Errorf("wait for OpenBao: %w", err)
 	}
 
 	client, status, err := waitForOpenBaoStatus(ctx, cfg, deps, openbao.Namespace)
 	if err != nil {
-		return err
+		return SecretStoreResult{}, err
 	}
 	if status.StorageType != "" && !isInMemoryStorage(status) {
-		return fmt.Errorf("the OpenBao release in namespace %s uses %s storage — a production-mode store; "+
+		return SecretStoreResult{}, fmt.Errorf("the OpenBao release in namespace %s uses %s storage — a production-mode store; "+
 			"use --install-secretstore instead, or uninstall it (helm uninstall openbao -n %s) to start over in dev mode",
 			openbao.Namespace, status.StorageType, openbao.Namespace)
 	}
 
-	if _, err := ConfigureSecretStore(ctx, cfg, deps, client, devRootToken); err != nil {
-		return fmt.Errorf("configure secret store: %w", err)
+	configured, err := ConfigureSecretStore(ctx, cfg, deps, client, devRootToken)
+	if err != nil {
+		return SecretStoreResult{}, fmt.Errorf("configure secret store: %w", err)
 	}
 	_, _ = fmt.Fprintf(deps.Output,
 		"OpenBao (dev mode) root token: %s — evaluation only; state does not survive a pod restart.\n", devRootToken)
-	return nil
+	return configured, nil
 }
 
 // SetupProductionSecretStore initializes and unseals the standalone OpenBao
@@ -856,6 +857,8 @@ func ConfigureSecretStore(ctx context.Context, cfg Config, deps Deps, store open
 
 	result.Skipped = !result.AuthMountConfigured && !result.TransitMountEnabled && !result.TransitKeyCreated &&
 		!result.PolicyWritten && !result.RoleCreated && !writeConfig
+	result.client = store
+	result.rootToken = rootToken
 	return result, nil
 }
 

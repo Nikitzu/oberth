@@ -56,7 +56,7 @@ const (
 // The table writer is still open (has a bottom border drawn); onboarding
 // results are appended to the table via AppendRow so the table grows in
 // place. Credentials are flushed after the table.
-func FinishInstall(ctx context.Context, cfg Config, deps Deps, tw *tableWriter, creds *heldCredentials) error {
+func FinishInstall(ctx context.Context, cfg Config, deps Deps, tw *tableWriter, creds *heldCredentials, store SecretStoreResult) error {
 	ns := cfg.Namespace
 	if ns == "" {
 		ns = DefaultNamespace
@@ -85,7 +85,7 @@ func FinishInstall(ctx context.Context, cfg Config, deps Deps, tw *tableWriter, 
 		_, _ = fmt.Fprintln(deps.Output, "The pod stays NotReady until an upstream is registered. Finish the setup manually:")
 		return PrintNextSteps(cfg, deps.Output)
 	}
-	return runOnboarding(ctx, cfg, deps, tw, creds)
+	return runOnboarding(ctx, cfg, deps, tw, creds, store)
 }
 
 func isInteractive(deps Deps) bool {
@@ -177,7 +177,7 @@ func upstreamListHasRows(out []byte) bool {
 // runOnboarding drives the interactive first-run setup. Results are appended
 // to the table via tw.AppendRow so the table grows in place while prompts
 // appear below the bottom border.
-func runOnboarding(ctx context.Context, cfg Config, deps Deps, tw *tableWriter, creds *heldCredentials) error {
+func runOnboarding(ctx context.Context, cfg Config, deps Deps, tw *tableWriter, creds *heldCredentials, store SecretStoreResult) error {
 	w := deps.Output
 	color := isColor(deps)
 
@@ -211,7 +211,7 @@ func runOnboarding(ctx context.Context, cfg Config, deps Deps, tw *tableWriter, 
 			return keyErr
 		}
 		keyProvided = provided
-	} else if err := promptUpstreamToken(ctx, cfg, deps, tw); err != nil {
+	} else if err := configureUpstreamToken(ctx, cfg, deps, tw, store, baseURL); err != nil {
 		return err
 	}
 

@@ -3685,7 +3685,7 @@ func TestSetupDevSecretStoreConfiguresAndPrintsToken(t *testing.T) {
 	cfg := Config{InstallSecretStoreDev: true}
 	_ = cfg.Validate()
 
-	if err := SetupDevSecretStore(context.Background(), cfg, deps, productionOpenBaoResult()); err != nil {
+	if _, err := SetupDevSecretStore(context.Background(), cfg, deps, productionOpenBaoResult()); err != nil {
 		t.Fatal(err)
 	}
 	output := buf.String()
@@ -3709,7 +3709,7 @@ func TestSetupDevSecretStoreRefusesProductionStore(t *testing.T) {
 	cfg := Config{InstallSecretStoreDev: true}
 	_ = cfg.Validate()
 
-	err := SetupDevSecretStore(context.Background(), cfg, deps, productionOpenBaoResult())
+	_, err := SetupDevSecretStore(context.Background(), cfg, deps, productionOpenBaoResult())
 	if err == nil || !strings.Contains(err.Error(), "production-mode store") {
 		t.Fatalf("want production-store refusal, got %v", err)
 	}
@@ -3811,7 +3811,7 @@ func finishInstallTest(ctx context.Context, cfg Config, deps Deps, buf *bytes.Bu
 	tw.WriteHeader()
 	tw.WriteFooter()
 	var creds heldCredentials
-	return FinishInstall(ctx, cfg, deps, tw, &creds)
+	return FinishInstall(ctx, cfg, deps, tw, &creds, SecretStoreResult{})
 }
 
 func onboardingDeps(t *testing.T, host *fakeOberthHost, buf *bytes.Buffer, input io.Reader, interactive bool) Deps {

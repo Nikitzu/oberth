@@ -16,8 +16,9 @@ import (
 // #nosec G101 -- the name of a Kubernetes Secret, not a credential.
 const upstreamTokenSecretName = "oberth-upstream-token"
 
-// promptUpstreamToken asks for the personal access token an HTTPS upstream
-// pushes with.
+// configureUpstreamToken settles the personal access token an HTTPS upstream
+// pushes with, and seeds the same token into the secret store so a pipeline
+// can install the org's private packages.
 //
 // This is the credential that replaces a deploy key. The difference is whose
 // authority it is: a deploy key is installed on the forge by an administrator
@@ -26,20 +27,18 @@ const upstreamTokenSecretName = "oberth-upstream-token"
 // revoked by them alone. For a tool whose only write is "push the branch I
 // just asked you to push", the second is the right one.
 //
+// A non-interactive install is not a reason to configure nothing. The token
+// is almost always already exported, and an install that reads it in a
+// terminal but ignores it in a script produces a deployment that differs by
+// how it was started — which is the difference that made the operator the
+// integration test.
+//
 // Declining is fine and says so: everything except that push works without it,
 // and the dashboard reports the failure with the forge's own words if it is
 // ever needed and missing.
-func promptUpstreamToken(ctx context.Context, cfg Config, deps Deps, tw *tableWriter) error {
-	if deps.IsTerminal == nil || !deps.IsTerminal() || deps.Input == nil {
-		tw.AppendRow("Upstream token", "not configured", "⚠ manual", false)
-		return nil
-	}
+func configureUpstreamToken(ctx context.Context, cfg Config, deps Deps, tw *tableWriter, store SecretStoreResult, baseURL string) error {
 	w := deps.Output
 	color := isColor(deps)
-
-	_, _ = fmt.Fprintln(w, "\nA token lets the dashboard push a green branch and open its pull request.")
-	_, _ = fmt.Fprintln(w, "It is yours, not this server's: it reaches the repositories you reach, and")
-	_, _ = fmt.Fprintln(w, "no administrator has to install anything on the forge.")
 
 	// Prefer somewhere the token already is.
 	//
@@ -48,6 +47,20 @@ func promptUpstreamToken(ctx context.Context, cfg Config, deps Deps, tw *tableWr
 	// of the session. Most people already keep this in an environment variable
 	// or a password manager, so look there first and say where it was found.
 	token, source := existingUpstreamToken()
+
+	if deps.IsTerminal == nil || !deps.IsTerminal() || deps.Input == nil {
+		if token == "" {
+			tw.AppendRow("Upstream token", "not configured", "⚠ manual", false)
+			return nil
+		}
+		return applyUpstreamToken(ctx, cfg, deps, tw, store, baseURL, token, source)
+	}
+
+	_, _ = fmt.Fprintln(w, "\nA token lets the dashboard push a green branch and open its pull request,")
+	_, _ = fmt.Fprintln(w, "and lets a pipeline install this org's private packages.")
+	_, _ = fmt.Fprintln(w, "It is yours, not this server's: it reaches the repositories you reach, and")
+	_, _ = fmt.Fprintln(w, "no administrator has to install anything on the forge.")
+
 	if token != "" {
 		_, _ = fmt.Fprintf(w, "Found one in %s. Enter to use it, or paste a different one.\n", source)
 	} else {
@@ -67,11 +80,37 @@ func promptUpstreamToken(ctx context.Context, cfg Config, deps Deps, tw *tableWr
 		tw.AppendRow("Upstream token", "skipped; push & open PR will not push", "— skipped", false)
 		return nil
 	}
+	return applyUpstreamToken(ctx, cfg, deps, tw, store, baseURL, token, source)
+}
+
+// applyUpstreamToken puts one token in both places it is needed: the Secret
+// the server pushes with, and the upstream org's subtree of the secret store
+// that a pipeline reads.
+//
+// Neither failure aborts the install. A deployment without the push credential
+// still builds, and a deployment without the stored copy still pushes; the row
+// says which one is missing rather than the install ending on it.
+func applyUpstreamToken(ctx context.Context, cfg Config, deps Deps, tw *tableWriter, store SecretStoreResult, baseURL, token, source string) error {
 	if err := storeUpstreamToken(ctx, cfg, deps, token); err != nil {
 		tw.AppendRow("Upstream token", err.Error(), "✗ error", false)
 		return nil
 	}
 	tw.AppendRow("Upstream token", "from "+source, "✓ stored", false)
+
+	org := orgFromBaseURL(baseURL)
+	switch {
+	case org == "":
+		// Nothing to scope the secret to; the hierarchical namespace is keyed
+		// by org and there is no other place this could go safely.
+	case !storeReachable(store):
+		tw.AppendRow("Package token", "no secret store; private packages will not install", "⚠ manual", false)
+	default:
+		if err := seedUpstreamToken(ctx, store, org, token); err != nil {
+			tw.AppendRow("Package token", terseInstallError(err), "✗ error", false)
+		} else {
+			tw.AppendRow("Package token", declaredUpstreamTokenPath(org), "✓ stored", false)
+		}
+	}
 	return nil
 }
 

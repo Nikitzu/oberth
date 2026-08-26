@@ -421,6 +421,13 @@ type SecretStoreResult struct {
 	Skipped                bool
 	// Items collects the provisioned/verified objects for the config grid.
 	Items []configItem
+
+	// client and rootToken are how the install reaches the store it just
+	// configured, so a later step can seed a secret into it. They are
+	// unexported and never persisted: the install holds them for the
+	// duration of the process and nothing more.
+	client    openBaoExec
+	rootToken string
 }
 
 // OberthResult describes the outcome of the Oberth install phase.
@@ -646,6 +653,7 @@ func Run(ctx context.Context, cfg Config, deps Deps) error {
 	var openbao OpenBaoResult
 	var rekor RekorResult
 	var secretStoreItems []configItem
+	var secretStore SecretStoreResult
 
 	if cfg.wantsSecretStore() {
 		quietDeps := deps
@@ -656,7 +664,8 @@ func Run(ctx context.Context, cfg Config, deps Deps) error {
 		}
 
 		if cfg.InstallSecretStoreDev {
-			if err := SetupDevSecretStore(ctx, cfg, quietDeps, openbao); err != nil {
+			secretStore, err = SetupDevSecretStore(ctx, cfg, quietDeps, openbao)
+			if err != nil {
 				return fmt.Errorf("set up dev secret store: %w", err)
 			}
 		} else {
@@ -674,6 +683,7 @@ func Run(ctx context.Context, cfg Config, deps Deps) error {
 			}
 			openbao.TrustedTransitVerified = configured.TrustedTransitVerified
 			secretStoreItems = configured.Items
+			secretStore = configured
 		}
 	}
 
@@ -752,7 +762,7 @@ func Run(ctx context.Context, cfg Config, deps Deps) error {
 	// registered (vault-pre-init pattern), so completion goes through the
 	// onboarding-aware finish instead of a blind readiness wait. Onboarding
 	// results are appended to the table via AppendRow.
-	return FinishInstall(ctx, cfg, deps, tw, &creds)
+	return FinishInstall(ctx, cfg, deps, tw, &creds, secretStore)
 }
 
 // --- Phase 1: Cluster detection ---
