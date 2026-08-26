@@ -119,12 +119,15 @@ func TestGeneratedNodePipelineDeclaresTheUpstreamTokenAndItsGrant(t *testing.T) 
 	if !strings.Contains(result.YAML, "--path=oberth/upstream/transferz/github-token") {
 		t.Fatalf("the exec path must match the annotation:\n%s", result.YAML)
 	}
-	want := "oberth access allow backoffice-portal '*' oberth/upstream/transferz/github-token"
-	if result.GrantCommand != want {
-		t.Fatalf("GrantCommand = %q, want %q", result.GrantCommand, want)
+	// The hierarchical namespace is authorized structurally, so the generated
+	// file must NOT teach an administrator step that is not needed. Telling
+	// someone to run a command that changes nothing is the same class of
+	// defect as the four manual steps this work removed.
+	if strings.Contains(result.YAML, "oberth access allow") {
+		t.Fatalf("an org-scoped path needs no grant; the file must not ask for one:\n%s", result.YAML)
 	}
-	if !strings.Contains(result.YAML, want) {
-		t.Fatalf("the grant command must be in the generated header:\n%s", result.YAML)
+	if !strings.Contains(result.YAML, "no grant") {
+		t.Fatalf("the header must say the path needs no grant:\n%s", result.YAML)
 	}
 	if !strings.Contains(result.YAML, `find "$OBERTH_SECRETSTORE_DIR"`) {
 		t.Fatalf("the step must find the delivered secret:\n%s", result.YAML)

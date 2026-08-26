@@ -1,7 +1,6 @@
 package pipelinegen
 
 import (
-	"fmt"
 	"strings"
 )
 
@@ -27,10 +26,14 @@ type Result struct {
 	// steps fail until a human finishes them.
 	Complete bool
 	// SecretPath is the declared secret-store path, empty when the pipeline
-	// needs no credential. A declared path needs a matching grant before the
-	// first push, and GrantCommand is exactly that command.
-	SecretPath   string
-	GrantCommand string
+	// needs no credential.
+	//
+	// It is always in the hierarchical oberth/upstream/<org>/ namespace, which
+	// release admission authorizes structurally against the pushing
+	// repository's own registered upstream: no grant, and no administrator
+	// step, between `oberth init` and the first green run. What it does
+	// require is that the install seeded the token, which it now does.
+	SecretPath string
 	// Steps names the steps in order, for the summary line.
 	Steps []string
 }
@@ -59,13 +62,6 @@ func Generate(project Project) Result {
 	result := Result{Complete: complete, SecretPath: secretPath}
 	for _, one := range steps {
 		result.Steps = append(result.Steps, one.name)
-	}
-	if secretPath != "" {
-		name := project.Repo
-		if name == "" {
-			name = "<repo>"
-		}
-		result.GrantCommand = fmt.Sprintf("oberth access allow %s '*' %s", name, secretPath)
 	}
 	result.YAML = render(project, steps, result)
 	return result

@@ -605,15 +605,36 @@ func Build(config Config, request Request) (*wfv1.Workflow, error) {
 	return workflow, nil
 }
 
-// authorizeWithApprovalTable checks each declared secret path against the
-// pre-loaded approval table, preserving upstream namespace scoping and the
-// CI system-path prohibition as defense in depth.
+// authorizeWithApprovalTable authorizes each declared secret path.
+//
+// Two namespaces, authorized two different ways.
+//
+// A SYSTEM path (oberth/data/release/cosign-secret and the like) names a
+// credential that belongs to the deployment, not to any repository, so
+// nothing about the pushing repository implies it may read one. Those need an
+// exact entry in the approval table, written by an administrator with
+// `oberth access allow`, and a CI-triggered run may not declare one at all.
+//
+// A HIERARCHICAL upstream path (oberth/upstream/<org>/<secret>, or
+// oberth/upstream/<org>/<repo>/<secret>) is authorized STRUCTURALLY instead:
+// scoped.Authorize below matches the org segment byte-exactly against the
+// pushing repository's own registered upstream org, and the repo segment
+// against its own catalog name. A repository therefore cannot name a path in
+// that namespace that reaches anything but its own org's or its own
+// repository's secrets, and an upstream registration that would alias an
+// existing org fails closed. The grant row adds nothing on top of that
+// constraint, so it is not required, which is what AGENT-CONTRACT.md has
+// always documented.
+//
+// It used to be required all the same, and the cost was not theoretical: the
+// installer seeds the org's forge token at
+// oberth/upstream/<org>/github-token, so EVERY repository that pulls a
+// private package needed an administrator to run one command before its first
+// push would do anything but fail at admission.
 //
 // The approval table is keyed by (repo, step, secret). Until per-template
-// annotations land, the caller passes step="*" grants flattened into a
-// path set, so this function only checks path membership. Upstream scoping
-// (the declaring repo may only reach its own org/repo namespace) is enforced
-// independently of the approval table.
+// annotations land, the caller passes step="*" grants flattened into a path
+// set, so the system-path branch only checks path membership.
 func authorizeWithApprovalTable(paths []string, request Request) error {
 	var problems []error
 	for _, declared := range paths {
@@ -639,6 +660,12 @@ func authorizeWithApprovalTable(paths []string, request Request) error {
 				"argojob: secret store path %q is a system-namespace path; "+
 					"CI pipelines may only declare upstream-scoped paths (%s<org>/<repo>/<secret>)",
 				declared, periapsis.UpstreamSecretPathPrefix))
+			continue
+		}
+		if upstreamScoped {
+			// Already authorized structurally, above. Falling through to the
+			// approval table here would demand a grant that can only ever
+			// restate the constraint scoped.Authorize just enforced.
 			continue
 		}
 		if !request.ApprovedSecrets[declared] {

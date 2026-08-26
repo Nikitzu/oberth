@@ -35,9 +35,10 @@ func render(project Project, steps []step, result Result) string {
 	out.WriteString("    # Scheduler tier, not per-container resources. Those are on each template.\n")
 	out.WriteString("    oberth.ci/size: M\n")
 	if result.SecretPath != "" {
-		out.WriteString("    # Declared here and checked against this repository's grants at admission.\n")
-		out.WriteString("    # Without a matching grant the whole run is refused before any pod starts:\n")
-		out.WriteString("    #   " + result.GrantCommand + "\n")
+		out.WriteString("    # Declared here, and matched at admission against this repository's own\n")
+		out.WriteString("    # registered upstream org. A path in another org's subtree, or another\n")
+		out.WriteString("    # repository's, is refused before any pod starts. No grant is needed for\n")
+		out.WriteString("    # this namespace; the value is the token `oberth install` stored.\n")
 		out.WriteString("    oberth.ci/secret-paths: " + result.SecretPath + "\n")
 	}
 	out.WriteString("spec:\n")
@@ -95,8 +96,11 @@ func writeHeader(out *strings.Builder, project Project, result Result) {
 		out.WriteString("#\n")
 	}
 	if result.SecretPath != "" {
-		out.WriteString("# This pipeline declares a secret. Grant it once, before the first push:\n")
-		out.WriteString("#\n#   " + result.GrantCommand + "\n#\n")
+		out.WriteString("# This pipeline reads one secret, the forge token `oberth install` stored\n")
+		out.WriteString("# for this org:\n#\n#   " + result.SecretPath + "\n#\n")
+		out.WriteString("# It is scoped to this org and readable by nothing outside it, so it needs\n")
+		out.WriteString("# no grant. If a step reports that no token was delivered, the install did\n")
+		out.WriteString("# not seed one: re-run `oberth install` with the token in $GITHUB_TOKEN.\n#\n")
 	}
 	out.WriteString("# Images are pinned by digest, because a tag can be moved between\n")
 	out.WriteString("# admission and the node pull. Refresh digest: crane digest <image>\n#\n")

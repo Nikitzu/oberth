@@ -180,10 +180,11 @@ func report(output io.Writer, project pipelinegen.Project, result pipelinegen.Re
 		out.WriteString("file; read them before trusting a green run.\n")
 	}
 
-	if result.GrantCommand != "" {
-		out.WriteString("\nThis pipeline reads a secret, so it needs one grant before its first push.\n")
-		out.WriteString("Without it the run is refused before any step starts:\n\n")
-		out.WriteString("    " + result.GrantCommand + "\n")
+	if result.SecretPath != "" {
+		out.WriteString("\nThis pipeline reads the forge token oberth install stored for this org:\n\n")
+		out.WriteString("    " + result.SecretPath + "\n\n")
+		out.WriteString("Nothing to grant: that path is scoped to this org and matched against this\n")
+		out.WriteString("repository's own upstream at admission.\n")
 	}
 
 	if result.Complete {
