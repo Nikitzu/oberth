@@ -2953,9 +2953,54 @@ func existingKindCommandRunner(t *testing.T, inspectOutput []byte) CommandRunner
 	}
 }
 
+// --- Secret-store selection flag ---
+
+func TestValidateSecretStoreSelection(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name       string
+		selection  string
+		production bool
+		dev        bool
+		undecided  bool
+	}{
+		{name: "production", selection: "production", production: true},
+		{name: "dev", selection: "dev", dev: true},
+		{name: "none", selection: "none"},
+		{name: "case insensitive", selection: "  Production ", production: true},
+		{name: "empty stays undecided", selection: "", undecided: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := Config{SecretStore: tc.selection, SecretStoreUndecided: true}
+			if err := cfg.Validate(); err != nil {
+				t.Fatal(err)
+			}
+			if cfg.InstallSecretStore != tc.production {
+				t.Fatalf("InstallSecretStore = %v, want %v", cfg.InstallSecretStore, tc.production)
+			}
+			if cfg.InstallSecretStoreDev != tc.dev {
+				t.Fatalf("InstallSecretStoreDev = %v, want %v", cfg.InstallSecretStoreDev, tc.dev)
+			}
+			if cfg.SecretStoreUndecided != tc.undecided {
+				t.Fatalf("SecretStoreUndecided = %v, want %v", cfg.SecretStoreUndecided, tc.undecided)
+			}
+		})
+	}
+}
+
+func TestValidateRejectsUnknownSecretStoreSelection(t *testing.T) {
+	t.Parallel()
+	cfg := Config{SecretStore: "vault"}
+	err := cfg.Validate()
+	if err == nil || !strings.Contains(err.Error(), "production, dev or none") {
+		t.Fatalf("expected a usage error naming the accepted values, got: %v", err)
+	}
+}
+
 // --- Secret-store prompt ---
 
-func TestPromptSecretStoreChoiceInteractiveDefaultsToSkip(t *testing.T) {
+func TestPromptSecretStoreChoiceInteractiveDefaultsToProduction(t *testing.T) {
 	t.Parallel()
 	var buf bytes.Buffer
 	cfg := Config{}
@@ -2969,10 +3014,11 @@ func TestPromptSecretStoreChoiceInteractiveDefaultsToSkip(t *testing.T) {
 	if err := promptSecretStoreChoice(context.Background(), &cfg, deps); err != nil {
 		t.Fatal(err)
 	}
-	// This fork defaults to the advisory gate, where a green run publishes
-	// nothing, so the common install has no release to credential.
-	if cfg.InstallSecretStore {
-		t.Fatal("empty input should default to skipping the secret store")
+	// A repository pulling a private package cannot build without a store,
+	// so Enter installs one rather than leaving the deployment unable to
+	// build anything.
+	if !cfg.InstallSecretStore {
+		t.Fatal("empty input should default to installing the production secret store")
 	}
 	if cfg.InstallSecretStoreDev {
 		t.Fatal("InstallSecretStoreDev should not be set")
@@ -2993,7 +3039,7 @@ func TestPromptSecretStoreChoiceInteractiveExplicitProduction(t *testing.T) {
 	_ = cfg.Validate()
 	deps := Deps{
 		Output:     &buf,
-		Input:      strings.NewReader("2\n\n\n"),
+		Input:      strings.NewReader("1\n\n\n"),
 		IsTerminal: func() bool { return true },
 	}
 
@@ -3001,7 +3047,7 @@ func TestPromptSecretStoreChoiceInteractiveExplicitProduction(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !cfg.InstallSecretStore {
-		t.Fatal("choice 2 should set InstallSecretStore")
+		t.Fatal("choice 1 should set InstallSecretStore")
 	}
 }
 
@@ -3012,7 +3058,7 @@ func TestPromptSecretStoreChoiceInteractiveSkip(t *testing.T) {
 	_ = cfg.Validate()
 	deps := Deps{
 		Output:     &buf,
-		Input:      strings.NewReader("1\n"),
+		Input:      strings.NewReader("2\n"),
 		IsTerminal: func() bool { return true },
 	}
 
@@ -3020,14 +3066,14 @@ func TestPromptSecretStoreChoiceInteractiveSkip(t *testing.T) {
 		t.Fatal(err)
 	}
 	if cfg.InstallSecretStore || cfg.InstallSecretStoreDev {
-		t.Fatal("choice 1 should not set either secret store flag")
+		t.Fatal("choice 2 should not set either secret store flag")
 	}
 	if !strings.Contains(buf.String(), "Add one later with --install-secretstore") {
 		t.Fatalf("skip should say how to add one later, got:\n%s", buf.String())
 	}
 }
 
-func TestPromptSecretStoreChoiceNonInteractiveSkips(t *testing.T) {
+func TestPromptSecretStoreChoiceNonInteractiveInstallsProduction(t *testing.T) {
 	t.Parallel()
 	var buf bytes.Buffer
 	cfg := Config{}
@@ -3040,11 +3086,14 @@ func TestPromptSecretStoreChoiceNonInteractiveSkips(t *testing.T) {
 	if err := promptSecretStoreChoice(context.Background(), &cfg, deps); err != nil {
 		t.Fatal(err)
 	}
-	if cfg.InstallSecretStore || cfg.InstallSecretStoreDev {
-		t.Fatal("non-interactive must not auto-install a secret store")
+	if !cfg.InstallSecretStore {
+		t.Fatal("non-interactive must install a production secret store by default")
 	}
-	if !strings.Contains(buf.String(), "--install-secretstore") {
-		t.Fatalf("non-interactive should print guidance, got:\n%s", buf.String())
+	if cfg.InstallSecretStoreDev {
+		t.Fatal("non-interactive must not pick dev mode")
+	}
+	if !strings.Contains(buf.String(), "--secretstore none") {
+		t.Fatalf("non-interactive should say how to opt out, got:\n%s", buf.String())
 	}
 }
 
@@ -3060,11 +3109,11 @@ func TestPromptSecretStoreChoiceNonInteractiveNilIsTerminal(t *testing.T) {
 	if err := promptSecretStoreChoice(context.Background(), &cfg, deps); err != nil {
 		t.Fatal(err)
 	}
-	if cfg.InstallSecretStore || cfg.InstallSecretStoreDev {
-		t.Fatal("nil IsTerminal must be treated as non-interactive and skip")
+	if !cfg.InstallSecretStore {
+		t.Fatal("nil IsTerminal must be treated as non-interactive and still install a store")
 	}
-	if !strings.Contains(buf.String(), "--install-secretstore") {
-		t.Fatalf("nil IsTerminal should print guidance, got:\n%s", buf.String())
+	if !strings.Contains(buf.String(), "--secretstore none") {
+		t.Fatalf("nil IsTerminal should say how to opt out, got:\n%s", buf.String())
 	}
 }
 
@@ -3075,7 +3124,7 @@ func TestPromptSecretStoreChoiceNamespaceOverride(t *testing.T) {
 	_ = cfg.Validate()
 	deps := Deps{
 		Output:     &buf,
-		Input:      strings.NewReader("2\ncustom-bao\ncustom-argo\n"),
+		Input:      strings.NewReader("1\ncustom-bao\ncustom-argo\n"),
 		IsTerminal: func() bool { return true },
 	}
 
@@ -3097,7 +3146,7 @@ func TestPromptSecretStoreChoiceNamespaceDefaultsKept(t *testing.T) {
 	_ = cfg.Validate()
 	deps := Deps{
 		Output:     &buf,
-		Input:      strings.NewReader("1\n\n\n"),
+		Input:      strings.NewReader("2\n\n\n"),
 		IsTerminal: func() bool { return true },
 	}
 
@@ -3118,7 +3167,7 @@ func TestPromptSecretStoreChoiceRejectsArgoNamespaceCollision(t *testing.T) {
 	_ = cfg.Validate()
 	deps := Deps{
 		Output:     io.Discard,
-		Input:      strings.NewReader("2\nopenbao\noberth\n"),
+		Input:      strings.NewReader("1\nopenbao\noberth\n"),
 		IsTerminal: func() bool { return true },
 	}
 
@@ -3133,11 +3182,11 @@ func TestPromptSecretStoreChoiceUnrecognizedInputRetries(t *testing.T) {
 	var buf bytes.Buffer
 	cfg := Config{}
 	_ = cfg.Validate()
-	// Two garbage answers followed by a valid "2", which is now the
-	// production choice: [1] skips, and is what Enter gives.
+	// Two garbage answers followed by a valid "1", the production choice,
+	// which is also what Enter gives.
 	deps := Deps{
 		Output:     &buf,
-		Input:      strings.NewReader("x\nfoo\n2\n\n\n"),
+		Input:      strings.NewReader("x\nfoo\n1\n\n\n"),
 		IsTerminal: func() bool { return true },
 	}
 
@@ -3168,11 +3217,11 @@ func TestPromptSecretStoreChoiceExhaustsRetries(t *testing.T) {
 	if err := promptSecretStoreChoice(context.Background(), &cfg, deps); err != nil {
 		t.Fatal(err)
 	}
-	if cfg.InstallSecretStore || cfg.InstallSecretStoreDev {
-		t.Fatal("exhausted retries should skip, not install")
+	if !cfg.InstallSecretStore {
+		t.Fatal("exhausted retries should take the offered default, not skip")
 	}
-	if !strings.Contains(buf.String(), "Warning: releases will not work") {
-		t.Fatalf("exhausted retries should print skip warning, got:\n%s", buf.String())
+	if !strings.Contains(buf.String(), "No recognized choice") {
+		t.Fatalf("exhausted retries should say it took the default, got:\n%s", buf.String())
 	}
 }
 
@@ -3331,6 +3380,7 @@ func TestRunPromptsWhenSecretStoreUndecided(t *testing.T) {
 	client := fake.NewClientset(node, oberthPod, readyArgoControllerPod())
 	var buf bytes.Buffer
 	// User chooses "2" (skip) so the install proceeds without OpenBao.
+	// The default is production; this test exercises the opt-out.
 	deps := Deps{
 		Output:      &buf,
 		KubeClient:  client,
@@ -3346,8 +3396,8 @@ func TestRunPromptsWhenSecretStoreUndecided(t *testing.T) {
 			return []byte("NAME\tKIND\tURL\nrepo\tgit\tssh://git@example.test/repo\n"), nil
 		},
 		IsTerminal: func() bool { return true },
-		// [1] skips, and is what Enter gives.
-		Input:        strings.NewReader("1\n"),
+		// [2] skips; [1] installs and is what Enter gives.
+		Input:        strings.NewReader("2\n"),
 		PollInterval: time.Millisecond,
 	}
 	cfg := Config{Timeout: time.Second, SecretStoreUndecided: true}

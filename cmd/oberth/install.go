@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"strings"
 	"time"
 
 	"github.com/oberthci/oberth/internal/installer"
@@ -44,6 +45,9 @@ func runInstall(ctx context.Context, arguments []string, input io.Reader, output
 	flags.StringVar(&cfg.ArgoNamespace, "argo-namespace", "",
 		"namespace pipelines execute in; must differ from --namespace (default: oberth-argo)")
 	flags.StringVar(&cfg.ChartVersion, "chart-version", "", "Oberth chart version (default: binary version)")
+	flags.StringVar(&cfg.SecretStore, "secretstore", "",
+		"select the release secret store without prompting: production, dev or none "+
+			"(default: production, because a repository pulling private packages cannot build without one)")
 	flags.StringVar(&cfg.ClientAccess, "client-access", "",
 		"configure clients without prompting: both, cli, mcp or none")
 	flags.StringVar(&cfg.ChartPath, "chart", "",
@@ -99,7 +103,8 @@ func runInstall(ctx context.Context, arguments []string, input io.Reader, output
 
 	cfg.Timeout = *timeout
 	cfg.BinaryVersion = version
-	cfg.SecretStoreUndecided = !cfg.InstallSecretStore && !cfg.InstallSecretStoreDev
+	cfg.SecretStoreUndecided = !cfg.InstallSecretStore && !cfg.InstallSecretStoreDev &&
+		strings.TrimSpace(cfg.SecretStore) == ""
 	cfg.CredentialedSecretPaths = credentialedSecretPaths
 	cfg.ValuesFiles = valuesFiles
 	cfg.TLSExtraDNSNames = tlsExtraDNSNames

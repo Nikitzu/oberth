@@ -192,6 +192,14 @@ type Config struct {
 	// was found by an operator rather than by a test.
 	ClientAccess string
 
+	// SecretStore selects the release secret store without a prompt:
+	// "production", "dev" or "none". Empty means undecided, which asks when
+	// there is a terminal and installs a production store when there is not:
+	// a repository pulling private packages cannot build without one, so
+	// skipping by default hands the operator a deployment that exits zero and
+	// builds nothing.
+	SecretStore string
+
 	ChartPath string
 
 	// chartEmbedded records that ChartPath was filled in from the chart this
@@ -217,29 +225,24 @@ func (cfg Config) wantsSecretStore() bool {
 }
 
 // promptSecretStoreChoice proposes installing OpenBao when no explicit
-// --install-secretstore or --install-secretstore-dev flag was passed. In an
-// interactive terminal it presents a three-option menu; in a non-interactive
-// session it skips with guidance (credentials printed during production
-// setup must never land in CI logs or transcripts unsolicited).
+// --secretstore, --install-secretstore or --install-secretstore-dev flag was
+// passed. Both the interactive default and the non-interactive answer are to
+// install a production-mode store, because every repository that pulls a
+// private package needs one and an install that skips it exits zero having
+// produced a deployment that cannot build anything.
 func promptSecretStoreChoice(ctx context.Context, cfg *Config, deps Deps) error {
 	interactive := deps.IsTerminal != nil && deps.IsTerminal() && deps.Input != nil
 	if !interactive {
-		_, _ = fmt.Fprintln(deps.Output, "No secret store selected. Re-run with --install-secretstore to enable release secret management.")
+		cfg.InstallSecretStore = true
+		_, _ = fmt.Fprintln(deps.Output, "No secret store selected; installing a production-mode OpenBao. Pass --secretstore none to skip it.")
 		return nil
 	}
 
-	// Skip is first, and is what Enter gives.
-	//
-	// A secret store exists to hand credentials to a release. This fork
-	// defaults to the advisory gate, where a green run publishes nothing, so
-	// the common install has no release to credential and every operator was
-	// answering the same question the same way. Anyone doing releases picks
-	// [2], and --install-secretstore adds it later without reinstalling.
+	// Production is first, and is what Enter gives.
 	_, _ = fmt.Fprintln(deps.Output, "\nInstall OpenBao for release secret management?")
-	_, _ = fmt.Fprintln(deps.Output, "  [1] Skip — no secret store (branch CI only; releases need one)")
-	_, _ = fmt.Fprintln(deps.Output, "  [2] Production mode (persistent storage, verified TLS)")
+	_, _ = fmt.Fprintln(deps.Output, "  [1] Production mode (persistent storage, verified TLS)")
+	_, _ = fmt.Fprintln(deps.Output, "  [2] Skip — no secret store (private packages and releases both need one)")
 
-	var chosen bool
 	for attempt := 0; attempt < 3; attempt++ {
 		_, _ = fmt.Fprint(deps.Output, "Choice [1]: ")
 		answer, err := readLine(ctx, deps.Input)
@@ -248,19 +251,22 @@ func promptSecretStoreChoice(ctx context.Context, cfg *Config, deps Deps) error 
 		}
 		switch strings.TrimSpace(answer) {
 		case "", "1":
+			cfg.InstallSecretStore = true
+		case "2":
 			_, _ = fmt.Fprintln(deps.Output, "No secret store. Add one later with --install-secretstore.")
 			return nil
-		case "2":
-			cfg.InstallSecretStore = true
-			chosen = true
 		default:
 			_, _ = fmt.Fprintln(deps.Output, "Please enter 1 or 2.")
 			continue
 		}
 		break
 	}
-	if !chosen {
-		_, _ = fmt.Fprintln(deps.Output, "Warning: releases will not work without a secret store. Re-run with --install-secretstore later to add one.")
+	if !cfg.InstallSecretStore {
+		// Three unreadable answers are not a decision to skip. Take the
+		// default the prompt already offered, and say so rather than
+		// silently leaving the deployment unable to build.
+		cfg.InstallSecretStore = true
+		_, _ = fmt.Fprintln(deps.Output, "No recognized choice; installing a production-mode OpenBao, which is the default.")
 		return nil
 	}
 
@@ -465,6 +471,22 @@ func (cfg *Config) Validate() error {
 	}
 	if cfg.InstallSecretStore && cfg.InstallSecretStoreDev {
 		return errors.New("--install-secretstore and --install-secretstore-dev are mutually exclusive")
+	}
+	switch strings.ToLower(strings.TrimSpace(cfg.SecretStore)) {
+	case "":
+		// Undecided: promptSecretStoreChoice settles it.
+	case "production":
+		cfg.InstallSecretStore = true
+		cfg.SecretStoreUndecided = false
+	case "dev":
+		cfg.InstallSecretStoreDev = true
+		cfg.SecretStoreUndecided = false
+	case "none":
+		cfg.InstallSecretStore = false
+		cfg.InstallSecretStoreDev = false
+		cfg.SecretStoreUndecided = false
+	default:
+		return fmt.Errorf("--secretstore %q is not production, dev or none", cfg.SecretStore)
 	}
 	if !cfg.Dev {
 		cfg.Dev = true

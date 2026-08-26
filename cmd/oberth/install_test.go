@@ -184,3 +184,15 @@ func TestRunCLIRoutesEveryCommandViaHelp(t *testing.T) {
 		})
 	}
 }
+
+// TestRunInstallWiresSecretStoreFlag guards the flag→Config wiring: a dropped
+// StringVar line would silently return to skipping the secret store, and an
+// install that skips it exits zero having produced a deployment that cannot
+// build a repository with a private dependency.
+func TestRunInstallWiresSecretStoreFlag(t *testing.T) {
+	t.Parallel()
+	err := runInstall(context.Background(), []string{"--secretstore", "bogus"}, strings.NewReader(""), io.Discard)
+	if err == nil || !strings.Contains(err.Error(), "production, dev or none") {
+		t.Fatalf("--secretstore should reach Config validation, got: %v", err)
+	}
+}
