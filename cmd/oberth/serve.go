@@ -256,8 +256,11 @@ const (
 )
 
 func validateServeOptions(options serveOptions) error {
+	// Empty means unspecified, which is the flag default: the Argo engine.
+	// Callers that build serveOptions directly, including the tests, then do
+	// not have to name an engine to validate anything else.
 	switch options.engine {
-	case engineArgo, engineDocker:
+	case "", engineArgo, engineDocker:
 	default:
 		return fmt.Errorf("serve: unknown --engine %q, expected %q or %q", options.engine, engineArgo, engineDocker)
 	}
@@ -273,7 +276,7 @@ func validateServeOptions(options serveOptions) error {
 	// they are neither required nor validated when it is selected. Requiring
 	// them anyway would make an operator invent a namespace to satisfy a
 	// check for a code path that never runs.
-	if options.engine == engineArgo {
+	if options.engine != engineDocker {
 		if options.argoNamespace == "" {
 			return errors.New("serve: --argo-namespace is required")
 		}

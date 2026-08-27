@@ -96,6 +96,17 @@ func runUpstream(ctx context.Context, arguments []string, output io.Writer) erro
 			mutationGate: requestLiveAdminMutationGate,
 		})
 	}
+	// A local upstream is a directory of bare repositories on this machine. It
+	// has no deploy key to mint and no forge to probe, so the whole Secret
+	// bootstrap is skipped and there is nothing left that needs Kubernetes.
+	// Routing it here is what lets a clusterless server register an upstream
+	// at all; the SSH and HTTPS kinds still take the paths below.
+	if arguments[0] == "add" && localUpstreamArguments(arguments[1:]) {
+		return runUpstreamWithDependencies(ctx, arguments, output, upstreamDependencies{
+			input:        os.Stdin,
+			mutationGate: requestLiveAdminMutationGate,
+		})
+	}
 	// "upstream add" and "upstream provide-key" need a Kubernetes client.
 	// Try in-cluster config first (running inside the pod). When that fails,
 	// fall back to the host kubeconfig for "add" only; provide-key is pod-only.
@@ -285,6 +296,22 @@ func runUpstreamWithDependencies(ctx context.Context, arguments []string, output
 		}
 	}
 	return nil
+}
+
+// localUpstreamArguments reports whether an `upstream add` invocation names a
+// local (absolute path) base URL. It reads the trailing operand rather than
+// re-parsing the flag set, because the full parse happens downstream and this
+// only has to decide which dependency set to hand it.
+func localUpstreamArguments(arguments []string) bool {
+	for index := len(arguments) - 1; index >= 0; index-- {
+		candidate := strings.TrimSpace(arguments[index])
+		if candidate == "" || strings.HasPrefix(candidate, "-") {
+			continue
+		}
+		kind, err := app.UpstreamKind(strings.TrimSuffix(candidate, "/"))
+		return err == nil && kind == "local"
+	}
+	return false
 }
 
 // maximumDeployKeyBytes is the file size cap for a provided deploy key.
