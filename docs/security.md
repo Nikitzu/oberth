@@ -62,7 +62,9 @@
 - Workspace cleanup is allowlisted by durable owner state and never follows an
   arbitrary filesystem scan.
 - Pipeline egress is deny-by-default on clusters with a conforming NetworkPolicy
-  CNI (Cilium, Calico). DNS, HTTPS (port 443), and the secret store are
+  CNI (Cilium, Calico, and the kindnetd shipped by current kind, where the
+  enforcement was demonstrated on 2026-08-27). DNS, HTTPS (port 443), and the
+  secret store are
   allowlisted; the cloud metadata endpoint (169.254.169.254) is blocked. On k3s
   with the built-in kube-router NetworkPolicy controller, the installer disables
   enforcement automatically and prints a warning, because kube-router's DNAT

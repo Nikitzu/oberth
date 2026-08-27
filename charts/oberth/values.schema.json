@@ -444,7 +444,7 @@
         },
         "extraEgress": {
           "type": "array",
-          "description": "Additional egress destinations pipeline pods may reach, as CIDR plus TCP ports. For services that are neither HTTPS nor in-namespace, such as a local model endpoint. Not enforced unless the cluster's CNI implements NetworkPolicy.",
+          "description": "Additional egress destinations pipeline pods may reach, as CIDR plus TCP ports. For services that are neither HTTPS nor in-namespace, such as a local model endpoint. Enforced wherever the CNI implements NetworkPolicy, which includes the kindnetd shipped by current kind.",
           "items": {
             "type": "object",
             "additionalProperties": false,
