@@ -2827,6 +2827,8 @@ type fakeBaoRunner struct {
 	// secretStoreErr makes every host secret-store command fail, which is the
 	// path where the installer must fall back to printing the credentials.
 	secretStoreErr error
+	// secretStoreOut is what a read of the host secret store answers with.
+	secretStoreOut string
 }
 
 func (f *fakeBaoRunner) run(_ context.Context, input []byte, name string, args ...string) ([]byte, error) {
@@ -2839,7 +2841,7 @@ func (f *fakeBaoRunner) run(_ context.Context, input []byte, name string, args .
 				stdin:   string(input),
 				argv:    append([]string{name}, args...),
 			})
-			return nil, f.secretStoreErr
+			return []byte(f.secretStoreOut), f.secretStoreErr
 		default:
 			f.t.Fatalf("unexpected host command %q %v", name, args)
 		}
