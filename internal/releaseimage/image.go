@@ -39,7 +39,14 @@ const (
 	//
 	// There is no runner image: Jobs run repository-declared standard golang
 	// images executing `go -C .oberth run .`.
-	ServerSubstrate = ServerRepository + "@sha256:e771f0f5aa8798bb3e32c4dd5039b3581bf6b776ea30698e0b682ac50fce553b"
+	//
+	// Substrate 2026-08-27 (tag substrate-openssl-3.5.8-r0-20260827): rebuilt
+	// from the Dockerfile for CVE-2026-14456. Reviewed content delta vs the
+	// previous substrate, identical on both platforms: libcrypto3/libssl3
+	// 3.5.7-r0 -> 3.5.8-r0 (the CVE fix, exact-pinned in the Dockerfile) and
+	// libexpat 2.8.2-r0 -> 2.8.3-r0 (git dependency, repo patch level);
+	// 36 packages before and after, nothing added or removed.
+	ServerSubstrate = ServerRepository + "@sha256:6684009e6b494e78564644f0140a7499ab84bcf35ce21a5ad1ce72f061be17ea"
 )
 
 // Kind selects a release image contract. Only the server image remains.
