@@ -23,6 +23,14 @@ FROM alpine:3.23@sha256:fd791d74b68913cbb027c6546007b3f0d3bc45125f797758156952bc
 RUN apk add --no-cache \
     ca-certificates=20260611-r0 \
     git=2.52.0-r0 \
+    # CVE-2026-14456 (HIGH): the alpine:3.23 base at the digest above still
+    # ships libcrypto3/libssl3 3.5.7-r0; the fixed 3.5.8-r0 exists only in the
+    # apk repository, so a digest bump cannot fix it yet. Exact-pinned like
+    # every other package here: when the repo supersedes 3.5.8-r0 these lines
+    # fail the build loudly, which is the moment to re-pin or drop them in
+    # favour of a rebuilt base image — never a silent drift.
+    libcrypto3=3.5.8-r0 \
+    libssl3=3.5.8-r0 \
     openssh-client-default=10.2_p1-r0 \
     tzdata=2026c-r0 \
     && rm -f /var/log/apk.log
