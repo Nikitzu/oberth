@@ -304,8 +304,12 @@ type Deps struct {
 	RunInteractive InteractiveRunner
 	// PodLogs returns one pod's bounded bootstrap output. When nil, the
 	// Kubernetes REST client is used directly.
-	PodLogs         func(ctx context.Context, namespace, pod string) ([]byte, error)
-	IsTerminal      func() bool
+	PodLogs    func(ctx context.Context, namespace, pod string) ([]byte, error)
+	IsTerminal func() bool
+	// LookPath resolves a host binary, so a step that adapts to what is
+	// installed can be tested without depending on the test machine's PATH.
+	// Nil selects exec.LookPath.
+	LookPath        func(string) (string, error)
 	KubeClient      kubernetes.Interface
 	RestConfig      *rest.Config
 	ContextName     string
