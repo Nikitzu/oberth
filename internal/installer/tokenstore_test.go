@@ -77,3 +77,81 @@ func TestEmptyTokenIsNotStored(t *testing.T) {
 		t.Fatal("the secret store was invoked with nothing to store")
 	}
 }
+
+// The OpenBao root token and unseal key are the credentials that cannot be
+// reissued: an initialized store whose unseal key is gone is permanently
+// sealed. They go to the same store the bearer token goes to, under their own
+// service names, so `oberth unseal` can find the key later.
+func TestOpenBaoCredentialsGoToTheirOwnServices(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("the Keychain path is macOS only")
+	}
+	var argv []string
+	deps := Deps{RunCommand: func(_ context.Context, _ []byte, name string, args ...string) ([]byte, error) {
+		argv = append(argv, strings.Join(append([]string{name}, args...), " "))
+		return nil, nil
+	}}
+
+	if err := storeSecret(context.Background(), deps, openBaoRootTokenLocation, "s.rootvalue"); err != nil {
+		t.Fatal(err)
+	}
+	if err := storeSecret(context.Background(), deps, openBaoUnsealKeyLocation, "unsealvalue"); err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(argv, "\n")
+	for _, want := range []string{"-s oberth-openbao-root", "-s oberth-openbao-unseal", "-U"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("missing %q in:\n%s", want, joined)
+		}
+	}
+}
+
+// A hand-made Keychain entry carries whatever account the operator typed.
+// Refusing to find it would make the installer's own convention the only one
+// that works, on a machine where the entry already exists.
+func TestTheKeychainReadFallsBackToAServiceOnlyLookup(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("the Keychain path is macOS only")
+	}
+	var attempts []string
+	deps := Deps{RunCommand: func(_ context.Context, _ []byte, name string, args ...string) ([]byte, error) {
+		joined := strings.Join(append([]string{name}, args...), " ")
+		attempts = append(attempts, joined)
+		if strings.Contains(joined, "-a ") {
+			return nil, errors.New("exit status 44")
+		}
+		return []byte("unsealvalue\n"), nil
+	}}
+
+	got, err := readStoredSecret(context.Background(), deps, openBaoUnsealKeyLocation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "unsealvalue" {
+		t.Fatalf("read %q, want the stored key", got)
+	}
+	if len(attempts) != 2 {
+		t.Fatalf("expected an account-scoped read then a service-only one, got:\n%s", strings.Join(attempts, "\n"))
+	}
+}
+
+// A missing entry is a distinguishable condition, because the command that
+// reads it is about to tell an operator what to do about it.
+func TestAMissingEntryIsReportedAsNotStored(t *testing.T) {
+	deps := Deps{
+		LookPath: func(string) (string, error) { return "", errors.New("not found") },
+		RunCommand: func(context.Context, []byte, string, ...string) ([]byte, error) {
+			return nil, errors.New("exit status 44")
+		},
+	}
+	_, err := readStoredSecret(context.Background(), deps, openBaoUnsealKeyLocation)
+	if runtime.GOOS == "darwin" {
+		if !errors.Is(err, errSecretNotStored) {
+			t.Fatalf("err = %v, want errSecretNotStored", err)
+		}
+		return
+	}
+	if !errors.Is(err, errNoSecretStore) {
+		t.Fatalf("err = %v, want errNoSecretStore", err)
+	}
+}
