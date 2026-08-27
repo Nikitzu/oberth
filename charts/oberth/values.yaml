@@ -342,6 +342,31 @@ secretCreatePolicy:
 # upstream's behaviour back.
 publishOnGreen: false
 
+# Kubedock, the Docker API shim that lets Testcontainers-backed tests run in a
+# pipeline whose containers are non-root, read-only, and have no container
+# runtime. Deployed into argo.namespace beside the pipelines that use it.
+#
+# Off by default: it is a capability a repository asks for, not a dependency of
+# Oberth. `oberth install --testcontainers` turns it on together with
+# networkPolicy.inNamespaceAllPorts below, which is what makes the shim
+# reachable from a pipeline pod at all.
+kubedock:
+  enabled: false
+  image: joyrex2001/kubedock:0.18.1
+  # How long an orphaned test pod survives. Testcontainers' own reaper needs a
+  # Docker socket and is therefore disabled in a pipeline, so this is what
+  # cleans up after a run that died mid-test.
+  reapMax: 60m
+  # Min,max request for the pods kubedock creates on a test's behalf.
+  requestCPU: 100m,1000m
+  requestMemory: 256Mi,1Gi
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      memory: 256Mi
+
 networkPolicy:
   # Enabled by default for pipeline egress isolation: default-deny egress with
   # targeted allowlist for DNS, HTTPS, and the secret store. On k3s with the

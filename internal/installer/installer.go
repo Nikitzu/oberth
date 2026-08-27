@@ -174,6 +174,14 @@ type Config struct {
 	// process computed, such as the address of the secret store it just
 	// created, must not be replaced by a stale one in a file.
 	ValuesFiles []string
+	// Testcontainers deploys kubedock into the pipeline namespace AND opens
+	// in-namespace egress, because either alone does nothing: the shim with no
+	// egress rule is unreachable from a pipeline pod, and the egress rule with
+	// no shim opens a path to nothing. They were a stray manifest and a values
+	// file that had to be applied together and in order, which is two chances
+	// to end up with half of a working setup.
+	Testcontainers bool
+
 	// NetworkPolicy controls pipeline egress NetworkPolicy enforcement:
 	// "auto" (default) enables on all CNIs except k3s's built-in kube-router
 	// (which has a DNAT incompatibility), "true" forces on, "false" forces off.
@@ -1487,6 +1495,15 @@ func OberthHelmArgs(cfg Config, openbao OpenBaoResult, rekor RekorResult) []stri
 	}
 	if image := strings.TrimSpace(cfg.ImageRef); image != "" {
 		args = append(args, "--set-string", "image.ref="+image)
+	}
+	if cfg.Testcontainers {
+		// Both, together. The shim is the capability and the egress rule is
+		// what makes it reachable; a deployment with one of them is a
+		// deployment where Testcontainers hangs on its wait strategy.
+		args = append(args,
+			"--set", "kubedock.enabled=true",
+			"--set", "networkPolicy.inNamespaceAllPorts=true",
+		)
 	}
 	// Indexed --set-string rather than --set name={a,b}: brace list syntax
 	// splits on commas inside the value, and a name is not worth losing to
