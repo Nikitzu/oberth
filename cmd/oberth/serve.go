@@ -105,6 +105,13 @@ type serveOptions struct {
 	secretStoreTransitKey   string
 	secretStoreInsecureHTTP bool
 
+	// engine selects the execution backend: "argo" (the default, and the only
+	// one that needs Kubernetes) or "docker", which runs pipeline steps as
+	// plain containers against a local daemon so the whole server is one host
+	// process. dockerBinary overrides the CLI the docker engine shells out to.
+	engine       string
+	dockerBinary string
+
 	// Argo execution engine. Leaving argoNamespace empty leaves the engine
 	// off entirely, which is the default: every repository then runs on the
 	// Kubernetes Job engine exactly as before.
@@ -167,6 +174,9 @@ func parseServeOptions(arguments []string, output io.Writer) (serveOptions, erro
 	flags.StringVar(&options.upstreamKey, "upstream-key", "/etc/oberth/upstream-key/id_ed25519", "upstream SSH private key")
 	flags.StringVar(&options.knownHosts, "known-hosts", "/etc/oberth/known-hosts/known_hosts", "upstream known_hosts")
 	flags.StringVar(&options.namespace, "namespace", "oberth", "Kubernetes namespace")
+	flags.StringVar(&options.engine, "engine", engineArgo,
+		"execution engine: \"argo\" runs steps as Argo Workflows in Kubernetes; \"docker\" runs them as containers on a local Docker daemon and needs no cluster")
+	flags.StringVar(&options.dockerBinary, "docker-binary", "docker", "Docker CLI the --engine=docker backend shells out to")
 	flags.StringVar(&options.runnerImagePrefixes, "runner-image-prefixes", strings.Join(periapsis.DefaultRunnerImagePrefixes, ","), "comma-separated allowlist of permitted runner image prefixes")
 	flags.Int64Var(&options.artifactsLimitBytes, "artifacts-limit-bytes", defaultArtifactsLimitBytes, "maximum total bytes of artifacts kept per run")
 	flags.Int64Var(&options.artifactsBudgetBytes, "artifacts-budget-bytes", defaultArtifactsBudgetBytes, "total artifact storage before the oldest runs are evicted")
@@ -240,7 +250,17 @@ func parseServeOptions(arguments []string, output io.Writer) (serveOptions, erro
 	return options, nil
 }
 
+const (
+	engineArgo   = "argo"
+	engineDocker = "docker"
+)
+
 func validateServeOptions(options serveOptions) error {
+	switch options.engine {
+	case engineArgo, engineDocker:
+	default:
+		return fmt.Errorf("serve: unknown --engine %q, expected %q or %q", options.engine, engineArgo, engineDocker)
+	}
 	root := filepath.Clean(options.dataRoot)
 	database := filepath.Clean(options.database)
 	if !filepath.IsAbs(root) || options.dataRoot != root || !pathWithin(root, database) {
@@ -249,11 +269,17 @@ func validateServeOptions(options serveOptions) error {
 	if options.sshListen == options.httpsListen || strings.TrimSpace(options.sshListen) == "" || strings.TrimSpace(options.httpsListen) == "" {
 		return errors.New("serve: distinct SSH and HTTPS listen addresses are required")
 	}
-	if options.argoNamespace == "" {
-		return errors.New("serve: --argo-namespace is required")
-	}
-	if err := validateArgoServeOptions(options); err != nil {
-		return err
+	// The Argo flags describe a cluster the docker engine does not have, so
+	// they are neither required nor validated when it is selected. Requiring
+	// them anyway would make an operator invent a namespace to satisfy a
+	// check for a code path that never runs.
+	if options.engine == engineArgo {
+		if options.argoNamespace == "" {
+			return errors.New("serve: --argo-namespace is required")
+		}
+		if err := validateArgoServeOptions(options); err != nil {
+			return err
+		}
 	}
 	if options.maxConcurrent <= 0 || options.maxConcurrent > 64 || options.gitCommandTimeout <= 0 || options.gcInterval <= 0 {
 		return errors.New("serve: concurrency, timeout, and GC values must be positive")
@@ -401,18 +427,39 @@ func serve(ctx context.Context, options serveOptions, logger *log.Logger) (resul
 	if err := os.MkdirAll(options.dataRoot, 0o700); err != nil {
 		return fmt.Errorf("create data root: %w", err)
 	}
-	restConfig, err := rest.InClusterConfig()
-	if err != nil {
-		return fmt.Errorf("load in-cluster Kubernetes config: %w", err)
-	}
-	restConfig.Timeout = 10 * time.Second
-	kube, err := kubernetes.NewForConfig(restConfig)
-	if err != nil {
-		return fmt.Errorf("create Kubernetes client: %w", err)
-	}
-	continuity, err := auditanchor.NewKubernetesContinuity(kube, options.namespace)
-	if err != nil {
-		return err
+	// The docker engine runs the server as an ordinary host process, so there
+	// is no in-cluster config to load and no Kubernetes client to build. Every
+	// consumer of `kube` below is guarded on it being nil rather than being
+	// handed a stub, so a missing capability reads as absent instead of
+	// silently answering.
+	var (
+		restConfig *rest.Config
+		kube       kubernetes.Interface
+		continuity auditanchor.Continuity
+	)
+	if options.engine == engineDocker {
+		fileContinuity, err := auditanchor.NewFileContinuity(filepath.Join(options.dataRoot, "witness"))
+		if err != nil {
+			return err
+		}
+		continuity = fileContinuity
+	} else {
+		loaded, err := rest.InClusterConfig()
+		if err != nil {
+			return fmt.Errorf("load in-cluster Kubernetes config: %w", err)
+		}
+		loaded.Timeout = 10 * time.Second
+		restConfig = loaded
+		client, err := kubernetes.NewForConfig(restConfig)
+		if err != nil {
+			return fmt.Errorf("create Kubernetes client: %w", err)
+		}
+		kube = client
+		kubernetesContinuity, err := auditanchor.NewKubernetesContinuity(kube, options.namespace)
+		if err != nil {
+			return err
+		}
+		continuity = kubernetesContinuity
 	}
 	hostKey, err := readBoundedFile(options.sshHostKey, 1<<20)
 	if err != nil {
@@ -582,21 +629,40 @@ func serve(ctx context.Context, options serveOptions, logger *log.Logger) (resul
 	if err != nil {
 		return err
 	}
-	argoJobs, err := buildArgoEngine(options, restConfig, kube, database, database, fragmentLoader, fileLoader,
-		artifactStoreAdapter{store: artifactStore, scanPatterns: artifacts.DefaultScanPatterns},
-		options.artifactsLimitBytes, options.artifactsBudgetBytes)
-	if err != nil {
-		return err
+	// argoJobs stays typed because SetReconcilerHealth is an Argo-only
+	// capability; ciJobs and releaseJobs carry whichever engine is selected.
+	var (
+		argoJobs    *app.ArgoJobs
+		ciJobs      service.JobController
+		releaseJobs service.ReleaseJobController
+	)
+	artifactAdapter := artifactStoreAdapter{store: artifactStore, scanPatterns: artifacts.DefaultScanPatterns}
+	if options.engine == engineDocker {
+		dockerJobs, err := buildDockerEngine(ctx, options, database, artifactAdapter,
+			options.artifactsLimitBytes, options.artifactsBudgetBytes)
+		if err != nil {
+			return err
+		}
+		ciJobs, releaseJobs = dockerJobs, dockerJobs
+		logger.Printf("docker execution engine: steps run as containers on the local daemon; " +
+			"the release tier and the secret store are unavailable on this engine")
+	} else {
+		built, err := buildArgoEngine(options, restConfig, kube, database, database, fragmentLoader, fileLoader,
+			artifactAdapter, options.artifactsLimitBytes, options.artifactsBudgetBytes)
+		if err != nil {
+			return err
+		}
+		argoJobs, ciJobs, releaseJobs = built, built, built
+		logger.Printf("argo execution engine: namespace=%s pipeline-sa=%s credentialed-sa=%s ci-secrets-sa=%s executor-sa=%s",
+			options.argoNamespace, options.argoPipelineAccount, options.argoCredentialedAccount,
+			options.argoCISecretsAccount, options.argoExecutorAccount)
 	}
-	logger.Printf("argo execution engine: namespace=%s pipeline-sa=%s credentialed-sa=%s ci-secrets-sa=%s executor-sa=%s",
-		options.argoNamespace, options.argoPipelineAccount, options.argoCredentialedAccount,
-		options.argoCISecretsAccount, options.argoExecutorAccount)
 	if len(options.secretStorePaths) > 0 {
 		logger.Printf("--secretstore-path values are used only by 'oberth secretstore verify' as default paths; admission uses the approval table exclusively")
 	}
 	signals := service.NewSignals()
 	scheduler, err := service.NewScheduler(service.SchedulerConfig{
-		Store: database, Git: git, Logs: logs, Jobs: argoJobs, ReleaseJobs: argoJobs, Auditor: database,
+		Store: database, Git: git, Logs: logs, Jobs: ciJobs, ReleaseJobs: releaseJobs, Auditor: database,
 		Signals: signals, WorkspaceRoot: filepath.Join(options.dataRoot, "work"), MaxConcurrent: options.maxConcurrent,
 		MutationGate: anchors.AllowMutation, SuppressGreenPublication: !options.publishOnGreen,
 	})
@@ -635,7 +701,8 @@ func serve(ctx context.Context, options serveOptions, logger *log.Logger) (resul
 		// may take up to ~60s to project the update into the volume mount.
 		// Reading the Secrets directly confirms configuration without
 		// waiting for file projection.
-		if checkUpstreamSecretConfigured(ctx, kube, options.namespace, options.upstreamKey, options.knownHosts, registered) == nil {
+		if kube != nil &&
+			checkUpstreamSecretConfigured(ctx, kube, options.namespace, options.upstreamKey, options.knownHosts, registered) == nil {
 			return nil
 		}
 		return globalErr
@@ -683,13 +750,16 @@ func serve(ctx context.Context, options serveOptions, logger *log.Logger) (resul
 		}
 		// Asserts endpoint reachability + pinned host key + accepted identity.
 		return app.ProbeSSHAuthentication(ctx, upstream.BaseURL, privateKey, knownHostsData)
-	}, Cluster: func(ctx context.Context) error {
-		if err := ctx.Err(); err != nil {
+	}}
+	if kube != nil {
+		health.Cluster = func(ctx context.Context) error {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			_, err := kube.Discovery().ServerVersion()
 			return err
 		}
-		_, err := kube.Discovery().ServerVersion()
-		return err
-	}}
+	}
 	health.Version = version
 	health.Identity = func(ctx context.Context) (string, error) {
 		if err := ctx.Err(); err != nil {
@@ -739,14 +809,25 @@ func serve(ctx context.Context, options serveOptions, logger *log.Logger) (resul
 		chain.AnchoredAt = anchor.AnchoredAt.UTC().Format(time.RFC3339)
 		return chain, nil
 	}
-	accessReconciler := service.NewAccessReconciler(kube, options.namespace, database, logger)
-	if err := accessReconciler.Reconcile(ctx); err != nil {
-		logger.Printf("WARNING: initial secret access reconcile failed: %v; credentialed admission is blocked until reconciliation succeeds", err)
+	// The reconciler converges the oberth-secret-access ConfigMap into SQLite.
+	// With no Kubernetes there is no ConfigMap to read, and no credentialed
+	// pipeline to grant anything to: the docker engine refuses a pipeline
+	// declaring secret paths at submission. So it is left nil, and the grant
+	// endpoints that would write to the ConfigMap report the capability as
+	// absent rather than writing grants nothing will ever enforce.
+	var accessReconciler *service.AccessReconciler
+	if kube != nil {
+		accessReconciler = service.NewAccessReconciler(kube, options.namespace, database, logger)
+		if err := accessReconciler.Reconcile(ctx); err != nil {
+			logger.Printf("WARNING: initial secret access reconcile failed: %v; credentialed admission is blocked until reconciliation succeeds", err)
+		}
 	}
 	// Wire the reconciler health gate so credentialed admission blocks until
 	// the initial ConfigMap read succeeds. Without this, a transient startup
 	// failure would leave stale grants active in sqlite for admission to consume.
-	argoJobs.SetReconcilerHealth(accessReconciler)
+	if argoJobs != nil {
+		argoJobs.SetReconcilerHealth(accessReconciler)
+	}
 	// Only wired when the server is not publishing automatically: otherwise a
 	// green run has already been pushed and there is nothing to ask for.
 	var publisher func(context.Context, string) error
