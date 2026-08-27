@@ -72,8 +72,8 @@ func unsealStore(ctx context.Context, cfg Config, deps Deps) error {
 		// Naming the store and the command is the whole point: an operator
 		// who installed before the key was saved has it on paper somewhere,
 		// and the kubectl path is what they can still use today.
-		return fmt.Errorf("no unseal key in %s (%s). An install from before the key was saved never put it there; "+
-			"unseal with the key you kept:\n\n    kubectl exec -i -n %s %s -- bao operator unseal\n",
+		return fmt.Errorf("no unseal key in %s (read it with: %s). An install from before the key was saved never "+
+			"put it there; unseal with the key you kept: kubectl exec -i -n %s %s -- bao operator unseal",
 			secretStoreDisplayName(deps), retrievalCommand(deps, openBaoUnsealKeyLocation), namespace, client.pod)
 	case err != nil:
 		return fmt.Errorf("read the unseal key from %s: %w", secretStoreDisplayName(deps), err)

@@ -42,12 +42,12 @@ var (
 	// OpenBao. The bearer token has been saved to the same store since the
 	// install started writing client config, so this is the existing custody
 	// decision applied to the credentials that actually cannot be reissued.
-	openBaoRootTokenLocation = secretLocation{
+	openBaoRootTokenLocation = secretLocation{ // #nosec G101 -- the NAME of a secret-store entry, not credential material.
 		service:  "oberth-openbao-root",
 		label:    "Oberth OpenBao root token",
 		passPath: "oberth/openbao-root",
 	}
-	openBaoUnsealKeyLocation = secretLocation{
+	openBaoUnsealKeyLocation = secretLocation{ // #nosec G101 -- the NAME of a secret-store entry, not credential material.
 		service:  "oberth-openbao-unseal",
 		label:    "Oberth OpenBao unseal key",
 		passPath: "oberth/openbao-unseal",
