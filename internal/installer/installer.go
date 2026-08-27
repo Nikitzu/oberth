@@ -200,6 +200,12 @@ type Config struct {
 	// was found by an operator rather than by a test.
 	ClientAccess string
 
+	// ShellProfile decides whether the install appends the sourcing line to
+	// the operator's shell profile: "yes", "no", or empty to ask when there
+	// is a terminal to ask on. Empty in a script means no: an install that was
+	// not told to edit a file the caller never mentioned does not edit it.
+	ShellProfile string
+
 	// SecretStore selects the release secret store without a prompt:
 	// "production", "dev" or "none". Empty means undecided, which asks when
 	// there is a terminal and installs a production store when there is not:
@@ -508,6 +514,14 @@ func (cfg *Config) Validate() error {
 		cfg.SecretStoreUndecided = false
 	default:
 		return fmt.Errorf("--secretstore %q is not production, dev or none", cfg.SecretStore)
+	}
+	// Refused rather than read as "no": a typo that silently declines is a
+	// typo that produces the exact behavior the flag was passed to avoid.
+	switch strings.ToLower(strings.TrimSpace(cfg.ShellProfile)) {
+	case "", "yes", "no":
+		cfg.ShellProfile = strings.ToLower(strings.TrimSpace(cfg.ShellProfile))
+	default:
+		return fmt.Errorf("--shell-profile %q is not yes or no", cfg.ShellProfile)
 	}
 	if !cfg.Dev {
 		cfg.Dev = true

@@ -48,6 +48,9 @@ func runInstall(ctx context.Context, arguments []string, input io.Reader, output
 	flags.StringVar(&cfg.SecretStore, "secretstore", "",
 		"select the release secret store without prompting: production, dev or none "+
 			"(default: production, because a repository pulling private packages cannot build without one)")
+	flags.StringVar(&cfg.ShellProfile, "shell-profile", "",
+		"append the environment sourcing line to your shell profile without asking: yes or no "+
+			"(default: ask when there is a terminal, and do nothing when there is not)")
 	flags.StringVar(&cfg.ClientAccess, "client-access", "",
 		"configure clients without prompting: both, cli, mcp or none")
 	flags.StringVar(&cfg.ChartPath, "chart", "",

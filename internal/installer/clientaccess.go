@@ -187,6 +187,9 @@ func runClientAccessOffer(ctx context.Context, cfg Config, deps Deps, tw *tableW
 			tw.AppendRow("CLI access", displayPath(path), "✗ error", false)
 		} else {
 			tw.AppendRow("CLI access", displayPath(path), "✓ written", false)
+			// The file exists now, so the only remaining step is the one the
+			// install used to leave as a printed instruction.
+			wireShellProfile(ctx, cfg, deps, tw, path)
 		}
 		// The env file serves a shell that knows to source it. The name on
 		// PATH is what makes every documented `oberth ...` command work, for a
