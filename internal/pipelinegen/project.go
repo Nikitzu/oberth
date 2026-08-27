@@ -37,6 +37,26 @@ type Project struct {
 	// Scripts are the package.json scripts, by name.
 	Scripts map[string]string
 
+	// PackageManager is npm, pnpm or yarn. The lockfile decides, because it
+	// is the file that has to be honoured: running `npm ci` in a repository
+	// whose lockfile is pnpm's either fails outright or silently resolves a
+	// different dependency graph than every developer has.
+	//
+	// PackageManagerMajor is the major that lockfile format belongs to, so
+	// the pipeline can name a version instead of taking whatever the registry
+	// calls latest on the day it runs. Empty when nothing said which.
+	PackageManager      string
+	PackageManagerMajor string
+
+	// Lockfile records that one was found at all. Without one there is
+	// nothing to reproduce, and `npm ci` refuses to run.
+	Lockfile bool
+
+	// Workspaces reports a pnpm workspace root (pnpm-workspace.yaml). It
+	// changes what a script name means: a root script is one package's, and
+	// the suite usually lives in the members.
+	Workspaces bool
+
 	// LegacyPeerDeps mirrors the Actions input of the same name: npm 7+
 	// refuses a peer-dependency conflict that npm 6 accepted, and a repository
 	// that built on Actions with the flag will not install without it.
@@ -95,6 +115,10 @@ func DetectProject(root string) Project {
 			Engines struct {
 				Node string `json:"node"`
 			} `json:"engines"`
+			// packageManager is the authoritative statement when it exists:
+			// the repository names the tool and the exact version it expects,
+			// and a lockfile format can only imply a range.
+			PackageManager string `json:"packageManager"`
 		}
 		if json.Unmarshal(raw, &manifest) == nil {
 			project.Kind = KindNode
@@ -108,8 +132,15 @@ func DetectProject(root string) Project {
 				project.NodeMajor = major
 				project.note("package.json engines.node: " + major)
 			}
+			if name, major := splitPackageManagerField(manifest.PackageManager); name != "" {
+				project.PackageManager = name
+				project.PackageManagerMajor = major
+				project.note("package.json packageManager: " + strings.TrimSpace(manifest.PackageManager))
+			}
 		}
 	}
+
+	detectPackageManager(root, &project)
 
 	if raw, err := os.ReadFile(filepath.Join(root, ".nvmrc")); err == nil {
 		if major := majorVersion(string(raw)); major != "" {
@@ -266,5 +297,133 @@ func sortStrings(values []string) {
 		for j := i; j > 0 && values[j] < values[j-1]; j-- {
 			values[j], values[j-1] = values[j-1], values[j]
 		}
+	}
+}
+
+// --- Package manager -------------------------------------------------------
+
+// detectPackageManager settles which tool installs dependencies.
+//
+// The lockfile is the evidence, not a preference. `npm ci` against a
+// pnpm-lock.yaml fails for want of a package-lock.json, and against a
+// yarn.lock it resolves a graph nobody has ever installed -- so a generated
+// pipeline that always said `npm ci` was wrong for two of the three
+// repositories it was pointed at, in one case loudly and in the other
+// silently.
+//
+// packageManager in package.json wins when it is there, because it names an
+// exact version rather than implying a range.
+func detectPackageManager(root string, project *Project) {
+	if _, err := os.Stat(filepath.Join(root, "pnpm-workspace.yaml")); err == nil {
+		project.Workspaces = true
+		project.note("pnpm-workspace.yaml: this is a workspace root")
+	}
+
+	if raw, err := os.ReadFile(filepath.Join(root, "pnpm-lock.yaml")); err == nil {
+		project.Lockfile = true
+		if project.PackageManager == "" {
+			project.PackageManager = "pnpm"
+		}
+		lock := lockfileVersion(string(raw))
+		if project.PackageManagerMajor == "" {
+			project.PackageManagerMajor = pnpmMajorForLockfile(lock)
+		}
+		switch {
+		case lock == "":
+			project.note("pnpm-lock.yaml found, with no lockfileVersion")
+		case project.PackageManagerMajor == "":
+			project.note("pnpm-lock.yaml lockfileVersion " + lock + ", which no known pnpm major claims")
+			project.cannot("pnpm-lock.yaml declares lockfileVersion " + lock + ", which this generator cannot map to a pnpm major. The install step runs an unpinned pnpm; pin it in package.json's packageManager field.")
+		default:
+			project.note("pnpm-lock.yaml lockfileVersion " + lock + ": pnpm " + project.PackageManagerMajor)
+		}
+		return
+	}
+
+	if _, err := os.Stat(filepath.Join(root, "yarn.lock")); err == nil {
+		project.Lockfile = true
+		if project.PackageManager == "" {
+			project.PackageManager = "yarn"
+		}
+		// Berry keeps its configuration in .yarnrc.yml and takes --immutable
+		// where classic takes --frozen-lockfile. Getting this wrong is an
+		// unrecognized-flag error, not a wrong graph, so the check is cheap
+		// and the failure it prevents is only noisy.
+		if _, err := os.Stat(filepath.Join(root, ".yarnrc.yml")); err == nil {
+			if project.PackageManagerMajor == "" {
+				project.PackageManagerMajor = "4"
+			}
+			project.note("yarn.lock with .yarnrc.yml: yarn berry")
+		} else {
+			if project.PackageManagerMajor == "" {
+				project.PackageManagerMajor = "1"
+			}
+			project.note("yarn.lock: yarn classic")
+		}
+		return
+	}
+
+	if _, err := os.Stat(filepath.Join(root, "package-lock.json")); err == nil {
+		project.Lockfile = true
+		if project.PackageManager == "" {
+			project.PackageManager = "npm"
+		}
+		project.note("package-lock.json: npm")
+		return
+	}
+
+	if project.Kind == KindNode && project.PackageManager == "" {
+		// No lockfile at all. npm is the only tool whose install command works
+		// without one, so it is the honest default -- and the note says the
+		// build will resolve fresh rather than reproduce anything.
+		project.PackageManager = "npm"
+		project.cannot("no lockfile was found, so the install step cannot be reproducible. It runs `npm install` rather than `npm ci`; commit a lockfile.")
+	}
+}
+
+// splitPackageManagerField parses "pnpm@10.4.1" or "yarn@4.1.0+sha512...".
+func splitPackageManagerField(field string) (name, major string) {
+	field = strings.TrimSpace(field)
+	if field == "" {
+		return "", ""
+	}
+	if plus := strings.IndexByte(field, '+'); plus >= 0 {
+		field = field[:plus]
+	}
+	at := strings.LastIndexByte(field, '@')
+	if at <= 0 {
+		return "", ""
+	}
+	name = field[:at]
+	switch name {
+	case "npm", "pnpm", "yarn":
+	default:
+		return "", ""
+	}
+	return name, majorVersion(field[at+1:])
+}
+
+var lockfileVersionPattern = regexp.MustCompile(`(?m)^lockfileVersion:\s*['"]?([0-9.]+)`)
+
+func lockfileVersion(lock string) string {
+	if match := lockfileVersionPattern.FindStringSubmatch(lock); len(match) == 2 {
+		return match[1]
+	}
+	return ""
+}
+
+// pnpmMajorForLockfile maps a pnpm lockfile format to the major that writes
+// it. Format 9 is pnpm 9 and 10 both; 10 is chosen because it is the one that
+// still receives releases and it reads a 9 lockfile without rewriting it.
+func pnpmMajorForLockfile(version string) string {
+	switch majorVersion(version) {
+	case "9":
+		return "10"
+	case "6":
+		return "8"
+	case "5":
+		return "7"
+	default:
+		return ""
 	}
 }

@@ -12,16 +12,42 @@ import (
 // found rather than reconstructed: reconstructing it hardcodes both the
 // secret's name and the field's, and a rename then produces an empty variable
 // and a build that fails somewhere else entirely.
-const secretPreamble = `token_file="$(find "$OBERTH_SECRETSTORE_DIR" -type f -name token -print 2>/dev/null | head -n 1)"
-if [ -z "${token_file:-}" ]; then
-  echo "no token was delivered under $OBERTH_SECRETSTORE_DIR" >&2
+// A secret carries either a single `token` field or a `username` and
+// `password` pair, and both shapes are in use: a forge token is one value,
+// while a Maven repository authenticates with two and its settings.xml has a
+// slot for each. Reading only `token` meant a repository with the two-field
+// shape failed at "no token was delivered" while the credential was sitting in
+// the mounted directory under different names.
+const secretPreamble = `oberth_secret_field() {
+  find "$OBERTH_SECRETSTORE_DIR" -type f -name "$1" -print 2>/dev/null | head -n 1
+}
+token_file="$(oberth_secret_field token)"
+username_file="$(oberth_secret_field username)"
+password_file="$(oberth_secret_field password)"
+if [ -z "${token_file:-}" ] && [ -z "${password_file:-}" ]; then
+  echo "no credential was delivered under $OBERTH_SECRETSTORE_DIR" >&2
+  echo "the secret must carry a 'token' field, or a 'username' and 'password' pair" >&2
   echo "check the grant: the declared secret path must be allowed for this repository" >&2
   exit 1
 fi
-GITHUB_TOKEN="$(cat "$token_file")"
-OBERTH_UPSTREAM_TOKEN="$GITHUB_TOKEN"
-NPM_TOKEN="$GITHUB_TOKEN"
-export GITHUB_TOKEN OBERTH_UPSTREAM_TOKEN NPM_TOKEN`
+if [ -n "${token_file:-}" ]; then
+  GITHUB_TOKEN="$(cat "$token_file")"
+  OBERTH_UPSTREAM_TOKEN="$GITHUB_TOKEN"
+  NPM_TOKEN="$GITHUB_TOKEN"
+  export GITHUB_TOKEN OBERTH_UPSTREAM_TOKEN NPM_TOKEN
+fi
+# x-access-token is what a forge that authenticates by token alone expects in
+# the username slot, so it is the default rather than a guess at a real name.
+OBERTH_REGISTRY_USERNAME="x-access-token"
+if [ -n "${username_file:-}" ]; then
+  OBERTH_REGISTRY_USERNAME="$(cat "$username_file")"
+fi
+if [ -n "${password_file:-}" ]; then
+  OBERTH_REGISTRY_PASSWORD="$(cat "$password_file")"
+else
+  OBERTH_REGISTRY_PASSWORD="$GITHUB_TOKEN"
+fi
+export OBERTH_REGISTRY_USERNAME OBERTH_REGISTRY_PASSWORD`
 
 func render(project Project, steps []step, result Result) string {
 	var out strings.Builder

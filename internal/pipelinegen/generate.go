@@ -120,16 +120,13 @@ func nodeSteps(project Project) []step {
 	image, _ := nodeImage(project.NodeMajor)
 	steps := []step{copySource(image)}
 
-	install := "npm ci --no-audit --no-fund"
-	if project.LegacyPeerDeps {
-		install += " --legacy-peer-deps"
-	}
+	runner := packageRunner(project)
 	steps = append(steps, step{
 		name:    "install",
-		comment: "npm ci, in the copy. A private scope needs the upstream token, which arrives as a file.",
+		comment: installComment(project),
 		image:   image,
 		secret:  project.PrivateRegistry && project.Org != "",
-		script:  "set -eu\ncd " + buildDir + "\n" + install,
+		script:  "set -eu\ncd " + buildDir + "\n" + runner + installCommand(project),
 	})
 
 	// The repository's own scripts, in the order a build runs them. Only
@@ -149,10 +146,75 @@ func nodeSteps(project Project) []step {
 			name:    candidate.script,
 			comment: candidate.comment,
 			image:   image,
-			script:  "set -eu\ncd " + buildDir + "\nnpm run " + candidate.script + " --if-present",
+			script:  "set -eu\ncd " + buildDir + "\n" + runner + "run " + candidate.script + " --if-present",
 		})
 	}
 	return steps
+}
+
+// packageRunner is the prefix that puts the repository's own package manager
+// in front of a command, ending in a space when there is one.
+//
+// It is `npx -y pnpm@10 `, never `corepack enable`. Corepack writes its shims
+// beside the node binary, and every pipeline container here runs with a
+// read-only root filesystem, so the enable fails; pointing it at a writable
+// directory works but adds a PATH edit and a cache variable to every step
+// that needs a tool. npx resolves the same published package into the npm
+// cache, which already lives on the run volume and is therefore already
+// shared between steps.
+func packageRunner(project Project) string {
+	if project.Kind != KindNode {
+		return ""
+	}
+	switch project.PackageManager {
+	case "", "npm":
+		return "npm "
+	default:
+		if project.PackageManagerMajor == "" {
+			return "npx -y " + project.PackageManager + " "
+		}
+		return "npx -y " + project.PackageManager + "@" + project.PackageManagerMajor + " "
+	}
+}
+
+// installCommand is the reproducible install for the detected tool: the one
+// that fails on a lockfile that does not match the manifest rather than
+// quietly updating it.
+func installCommand(project Project) string {
+	switch project.PackageManager {
+	case "pnpm":
+		// Recursive by default from a workspace root, which is why there is no
+		// --filter here: installing one member of a workspace produces a tree
+		// the repository's own scripts cannot run in.
+		return "install --frozen-lockfile"
+	case "yarn":
+		if project.PackageManagerMajor != "" && project.PackageManagerMajor != "1" {
+			return "install --immutable"
+		}
+		return "install --frozen-lockfile"
+	default:
+		install := "ci --no-audit --no-fund"
+		if !project.Lockfile {
+			install = "install --no-audit --no-fund"
+		}
+		if project.LegacyPeerDeps {
+			install += " --legacy-peer-deps"
+		}
+		return install
+	}
+}
+
+func installComment(project Project) string {
+	tool := project.PackageManager
+	if tool == "" {
+		tool = "npm"
+	}
+	comment := "dependency install with " + tool + ", the tool this repository's lockfile belongs to, in the copy. " +
+		"A private scope needs the upstream token, which arrives as a file."
+	if project.Workspaces {
+		comment += " This is a workspace root, so the install covers every member."
+	}
+	return comment
 }
 
 func mavenSteps(project Project) []step {
@@ -164,6 +226,17 @@ func mavenSteps(project Project) []step {
 		// The server id must match the <repository><id> the pom (or its
 		// parent) declares. `github` is the convention for GitHub Packages;
 		// when the pom uses another id this file has to say that id instead.
+		// The credential is read from the environment rather than baked into
+		// the file, because the file is written into the build copy and a
+		// token written there is a token in a directory later steps copy,
+		// archive and, on a bad day, upload.
+		//
+		// Two names, not one. A registry that wants a username and a password
+		// is the common shape -- the proven case reads the `username` and
+		// `password` fields of the stored secret -- and a settings.xml that
+		// hardcodes x-access-token works only for the forge that ignores the
+		// username. The preamble fills both from whichever fields the secret
+		// actually carries.
 		settings = strings.Join([]string{
 			"mkdir -p " + buildDir + "/.oberth-m2",
 			"cat > " + buildDir + "/.oberth-m2/settings.xml <<'XML'",
@@ -171,8 +244,8 @@ func mavenSteps(project Project) []step {
 			"  <servers>",
 			"    <server>",
 			"      <id>github</id>",
-			"      <username>x-access-token</username>",
-			"      <password>${env.OBERTH_UPSTREAM_TOKEN}</password>",
+			"      <username>${env.OBERTH_REGISTRY_USERNAME}</username>",
+			"      <password>${env.OBERTH_REGISTRY_PASSWORD}</password>",
 			"    </server>",
 			"  </servers>",
 			"</settings>",
