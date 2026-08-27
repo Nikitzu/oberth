@@ -65,15 +65,24 @@ func FinishInstall(ctx context.Context, cfg Config, deps Deps, tw *tableWriter, 
 		return fmt.Errorf("wait for Oberth pod: %w", err)
 	}
 
-	configured, err := upstreamConfigured(ctx, cfg, deps)
+	configured, registered, err := upstreamConfigured(ctx, cfg, deps)
 	if err != nil {
 		_, _ = fmt.Fprintf(deps.Output, "Could not determine the upstream state (%v); finish the setup manually:\n", err)
 		return PrintNextSteps(cfg, deps.Output)
 	}
 	if configured {
-		// An upstream already exists, so there is nothing to onboard. The
-		// client offer still belongs here: it is about this machine, not about
-		// the deployment, and a second machine reaches a server that is already
+		// An upstream already exists, so there is nothing to onboard. Two
+		// things still belong here.
+		//
+		// The token, because it was seeded only while registering an upstream:
+		// a re-run against a deployment that already had one left the push
+		// Secret and the store subtree exactly as the first install left them,
+		// so a rotated token never reached the deployment and a store that was
+		// reinstalled came back empty. The install holds the token and knows
+		// the org either way.
+		reseedUpstreamToken(ctx, cfg, deps, tw, store, registered)
+		// The client offer, because it is about this machine, not about the
+		// deployment, and a second machine reaches a server that is already
 		// set up.
 		if err := offerClientAccessToConfiguredDeployment(ctx, cfg, deps, tw); err != nil {
 			return err
@@ -128,7 +137,10 @@ func kubectlOberthArgs(cfg Config, deps Deps, stdinAttached bool, command ...str
 // listing them in-pod. Right after the pod turns Running the exec subresource
 // and the admin database may need a moment, so transient failures are
 // retried briefly.
-func upstreamConfigured(ctx context.Context, cfg Config, deps Deps) (bool, error) {
+// It also returns the base URL of each registered upstream, which is what a
+// re-run needs to re-seed the token into the right org's subtree of the
+// secret store.
+func upstreamConfigured(ctx context.Context, cfg Config, deps Deps) (bool, []string, error) {
 	run := deps.RunCommand
 	if run == nil {
 		run = DefaultRunCommand
@@ -139,24 +151,25 @@ func upstreamConfigured(ctx context.Context, cfg Config, deps Deps) (bool, error
 		if attempt > 0 {
 			select {
 			case <-ctx.Done():
-				return false, ctx.Err()
+				return false, nil, ctx.Err()
 			case <-time.After(pollInterval(deps)):
 			}
 		}
 		out, err = run(ctx, nil, "kubectl", kubectlOberthArgs(cfg, deps, false, "upstream", "list")...)
 		if err == nil {
-			return upstreamListHasRows(out), nil
+			return upstreamListHasRows(out), upstreamListBaseURLs(out), nil
 		}
 	}
-	return false, fmt.Errorf("list upstreams in pod: %w%s", err, commandOutputSuffix(out))
+	return false, nil, fmt.Errorf("list upstreams in pod: %w%s", err, commandOutputSuffix(out))
 }
 
-// upstreamListHasRows parses `oberth upstream list` output: a tab-separated
-// table whose header starts with NAME; any further non-empty line is a
-// configured upstream. Lines before the header are ignored — they are kubectl
-// stderr noise (e.g., "Defaulted container..." from multi-container pods)
-// merged by CombinedOutput.
-func upstreamListHasRows(out []byte) bool {
+// upstreamListRows returns the data lines of `oberth upstream list` output: a
+// tab-separated table whose header starts with NAME; any further non-empty
+// line is a configured upstream. Lines before the header are ignored — they
+// are kubectl stderr noise (e.g., "Defaulted container..." from
+// multi-container pods) merged by CombinedOutput.
+func upstreamListRows(out []byte) []string {
+	var rows []string
 	headerSeen := false
 	for _, line := range strings.Split(string(out), "\n") {
 		trimmed := strings.TrimSpace(line)
@@ -168,10 +181,75 @@ func upstreamListHasRows(out []byte) bool {
 			continue
 		}
 		if headerSeen {
-			return true
+			rows = append(rows, trimmed)
 		}
 	}
-	return false
+	return rows
+}
+
+func upstreamListHasRows(out []byte) bool {
+	return len(upstreamListRows(out)) > 0
+}
+
+// upstreamListBaseURLs pulls the URL column out of each row. The table is
+// tabwriter output, so the columns are separated by runs of spaces rather
+// than by tabs; a row that does not have the three columns is skipped rather
+// than guessed at.
+func upstreamListBaseURLs(out []byte) []string {
+	var urls []string
+	for _, row := range upstreamListRows(out) {
+		fields := strings.Fields(row)
+		if len(fields) < 3 {
+			continue
+		}
+		urls = append(urls, fields[2])
+	}
+	return urls
+}
+
+// reseedUpstreamToken re-applies the forge token to a deployment whose
+// upstream is already registered.
+//
+// It never prompts. A re-run against a configured deployment is usually
+// scripted or unattended, and a prompt there is a prompt nobody asked for;
+// the token is read from the environment, which is where the first install
+// found it in almost every case. When there is none, the row says which
+// variable to set.
+func reseedUpstreamToken(ctx context.Context, cfg Config, deps Deps, tw *tableWriter, store SecretStoreResult, baseURLs []string) {
+	if len(baseURLs) == 0 {
+		return
+	}
+	token, source := existingUpstreamToken()
+	if token == "" {
+		tw.AppendRow("Upstream token", "unchanged; set "+strings.Join(upstreamTokenEnvVars, " or ")+" to re-seed", "— skipped", false)
+		return
+	}
+	if err := storeUpstreamToken(ctx, cfg, deps, token); err != nil {
+		tw.AppendRow("Upstream token", terseInstallError(err), "✗ error", false)
+		return
+	}
+	tw.AppendRow("Upstream token", "re-seeded from "+source, "✓ stored", false)
+
+	if !storeReachable(store) {
+		tw.AppendRow("Package token", "no secret store; private packages will not install", "⚠ manual", false)
+		return
+	}
+	// One upstream per org in practice, but a deployment with several needs
+	// the token in each subtree: the path is keyed by org and a pipeline reads
+	// only its own upstream's.
+	seen := map[string]bool{}
+	for _, baseURL := range baseURLs {
+		org := orgFromBaseURL(baseURL)
+		if org == "" || seen[org] {
+			continue
+		}
+		seen[org] = true
+		if err := seedUpstreamToken(ctx, store, org, token); err != nil {
+			tw.AppendRow("Package token", terseInstallError(err), "✗ error", false)
+			continue
+		}
+		tw.AppendRow("Package token", declaredUpstreamTokenPath(org), "✓ stored", false)
+	}
 }
 
 // runOnboarding drives the interactive first-run setup. Results are appended
@@ -596,7 +674,7 @@ func registerUpstreamQuiet(ctx context.Context, cfg Config, deps Deps, name, bas
 		}
 		return false, pubKey, fmt.Errorf("upstream add: %w%s", err, commandOutputSuffix(out))
 	}
-	configured, _ := upstreamConfigured(ctx, cfg, deps)
+	configured, _, _ := upstreamConfigured(ctx, cfg, deps)
 	return configured, pubKey, nil
 }
 
