@@ -82,7 +82,7 @@ func (upstreams Upstreams) selectUpstream(ctx context.Context, upstreamName, org
 		}
 		// When an upstream name is provided, it must match the registered upstream.
 		if upstreamName != "" && !strings.EqualFold(upstream.Name, upstreamName) {
-			return model.Upstream{}, fmt.Errorf("app: repository %s is registered under upstream %q, not %q", repositoryName, upstream.Name, upstreamName)
+			return model.Upstream{}, fmt.Errorf("app: repository %s is registered under upstream %q, not %q: %w", repositoryName, upstream.Name, upstreamName, gitcache.ErrUpstreamRefused)
 		}
 		if org != "" && !upstreamMatchesOrg(upstream, org) {
 			return model.Upstream{}, upstreamOrgMismatch(repositoryName, upstream, org)
@@ -107,7 +107,7 @@ func (upstreams Upstreams) selectUpstream(ctx context.Context, upstreamName, org
 				return u, nil
 			}
 		}
-		return model.Upstream{}, fmt.Errorf("app: no upstream registered with name %q; available: %s", upstreamName, formatUpstreams(values))
+		return model.Upstream{}, fmt.Errorf("app: no upstream registered with name %q; available: %s: %w", upstreamName, formatUpstreams(values), gitcache.ErrUpstreamRefused)
 	}
 
 	// When an org prefix is provided, match it against upstream base URLs.
@@ -121,7 +121,7 @@ func (upstreams Upstreams) selectUpstream(ctx context.Context, upstreamName, org
 		}
 		switch len(matched) {
 		case 0:
-			return model.Upstream{}, fmt.Errorf("app: no upstream registered for %q; available: %s", org, formatUpstreams(values))
+			return model.Upstream{}, fmt.Errorf("app: no upstream registered for %q; available: %s: %w", org, formatUpstreams(values), gitcache.ErrUpstreamRefused)
 		case 1:
 			return matched[0], nil
 		default:
@@ -155,10 +155,10 @@ func (upstreams Upstreams) selectUpstream(ctx context.Context, upstreamName, org
 func upstreamOrgMismatch(repositoryName string, upstream model.Upstream, org string) error {
 	registered := upstream.Org()
 	if upstream.Name != "" && !strings.EqualFold(upstream.Name, registered) {
-		return fmt.Errorf("app: repository %s belongs to org %q (upstream %q), not %q",
-			repositoryName, registered, upstream.Name, org)
+		return fmt.Errorf("app: repository %s belongs to org %q (upstream %q), not %q: %w",
+			repositoryName, registered, upstream.Name, org, gitcache.ErrUpstreamRefused)
 	}
-	return fmt.Errorf("app: repository %s belongs to org %q, not %q", repositoryName, registered, org)
+	return fmt.Errorf("app: repository %s belongs to org %q, not %q: %w", repositoryName, registered, org, gitcache.ErrUpstreamRefused)
 }
 
 func upstreamMatchesOrg(upstream model.Upstream, org string) bool {

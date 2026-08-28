@@ -350,6 +350,14 @@ func (c *Cache) ensureLockedMayRecover(ctx context.Context, input, repo, path st
 
 		branch, refreshErr := c.refresh(ctx, input, path)
 		if refreshErr != nil {
+			// A refused upstream resolution (org or upstream-name mismatch)
+			// must fail closed immediately. The cache belongs to the correct
+			// upstream; the request is for a different identity and must
+			// never see its contents — serving stale data here would let a
+			// mismatched push path read refs it has no claim to.
+			if errors.Is(refreshErr, ErrUpstreamRefused) {
+				return Repository{}, refreshErr
+			}
 			// Check whether the upstream identity changed during the
 			// failed refresh. If it did, the stale cache belongs to a
 			// different upstream and must not be served — doing so would

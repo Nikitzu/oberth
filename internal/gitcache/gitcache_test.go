@@ -1175,3 +1175,88 @@ func runGit(t *testing.T, dir string, args ...string) string {
 	}
 	return strings.TrimSpace(string(output))
 }
+
+// TestEnsureRefusedUpstreamDoesNotServeStaleCache verifies that an upstream
+// resolution refusal (org or upstream-name mismatch) fails closed instead of
+// serving a stale cache — the fix for issue #257.
+//
+// Scenario: a repository was cached successfully. A second Ensure arrives
+// with a different org (or upstream name) that the upstream resolver rejects.
+// The old behavior served the stale cache from the first Ensure; the correct
+// behavior is to fail the second Ensure.
+func TestEnsureRefusedUpstreamDoesNotServeStaleCache(t *testing.T) {
+	t.Parallel()
+	repository := newTestRepository(t)
+
+	// Build a cache whose upstream resolver accepts "example" and
+	// refuses "wrong-org/example" with ErrUpstreamRefused.
+	cache, err := New(Config{
+		Root:           filepath.Join(t.TempDir(), "cache"),
+		CommandTimeout: 10 * time.Second,
+		Upstream: func(input string) (string, error) {
+			if input == "example" {
+				return repository.upstream, nil
+			}
+			return "", fmt.Errorf("wrong org: %w", ErrUpstreamRefused)
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// First Ensure succeeds and populates the cache.
+	first, err := cache.Ensure(context.Background(), "example")
+	if err != nil || first.Stale {
+		t.Fatalf("initial Ensure = %+v, %v", first, err)
+	}
+
+	// Second Ensure with a wrong org must fail — not serve stale.
+	_, err = cache.Ensure(context.Background(), "wrong-org/example")
+	if err == nil {
+		t.Fatal("Ensure with refused upstream must fail, but succeeded (served stale cache)")
+	}
+	if !strings.Contains(err.Error(), "wrong org") {
+		t.Fatalf("error does not mention the refusal: %v", err)
+	}
+}
+
+// TestEnsureUnreachableUpstreamStillServesStaleCache is the companion to
+// TestEnsureRefusedUpstreamDoesNotServeStaleCache: it verifies that a
+// transient upstream failure (unreachable, not refused) still produces
+// a stale-cache fallback — the sentinel check must not accidentally block
+// legitimate stale fallbacks.
+func TestEnsureUnreachableUpstreamStillServesStaleCache(t *testing.T) {
+	t.Parallel()
+	repository := newTestRepository(t)
+	reachable := true
+
+	cache, err := New(Config{
+		Root:           filepath.Join(t.TempDir(), "cache"),
+		CommandTimeout: 10 * time.Second,
+		Upstream: func(input string) (string, error) {
+			if !reachable {
+				// Non-ErrUpstreamRefused error: a transient failure.
+				return "", fmt.Errorf("upstream temporarily unreachable")
+			}
+			return repository.upstream, nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	first, err := cache.Ensure(context.Background(), "example")
+	if err != nil || first.Stale {
+		t.Fatalf("initial Ensure = %+v, %v", first, err)
+	}
+
+	// Make the upstream "unreachable" (not refused) and verify stale fallback.
+	reachable = false
+	second, err := cache.Ensure(context.Background(), "example")
+	if err != nil {
+		t.Fatalf("stale Ensure should succeed: %v", err)
+	}
+	if !second.Stale {
+		t.Fatal("stale Ensure should return Stale=true")
+	}
+}
