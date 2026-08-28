@@ -584,6 +584,25 @@ func Run(ctx context.Context, cfg Config, deps Deps) error {
 	var rekor RekorResult
 	var secretStoreItems []configItem
 
+	// Populate per-repo identities from the live ConfigMap when the
+	// secret store is being set up. On a fresh install the ConfigMap
+	// does not exist yet and the list stays empty — correct, because
+	// no repos are registered either. On an upgrade, the ConfigMap
+	// reflects the current approval table, and any repo with a
+	// qualified grant entry gets a per-repo Vault identity.
+	if cfg.wantsSecretStore() && len(cfg.PerRepoIdentities) == 0 {
+		ns := cfg.Namespace
+		if ns == "" {
+			ns = DefaultNamespace
+		}
+		produced, produceErr := ProducePerRepoIdentities(ctx, deps.KubeClient, ns)
+		if produceErr != nil {
+			_, _ = fmt.Fprintf(deps.Output, "WARNING: could not read per-repo identities from ConfigMap: %v\n", produceErr)
+		} else if len(produced) > 0 {
+			cfg.PerRepoIdentities = produced
+		}
+	}
+
 	if cfg.wantsSecretStore() {
 		quietDeps := deps
 		quietDeps.Output = io.Discard
