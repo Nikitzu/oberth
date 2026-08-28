@@ -22,6 +22,8 @@ import (
 	"github.com/oberthci/oberth/internal/app"
 	"github.com/oberthci/oberth/internal/argojob"
 	"github.com/oberthci/oberth/internal/artifacts"
+	"github.com/oberthci/oberth/internal/installer"
+	"github.com/oberthci/oberth/internal/model"
 	"github.com/oberthci/oberth/internal/service"
 )
 
@@ -40,6 +42,7 @@ func buildArgoEngine(
 	artifactStore app.ArtifactStore,
 	artifactLimit int64,
 	artifactBudget int64,
+	perRepoIdentities map[string]argojob.PerRepoIdentityConfig,
 ) (*app.ArgoJobs, error) {
 	argoClient, err := wfclientset.NewForConfig(restConfig)
 	if err != nil {
@@ -75,7 +78,8 @@ func buildArgoEngine(
 		ReleaseCacheRoot: options.releaseCacheRoot,
 		WorkflowTimeout:  options.argoWorkflowTimeout,
 		// #nosec G115 -- validateServeOptions bounds argoWorkflowTTL to a positive int32.
-		TTLSeconds: int32(options.argoWorkflowTTL),
+		TTLSeconds:        int32(options.argoWorkflowTTL),
+		PerRepoIdentities: perRepoIdentities,
 	}
 	controller, err := argojob.NewController(
 		argoClient.ArgoprojV1alpha1().Workflows(options.argoNamespace), kube, config)
@@ -216,4 +220,64 @@ func (adapter artifactStoreAdapter) Extract(runID string, stream io.Reader, limi
 
 func (adapter artifactStoreAdapter) Evict(budget int64) ([]string, error) {
 	return adapter.store.Evict(budget)
+}
+
+// perRepoStore is the narrow interface the per-repo identity producer needs.
+// *store.Store satisfies it directly.
+type perRepoStore interface {
+	ListRepositories(context.Context) ([]model.Repository, error)
+	ListUpstreams(context.Context) ([]model.Upstream, error)
+	ActiveSecretGrants(ctx context.Context, repoID int64) (map[string]map[string]bool, error)
+}
+
+// buildPerRepoIdentities reads the repo registry and approval table, and
+// builds the per-repo identity map that scopes each credentialed repository
+// to its own Vault policy at the ServiceAccount level. Only repositories
+// with at least one active secret grant get a per-repo identity; repos
+// without grants continue using the shared credentialed identity.
+//
+// This is the serve-path producer for issue #246 phase 2. The installer
+// path has its own producer that reads from the ConfigMap and the live pod.
+func buildPerRepoIdentities(ctx context.Context, db perRepoStore) (map[string]argojob.PerRepoIdentityConfig, error) {
+	repos, err := db.ListRepositories(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list repositories for per-repo identities: %w", err)
+	}
+	upstreams, err := db.ListUpstreams(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list upstreams for per-repo identities: %w", err)
+	}
+
+	upstreamByID := make(map[int64]model.Upstream, len(upstreams))
+	for _, u := range upstreams {
+		upstreamByID[u.ID] = u
+	}
+
+	result := make(map[string]argojob.PerRepoIdentityConfig)
+	for _, repo := range repos {
+		upstream, ok := upstreamByID[repo.UpstreamID]
+		if !ok {
+			continue
+		}
+		org := upstream.Org()
+		if org == "" {
+			continue
+		}
+
+		grants, err := db.ActiveSecretGrants(ctx, repo.ID)
+		if err != nil {
+			return nil, fmt.Errorf("load grants for %s: %w", repo.Name, err)
+		}
+		if len(grants) == 0 {
+			continue
+		}
+
+		key := upstream.Name + "/" + org + "/" + repo.Name
+		saName := installer.PerRepoName(upstream.Name, org, repo.Name)
+		result[key] = argojob.PerRepoIdentityConfig{
+			ServiceAccountName: saName,
+		}
+	}
+
+	return result, nil
 }

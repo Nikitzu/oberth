@@ -584,6 +584,26 @@ func Run(ctx context.Context, cfg Config, deps Deps) error {
 	var rekor RekorResult
 	var secretStoreItems []configItem
 
+	// Populate per-repo identities from the running server's database
+	// (via exec) when the secret store is being set up. On a fresh
+	// install the server pod does not exist yet and the exec fails
+	// gracefully, falling back to the ConfigMap — correct, because
+	// no repos are registered on a fresh install either. On an
+	// upgrade, the database carries qualified "upstream/org/repo"
+	// names that match the serve path's identity map exactly.
+	if cfg.wantsSecretStore() && len(cfg.PerRepoIdentities) == 0 {
+		ns := cfg.Namespace
+		if ns == "" {
+			ns = DefaultNamespace
+		}
+		produced, produceErr := ProducePerRepoIdentities(ctx, deps.KubeClient, deps.RunCommand, deps.ContextName, ns)
+		if produceErr != nil {
+			_, _ = fmt.Fprintf(deps.Output, "WARNING: could not read per-repo identities: %v\n", produceErr)
+		} else if len(produced) > 0 {
+			cfg.PerRepoIdentities = produced
+		}
+	}
+
 	if cfg.wantsSecretStore() {
 		quietDeps := deps
 		quietDeps.Output = io.Discard

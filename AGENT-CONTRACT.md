@@ -62,13 +62,18 @@ implementation detail disagree.
   commit proven reachable from the freshly fetched upstream default branch.
 - Secret-store-sourced release secrets (OpenBao) never become Kubernetes
   Secrets. Pipelines that declare approved secret-store paths bind to the
-  trigger's own credentialed identity: release runs to the credentialed
-  ServiceAccount — the only identity whose OpenBao role's policy carries
-  approval-table release grants — and CI runs to the separate ci-secrets
+  trigger's own credentialed identity: release runs to the repository's own
+  per-repo ServiceAccount when one is provisioned — its OpenBao role's policy
+  carries exactly that repository's org/repo upstream namespace plus its own
+  approval-table grants — falling back to the shared credentialed
+  ServiceAccount otherwise; these are the only identities whose policies
+  carry approval-table release grants. CI runs bind the separate ci-secrets
   ServiceAccount, whose role's policy covers the upstream subtree only and
-  never receives grants. The release role binds its exact ServiceAccount
-  name, so release credentials are unreachable from a branch push at the
-  Vault layer, not only at admission. Two credential chains are supported:
+  never receives grants; per-repo identities are release-tier only, so a
+  branch run never binds one. Each release-capable role binds its exact
+  ServiceAccount name, so release credentials are unreachable from a branch
+  push at the Vault layer, not only at admission. Two credential chains are
+  supported:
   - **Native (preferred):** `oberth secretstore exec` authenticates to
     OpenBao in-Pod using the ServiceAccount's projected token, fetches the
     declared paths, validates the `--dir` mount is tmpfs, writes files at
@@ -109,10 +114,11 @@ implementation detail disagree.
   a pipeline that declares no approved secret-store paths binds to the
   pipeline ServiceAccount with no Vault/OpenBao access and
   `automountServiceAccountToken: false`; a release pipeline with approved
-  paths binds to the credentialed ServiceAccount, and a CI pipeline with
+  paths binds to its repository's per-repo ServiceAccount when provisioned
+  (the shared credentialed ServiceAccount otherwise), and a CI pipeline with
   approved paths binds to the ci-secrets ServiceAccount — each carrying a
-  projected token that only its own tier's OpenBao role accepts, with the
-  trigger's role injected as `OBERTH_VAULT_ROLE`. The CI system-path
+  projected token that only its own identity's OpenBao role accepts, with the
+  selected role injected as `OBERTH_VAULT_ROLE`. The CI system-path
   prohibition (branch pipelines may not declare system-namespace paths) and
   the approval-table grant check are enforced as defense in depth on top of
   the identity switch. Secret paths a repository-authored envconsul
