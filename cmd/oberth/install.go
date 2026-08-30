@@ -116,12 +116,16 @@ func runInstall(ctx context.Context, arguments []string, input io.Reader, output
 		return fmt.Errorf("%w: install accepts flags only, no positional arguments", errUsage)
 	}
 
-	// Whether --image was named on this run, not just left at the default the
-	// binary was built with: a re-run must be able to tell those apart before
-	// it replaces an image someone deployed on purpose.
+	// Which flags were named on this run, as opposed to holding their default.
+	// A re-run must be able to tell those apart before it replaces an image
+	// someone deployed on purpose, and before it pins a chart value over one
+	// an operator set in their own values file.
 	flags.Visit(func(f *flag.Flag) {
 		if f.Name == "image" {
 			cfg.ImageRefExplicit = true
+		}
+		if f.Name == "testcontainers" {
+			cfg.TestcontainersExplicit = true
 		}
 	})
 

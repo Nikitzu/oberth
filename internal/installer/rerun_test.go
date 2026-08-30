@@ -194,20 +194,31 @@ func TestTestcontainersDeploysTheShimAndOpensTheEgressTogether(t *testing.T) {
 	}
 
 	without := strings.Join(OberthHelmArgs(Config{}, OpenBaoResult{}, RekorResult{}), " ")
-	if strings.Contains(without, "inNamespaceAllPorts") {
+	if strings.Contains(without, "kubedock") || strings.Contains(without, "inNamespaceAllPorts") {
 		t.Fatalf("an ordinary install carries the preset anyway:\n%s", without)
 	}
 }
 
-// A re-run without --testcontainers still has to say kubedock.enabled=false
-// out loud. helm upgrade --reuse-values reuses the previous release's values
-// and never merges the new chart's defaults, so leaving the value unset left
-// a release created before the key existed with no .Values.kubedock at all,
-// and every upgrade of one failed rendering the template.
-func TestOrdinaryInstallPinsKubedockOffForReuseValues(t *testing.T) {
+// The tri-state --network-policy uses. An operator who named --testcontainers,
+// either way, gets the value pinned through --reuse-values, which never merges
+// a newer chart's defaults. One who said nothing gets no --set at all, so a
+// kubedock.enabled they put in their own values file survives the re-run.
+func TestKubedockIsPinnedOnlyWhenTheOperatorSaidSomething(t *testing.T) {
 	t.Parallel()
-	args := strings.Join(OberthHelmArgs(Config{}, OpenBaoResult{}, RekorResult{}), " ")
-	if !strings.Contains(args, "--set kubedock.enabled=false") {
-		t.Fatalf("helm args do not pin kubedock off:\n%s", args)
+	for _, test := range []struct {
+		name string
+		cfg  Config
+		want string
+	}{
+		{"explicitly on", Config{Testcontainers: true, TestcontainersExplicit: true}, "--set kubedock.enabled=true"},
+		{"explicitly off", Config{TestcontainersExplicit: true}, "--set kubedock.enabled=false"},
+	} {
+		if args := strings.Join(OberthHelmArgs(test.cfg, OpenBaoResult{}, RekorResult{}), " "); !strings.Contains(args, test.want) {
+			t.Errorf("%s: helm args missing %q:\n%s", test.name, test.want, args)
+		}
+	}
+	silent := strings.Join(OberthHelmArgs(Config{}, OpenBaoResult{}, RekorResult{}), " ")
+	if strings.Contains(silent, "kubedock") {
+		t.Errorf("an install that never mentioned kubedock pins it anyway:\n%s", silent)
 	}
 }
