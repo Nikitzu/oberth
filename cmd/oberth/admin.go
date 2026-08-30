@@ -107,6 +107,18 @@ func runUpstream(ctx context.Context, arguments []string, output io.Writer) erro
 			mutationGate: requestLiveAdminMutationGate,
 		})
 	}
+	// --engine=docker says the server this is registering against has no
+	// cluster. The bootstrap runs identically; only where the minted deploy
+	// key and the confirmed known_hosts are persisted changes, from two
+	// Secrets to the two files the server already reads at startup.
+	if arguments[0] == "add" && dockerEngineArguments(arguments[1:]) {
+		return runUpstreamWithDependencies(ctx, arguments, output, upstreamDependencies{
+			input:        os.Stdin,
+			scanHostKeys: app.ScanSSHHostKeys,
+			probe:        app.ProbeSSHAuthentication,
+			mutationGate: requestLiveAdminMutationGate,
+		})
+	}
 	// "upstream add" and "upstream provide-key" need a Kubernetes client.
 	// Try in-cluster config first (running inside the pod). When that fails,
 	// fall back to the host kubeconfig for "add" only; provide-key is pod-only.
@@ -169,6 +181,8 @@ func runUpstreamWithDependencies(ctx context.Context, arguments []string, output
 	noWait := flags.Bool("no-wait", false, "print the deploy key and exit immediately instead of waiting for its registration")
 	autoYes := flags.Bool("yes", false, "auto-accept key generation and host-key prompts")
 	dedicatedKey := flags.Bool("dedicated-key", false, "provision a dedicated SSH identity for this upstream instead of the shared key (stored as an additional data key of the upstream-key Secret)")
+	engine := flags.String("engine", engineArgo,
+		"execution engine of the server being configured; \"docker\" persists the deploy key and known_hosts to the server's own files instead of Kubernetes Secrets")
 	noKey := flags.Bool("no-key", false, "record the upstream without an SSH identity: no key is minted and no forge authentication is attempted (for a deployment that never pushes, where the base URL exists only to build compare links)")
 	expectedHostFingerprint := flags.String("expected-host-fingerprint", "", "expected SSH host-key fingerprint (SHA256:...) for unattended bootstrap of unknown forges")
 	if err := flags.Parse(arguments[1:]); err != nil {
@@ -181,6 +195,11 @@ func runUpstreamWithDependencies(ctx context.Context, arguments []string, output
 	}
 	if flags.NArg() != 2 {
 		return fmt.Errorf("%w: upstream add requires name and base URL", errUsage)
+	}
+	switch *engine {
+	case engineArgo, engineDocker:
+	default:
+		return fmt.Errorf("%w: unknown --engine %q, expected %q or %q", errUsage, *engine, engineArgo, engineDocker)
 	}
 	name, baseURL := flags.Arg(0), strings.TrimSuffix(flags.Arg(1), "/")
 	if err := app.ValidateUpstreamName(name); err != nil {
@@ -232,8 +251,18 @@ func runUpstreamWithDependencies(ctx context.Context, arguments []string, output
 			}
 			return dependencies.mutationGate(ctx, operation, *databasePath)
 		}
+		var keyStore app.UpstreamKeyStore
+		if *engine == engineDocker {
+			keyStore = app.FileUpstreamKeyStore{
+				PrivateKeyPath: privateKeyPath,
+				PublicKeyPath:  privateKeyPath + ".pub",
+				KnownHostsPath: *knownHosts,
+				MutationGate:   secretGate,
+			}
+		}
 		if _, err := (app.UpstreamSSHBootstrap{
-			Input: dependencies.input, Output: output,
+			KeyStore: keyStore,
+			Input:    dependencies.input, Output: output,
 			KubernetesClient:        dependencies.kubernetesClient,
 			ScanHostKeys:            dependencies.scanHostKeys,
 			Probe:                   dependencies.probe,
@@ -289,9 +318,31 @@ func runUpstreamWithDependencies(ctx context.Context, arguments []string, output
 		// kubelet needs a short interval to project a freshly applied data
 		// key onto the Secret volume. Without a restart, Git operations for
 		// this upstream keep using the shared fallback key.
+		restart := "kubectl rollout restart deploy/oberth"
+		if *engine == engineDocker {
+			restart = "restart the oberth serve process"
+		}
 		if _, err := fmt.Fprintf(output,
-			"Per-upstream key stored as data key %s. Restart the server (kubectl rollout restart deploy/oberth) to activate it for Git operations.\n",
-			keyName); err != nil {
+			"Per-upstream key stored as %s. Restart the server (%s) to activate it for Git operations.\n",
+			keyName, restart); err != nil {
+			return err
+		}
+	}
+	if *engine == engineDocker && kind == "https" {
+		// The clusterless equivalent of the installer seeding an org's forge
+		// token into the store. There is no deploy key for an HTTPS upstream:
+		// the credential is a token a pipeline reads through the secret store,
+		// so the registration records the base URL and names where the token
+		// goes rather than silently recording half a working configuration.
+		org := model.Upstream{BaseURL: baseURL}.Org()
+		if org == "" {
+			org = "<org>"
+		}
+		if _, err := fmt.Fprintf(output,
+			"HTTPS upstream registered. It authenticates with a forge token, not a deploy key; seed it with:\n\n"+
+				"    oberth secretstore put --engine=docker oberth/upstream/%s/github-token token=<token>\n\n"+
+				"and declare it in a pipeline as oberth.ci/secret-paths: oberth/upstream/%s/github-token\n",
+			org, org); err != nil {
 			return err
 		}
 	}
@@ -310,6 +361,24 @@ func localUpstreamArguments(arguments []string) bool {
 		}
 		kind, err := app.UpstreamKind(strings.TrimSuffix(candidate, "/"))
 		return err == nil && kind == "local"
+	}
+	return false
+}
+
+// dockerEngineArguments reports whether an invocation selects the clusterless
+// engine. It reads the raw arguments rather than the parsed flag set for the
+// same reason localUpstreamArguments does: this only has to decide which
+// dependency set the full parse downstream is handed.
+func dockerEngineArguments(arguments []string) bool {
+	for index, argument := range arguments {
+		trimmed := strings.TrimSpace(argument)
+		if trimmed == "--engine="+engineDocker || trimmed == "-engine="+engineDocker {
+			return true
+		}
+		if (trimmed == "--engine" || trimmed == "-engine") && index+1 < len(arguments) &&
+			strings.TrimSpace(arguments[index+1]) == engineDocker {
+			return true
+		}
 	}
 	return false
 }
@@ -337,6 +406,10 @@ func runUpstreamAddFromHost(ctx context.Context, arguments []string, output io.W
 	_ = flags.String("database", "", "")
 	_ = flags.String("upstream-key", "", "")
 	_ = flags.String("known-hosts", "", "")
+	// Accepted and ignored: an --engine=docker invocation never reaches the
+	// host path, because runUpstream routes it to the clusterless flow before
+	// any kubeconfig is loaded.
+	_ = flags.String("engine", engineArgo, "")
 	if err := flags.Parse(arguments); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			flags.SetOutput(output)
