@@ -284,3 +284,134 @@ func TestDockerProvisionSurvivesLeftoversFromAnEarlierAttempt(t *testing.T) {
 		t.Fatalf("second provision over leftovers: %v", err)
 	}
 }
+
+// The security baseline, asserted against the daemon rather than the argv.
+// Each of these is a property the Argo engine gets from the Pod spec, and each
+// one was absent here: steps ran as the image's own user with a writable root
+// filesystem and every capability the daemon grants by default.
+func TestDockerStepRunsUnderTheSecurityBaseline(t *testing.T) {
+	controller := requireDocker(t)
+	completion, log := submit(t, controller, "oberth-it-hardening", pipeline(t, `  templates:
+    - name: ci
+      dag:
+        tasks:
+          - name: posture
+            template: posture
+    - name: posture
+      container:
+        image: "`+goImage+`"
+        command: ["sh", "-c"]
+        args: ["id -u && (echo denied > /denied 2>/dev/null && echo ROOTFS_WRITABLE || echo ROOTFS_READONLY) && (echo scratch > /tmp/scratch && echo TMP_WRITABLE) && (echo work > /work/probe && echo WORK_WRITABLE)"]
+`))
+	if !completion.Succeeded {
+		t.Fatalf("posture probe failed: %+v (log: %s)", completion, log)
+	}
+	for _, expected := range []string{"ROOTFS_READONLY", "TMP_WRITABLE", "WORK_WRITABLE"} {
+		if !strings.Contains(log, expected) {
+			t.Fatalf("expected %s in the log, got: %s", expected, log)
+		}
+	}
+	if strings.Contains(log, "ROOTFS_WRITABLE") {
+		t.Fatalf("the root filesystem was writable: %s", log)
+	}
+}
+
+// The scratch mount has to allow execution. Docker's tmpfs default is noexec,
+// which breaks every compiler that writes a binary to TMPDIR and runs it, with
+// an error naming neither /tmp nor the flag.
+func TestDockerScratchMountAllowsExecution(t *testing.T) {
+	controller := requireDocker(t)
+	completion, log := submit(t, controller, "oberth-it-tmpexec", pipeline(t, `  templates:
+    - name: ci
+      dag:
+        tasks:
+          - name: exec
+            template: exec
+    - name: exec
+      container:
+        image: "`+goImage+`"
+        command: ["sh", "-c"]
+        args: ["printf '#!/bin/sh\\necho SCRATCH_EXECUTED\\n' > /tmp/probe.sh && chmod +x /tmp/probe.sh && /tmp/probe.sh"]
+`))
+	if !completion.Succeeded || !strings.Contains(log, "SCRATCH_EXECUTED") {
+		t.Fatalf("scratch mount did not allow execution: %+v (log: %s)", completion, log)
+	}
+}
+
+// A step broken by the baseline must say so. The underlying error names
+// neither the flag nor the mount.
+func TestDockerFailedStepExplainsTheSecurityBaseline(t *testing.T) {
+	controller := requireDocker(t)
+	completion, log := submit(t, controller, "oberth-it-hardening-hint", pipeline(t, `  templates:
+    - name: ci
+      dag:
+        tasks:
+          - name: writes-root
+            template: writes-root
+    - name: writes-root
+      container:
+        image: "`+goImage+`"
+        command: ["sh", "-c"]
+        args: ["echo nope > /etc/oberth-probe"]
+`))
+	if completion.Succeeded {
+		t.Fatalf("a write outside /work and /tmp succeeded: %s", log)
+	}
+	if !strings.Contains(log, "read-only root filesystem") {
+		t.Fatalf("the failure did not explain the security baseline: %s", log)
+	}
+}
+
+// The seeded tree must be root-owned. docker cp from a host path preserves the
+// host uid, and a step runs as root with CAP_DAC_OVERRIDE dropped, so a tree
+// owned by the developer's uid is unreadable and unwritable from inside the
+// step even though the step is root.
+func TestDockerSeedsARootOwnedWorkTree(t *testing.T) {
+	controller := requireDocker(t)
+	name := "oberth-it-seed-ownership"
+	sourceDir := t.TempDir()
+	// 0600 on purpose: readable by its owner only, so it can only be read
+	// inside the container if the copy re-owned it.
+	if err := os.WriteFile(sourceDir+"/private.txt", []byte("SEEDED_CONTENT\n"), 0o600); err != nil {
+		t.Fatalf("write source: %v", err)
+	}
+	if err := os.Mkdir(sourceDir+"/nested", 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(sourceDir+"/nested/tool.sh", []byte("#!/bin/sh\necho NESTED_EXECUTED\n"), 0o700); err != nil {
+		t.Fatalf("write nested: %v", err)
+	}
+	request := Request{
+		RunID: name + "-run", Name: name, Repo: "acme/widget", Ref: "refs/heads/main",
+		SHA: strings.Repeat("a", 40), Trigger: periapsis.TriggerCI, SourceDir: sourceDir,
+		Source: pipeline(t, `  templates:
+    - name: ci
+      dag:
+        tasks:
+          - name: read
+            template: read
+    - name: read
+      container:
+        image: "`+goImage+`"
+        workingDir: /work/src
+        command: ["sh", "-c"]
+        args: ["cat private.txt && ./nested/tool.sh && touch /work/cache/writable && echo CACHE_WRITABLE && stat -c '%u:%g' /work/src"]
+`),
+	}
+	if _, err := controller.Create(context.Background(), request); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	var log bytes.Buffer
+	completion, err := controller.Wait(context.Background(), name, request.RunID, &log)
+	if err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+	if !completion.Succeeded {
+		t.Fatalf("the step could not read its own checkout: %s", log.String())
+	}
+	for _, expected := range []string{"SEEDED_CONTENT", "NESTED_EXECUTED", "CACHE_WRITABLE", "0:0"} {
+		if !strings.Contains(log.String(), expected) {
+			t.Fatalf("expected %q in the log, got: %s", expected, log.String())
+		}
+	}
+}

@@ -1,14 +1,13 @@
 package dockerjob
 
 import (
+	"archive/tar"
 	"bytes"
 	"compress/gzip"
 	"context"
 	"errors"
 	"fmt"
 	"io"
-	"os"
-	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -51,6 +50,9 @@ type Config struct {
 	RunnerImagePrefixes []string
 	MaxRunLogBytes      int64
 	ArtifactsLimitBytes int64
+	// TmpfsBytes bounds the writable scratch mount at /tmp. Zero selects
+	// DefaultTmpfsBytes.
+	TmpfsBytes int64
 }
 
 // Request is one submission, shaped like argojob.Request so the adapter layer
@@ -330,6 +332,7 @@ func (controller *Controller) runStep(ctx context.Context, current *job, step St
 			break
 		}
 	}
+	logs.note(hardeningHint())
 	_ = logs.Close()
 	finished := time.Now().UTC()
 	result.FinishedAt = &finished
@@ -373,6 +376,7 @@ func (controller *Controller) createArguments(request Request, step Step, attemp
 	if step.WorkingDir != "" {
 		arguments = append(arguments, "--workdir", step.WorkingDir)
 	}
+	arguments = append(arguments, controller.securityArguments()...)
 	// The document's declared ceilings, already capped by admission. Without
 	// these a step that asked for two cores and four gigabytes could take the
 	// whole machine, which on a cluster the kubelet would not have allowed.
@@ -392,6 +396,67 @@ func (controller *Controller) createArguments(request Request, step Step, attemp
 	arguments = append(arguments, step.Command...)
 	arguments = append(arguments, step.Args...)
 	return arguments
+}
+
+// TmpMountPath is the writable scratch every step gets. It is what makes a
+// read-only root filesystem survivable: the Go toolchain, and most others,
+// write to os.TempDir() and then execute what they wrote.
+const TmpMountPath = "/tmp"
+
+// DefaultTmpfsBytes bounds the scratch mount. A tmpfs is RAM, so unlike the
+// Argo path's emptyDir (which is node disk and unbounded) it needs a ceiling
+// or a runaway step takes the machine down rather than just failing.
+const DefaultTmpfsBytes = 2 << 30
+
+// securityArguments is the step container's security baseline.
+//
+// It is the same posture internal/argojob.applyServerSecurity forces on every
+// step Pod, translated verb for verb: UID and GID 0, every Linux capability
+// dropped, no privilege escalation, a read-only root filesystem, and a
+// writable scratch mount at /tmp so that read-only root does not break the
+// toolchain. Docker applies its default seccomp profile unless told otherwise,
+// which is the counterpart of RuntimeDefault.
+//
+// It runs as root, deliberately, because the Argo path runs as root. Running
+// non-root here and root there would mean a pipeline that passes on the server
+// fails on the laptop, which inverts the reason the local install exists. The
+// Argo path's own comment records the move to a non-root UID as a separate,
+// riskier change that has to be made on both engines at once.
+//
+// There is no per-pipeline escape hatch, because there is none on the Argo
+// path either: admission refuses a repository-authored securityContext at both
+// the Pod and the container level, precisely so a document cannot present a
+// posture different from the one the server forces.
+func (controller *Controller) securityArguments() []string {
+	size := controller.config.TmpfsBytes
+	if size <= 0 {
+		size = DefaultTmpfsBytes
+	}
+	return []string{
+		"--user", "0:0",
+		"--cap-drop", "ALL",
+		"--security-opt", "no-new-privileges",
+		"--read-only",
+		// exec, because the scratch directory is where a compiler writes a
+		// binary and then runs it. Docker's tmpfs default is noexec, which
+		// would break every Go build with an error naming neither /tmp nor
+		// this flag.
+		"--tmpfs", fmt.Sprintf("%s:rw,exec,nosuid,nodev,mode=1777,size=%d", TmpMountPath, size),
+	}
+}
+
+// hardeningHint is printed once into a failed step's log. The security
+// baseline is the most common reason a container that runs fine by hand fails
+// here, and the errors it produces name neither the flag nor the mount: a
+// build writing to /root reports "Read-only file system" and an image with a
+// USER directive reports a permission error on a path it owns. Saying the
+// posture out loud, at the moment it costs something, is cheaper than the
+// alternative.
+func hardeningHint() string {
+	return "oberth: this step ran with a read-only root filesystem as UID 0, with all Linux capabilities dropped " +
+		"and privilege escalation disabled, which is the same posture the Argo engine forces on a cluster. " +
+		"Only " + WorkMountPath + " and " + TmpMountPath + " are writable; a step that writes anywhere else, " +
+		"or that needs a capability, fails here and would fail on the server for the same reason."
 }
 
 // stepEnvironment is the server-owned environment every step receives, plus
@@ -419,25 +484,23 @@ func (controller *Controller) stepEnvironment(request Request, step Step) []stri
 // the host workspace. A bind mount would put the server's own data directory
 // inside a container running unreviewed code from a pushed commit, which is
 // the one thing the whole design is about not doing.
+//
+// The archive is built here rather than handed to docker cp as a host path,
+// so the tree arrives root-owned. See seedTree for why that matters.
 func (controller *Controller) seed(ctx context.Context, container, sourceDir string) error {
 	if strings.TrimSpace(sourceDir) == "" {
 		return errors.New("dockerjob: run workspace path is required to seed the source")
 	}
-	staging, err := os.MkdirTemp("", "oberth-docker-seed-")
-	if err != nil {
-		return fmt.Errorf("dockerjob: stage run volume layout: %w", err)
-	}
-	defer func() { _ = os.RemoveAll(staging) }()
-	for _, directory := range []string{"src", "cache", "artifacts", "files"} {
-		if err := os.MkdirAll(filepath.Join(staging, directory), 0o777); err != nil {
-			return fmt.Errorf("dockerjob: stage run volume layout: %w", err)
+	err := seedTree(ctx, controller.client.binary, container, WorkMountPath, func(writer *tar.Writer) error {
+		for _, directory := range []string{"src", "cache", "artifacts", "files"} {
+			if err := tarDirectory(writer, directory); err != nil {
+				return err
+			}
 		}
-	}
-	if _, err := controller.client.run(ctx, "cp", staging+"/.", container+":"+WorkMountPath); err != nil {
-		return fmt.Errorf("dockerjob: create the run volume layout: %w", err)
-	}
-	if _, err := controller.client.run(ctx, "cp", sourceDir+"/.", container+":"+SourceMountPath); err != nil {
-		return fmt.Errorf("dockerjob: copy the checked-out source into the run volume: %w", err)
+		return tarSourceTree(writer, sourceDir, "src")
+	})
+	if err != nil {
+		return fmt.Errorf("dockerjob: seed the run volume: %w", err)
 	}
 	return nil
 }
