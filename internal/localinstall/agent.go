@@ -18,7 +18,7 @@ const LaunchdLabel = "ci.oberth.server"
 // Docker was not ready yet at login would be exactly the thing they have to
 // think about. The log paths are inside the install root so a failed start
 // leaves its reason somewhere findable rather than in the system log.
-func RenderLaunchdAgent(binary string, arguments []string, layout Layout) ([]byte, error) {
+func RenderLaunchdAgent(binary string, arguments []string, layout Layout, path string) ([]byte, error) {
 	var program strings.Builder
 	program.WriteString("\t<key>ProgramArguments</key>\n\t<array>\n")
 	for _, argument := range append([]string{binary}, arguments...) {
@@ -42,13 +42,27 @@ func RenderLaunchdAgent(binary string, arguments []string, layout Layout) ([]byt
 	if err != nil {
 		return nil, err
 	}
+	// launchd starts an agent with a minimal PATH that does not include
+	// /usr/local/bin, which is where the docker CLI and most of Homebrew live.
+	// Carrying the PATH the install ran under is what makes the agent see the
+	// same tools the operator does; without it the server starts, answers, and
+	// refuses every push with "docker is not on PATH".
+	environment := ""
+	if strings.TrimSpace(path) != "" {
+		escapedPath, pathErr := escapeXML(path)
+		if pathErr != nil {
+			return nil, pathErr
+		}
+		environment = "\t<key>EnvironmentVariables</key>\n\t<dict>\n" +
+			"\t\t<key>PATH</key>\n\t\t<string>" + escapedPath + "</string>\n\t</dict>\n"
+	}
 	return []byte(`<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
 	<key>Label</key>
 	<string>` + label + `</string>
-` + program.String() + `	<key>RunAtLoad</key>
+` + program.String() + environment + `	<key>RunAtLoad</key>
 	<true/>
 	<key>KeepAlive</key>
 	<true/>

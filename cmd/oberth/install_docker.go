@@ -111,7 +111,14 @@ func runInstallDocker(ctx context.Context, arguments []string, output io.Writer)
 	if *secretStore {
 		storeCA = storeOptions.TLSCertPath
 	}
-	serveArguments := localServeArguments(layout, *httpsPort, *sshPort, *publishOnGreen, storeCA, releaseSecretPaths)
+	// The absolute path, not the name. A launchd agent resolves a bare name
+	// against a minimal PATH, and this is the one binary the engine cannot
+	// work without.
+	dockerBinary, err := exec.LookPath("docker")
+	if err != nil {
+		return errors.New("install --engine=docker needs the docker CLI on PATH")
+	}
+	serveArguments := localServeArguments(layout, *httpsPort, *sshPort, *publishOnGreen, storeCA, releaseSecretPaths, dockerBinary)
 
 	// The server has to be running before an uplink can be minted: the admin
 	// path talks to the live process's audit gate, which is exactly the point
@@ -185,9 +192,10 @@ func requireDockerDaemon(ctx context.Context) error {
 // built here rather than in a template so the launchd agent and the foreground
 // run cannot drift.
 func localServeArguments(layout localinstall.Layout, httpsPort, sshPort int, publishOnGreen bool,
-	storeCACert string, releaseSecretPaths []string) []string {
+	storeCACert string, releaseSecretPaths []string, dockerBinary string) []string {
 	arguments := []string{
 		"serve", "--engine=docker",
+		"--docker-binary=" + dockerBinary,
 		"--data=" + layout.Data,
 		"--database=" + layout.Database,
 		fmt.Sprintf("--https-listen=127.0.0.1:%d", httpsPort),
@@ -249,7 +257,7 @@ func installLaunchdAgent(ctx context.Context, output io.Writer, binary string, a
 	if err := os.MkdirAll(agents, 0o700); err != nil {
 		return fmt.Errorf("create %s: %w", agents, err)
 	}
-	plist, err := localinstall.RenderLaunchdAgent(binary, arguments, layout)
+	plist, err := localinstall.RenderLaunchdAgent(binary, arguments, layout, os.Getenv("PATH"))
 	if err != nil {
 		return err
 	}

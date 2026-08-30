@@ -128,7 +128,7 @@ func TestEnsureMaterialIsIdempotent(t *testing.T) {
 func TestLaunchdAgentCarriesTheWholeServeCommand(t *testing.T) {
 	layout := NewLayout(filepath.Join(t.TempDir(), "root"))
 	plist, err := RenderLaunchdAgent("/usr/local/bin/oberth",
-		[]string{"serve", "--engine=docker", "--data=" + layout.Data}, layout)
+		[]string{"serve", "--engine=docker", "--data=" + layout.Data}, layout, "/usr/local/bin:/usr/bin:/bin")
 	if err != nil {
 		t.Fatalf("RenderLaunchdAgent: %v", err)
 	}
@@ -140,6 +140,11 @@ func TestLaunchdAgentCarriesTheWholeServeCommand(t *testing.T) {
 		"<string>--engine=docker</string>",
 		"<key>KeepAlive</key>",
 		"<string>" + layout.Logs + "</string>",
+		// Without this the agent runs with launchd's minimal PATH, which does
+		// not include /usr/local/bin, and the server refuses every push with
+		// "docker is not on PATH".
+		"<key>PATH</key>",
+		"<string>/usr/local/bin:/usr/bin:/bin</string>",
 	} {
 		if !strings.Contains(text, expected) {
 			t.Fatalf("plist missing %q:\n%s", expected, text)
@@ -150,7 +155,7 @@ func TestLaunchdAgentCarriesTheWholeServeCommand(t *testing.T) {
 // A path that cannot be represented is a mistake to report, not to encode.
 func TestLaunchdAgentRefusesAnUnrepresentablePath(t *testing.T) {
 	layout := NewLayout("/tmp/root")
-	if _, err := RenderLaunchdAgent("/usr/local/bin/ob\nerth", nil, layout); err == nil {
+	if _, err := RenderLaunchdAgent("/usr/local/bin/ob\nerth", nil, layout, ""); err == nil {
 		t.Fatal("a binary path with a newline was accepted")
 	}
 }
