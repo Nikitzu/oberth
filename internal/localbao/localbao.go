@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/tls"
 	"crypto/x509"
 	"encoding/pem"
 	"errors"
@@ -27,10 +28,22 @@ const (
 	// what the last run made.
 	DefaultContainer = "oberth-openbao"
 	DefaultVolume    = "oberth-openbao-data"
-	// DefaultAddress binds the loopback only. The step containers reach it
-	// through the daemon's host gateway, and nothing off this machine can.
-	DefaultListen  = "127.0.0.1:8200"
-	DefaultAddress = "http://127.0.0.1:8200"
+	// DefaultListen binds the loopback only. Step containers reach it through
+	// the daemon's host gateway, and nothing off this machine can.
+	DefaultListen = "127.0.0.1:8200"
+	// DefaultAddress is HTTPS, and not negotiable. This is the channel a run's
+	// credentials come back over, it crosses the container boundary through
+	// the daemon's gateway, and `oberth secretstore exec` refuses a plain HTTP
+	// store for exactly that reason. The certificate is this machine's own and
+	// is handed to both consumers as their trust anchor.
+	DefaultAddress = "https://127.0.0.1:8200"
+	// ContainerAddress is the same store as a step container sees it. Inside a
+	// container 127.0.0.1 is the container, so the loopback address the server
+	// uses would reach nothing.
+	ContainerAddress = "https://host.docker.internal:8200"
+	// ContainerHostName is the name the address above resolves through, mapped
+	// to the daemon's host gateway on every credentialed step.
+	ContainerHostName = "host.docker.internal"
 	// DefaultKVMount is the KV v2 mount both engines use.
 	DefaultKVMount = "oberth"
 	// DefaultJWTMount is where the jwt auth method lives.
@@ -62,6 +75,10 @@ type Options struct {
 	CIRole         string
 	ReleaseRole    string
 	SigningKeyPath string
+	// TLSCertPath and TLSKeyPath are the store's own server certificate, on
+	// the host. Their directory is mounted into the container read-only.
+	TLSCertPath string
+	TLSKeyPath  string
 
 	Stash  SecretStash
 	HTTP   *http.Client
@@ -102,7 +119,7 @@ func (options *Options) applyDefaults() {
 		options.ReleaseRole = DefaultReleaseRole
 	}
 	if options.HTTP == nil {
-		options.HTTP = &http.Client{Timeout: 15 * time.Second}
+		options.HTTP = &http.Client{Timeout: 15 * time.Second, Transport: options.transport()}
 	}
 	if options.Run == nil {
 		options.Run = runCommand
@@ -116,6 +133,24 @@ func (options *Options) applyDefaults() {
 	if options.Stash == nil {
 		options.Stash = KeychainStash{}
 	}
+}
+
+// transport trusts exactly this store's own certificate and nothing else. The
+// system pool is not consulted: the only correct answer for this address is
+// the certificate this command issued, so widening the anchor set would only
+// make a misconfiguration harder to see.
+func (options Options) transport() http.RoundTripper {
+	body, err := os.ReadFile(strings.TrimSpace(options.TLSCertPath)) // #nosec G304 -- an operator-supplied path.
+	if err != nil {
+		return http.DefaultTransport
+	}
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(body) {
+		return http.DefaultTransport
+	}
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.TLSClientConfig = &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12}
+	return transport
 }
 
 func runCommand(ctx context.Context, name string, args ...string) ([]byte, error) {
@@ -177,8 +212,12 @@ func (options Options) ensureContainer(ctx context.Context) error {
 	if _, err := options.Run(ctx, options.Docker, "volume", "create", options.Volume); err != nil {
 		return fmt.Errorf("localbao: create the openbao data volume: %w", err)
 	}
+	if strings.TrimSpace(options.TLSCertPath) == "" || strings.TrimSpace(options.TLSKeyPath) == "" {
+		return errors.New("localbao: a server certificate and key are required; the credential channel is not run in the clear")
+	}
 	config := `{"storage":{"file":{"path":"/openbao/file"}},` +
-		`"listener":{"tcp":{"address":"0.0.0.0:8200","tls_disable":true}},` +
+		`"listener":{"tcp":{"address":"0.0.0.0:8200",` +
+		`"tls_cert_file":"/openbao/tls/tls.crt","tls_key_file":"/openbao/tls/tls.key"}},` +
 		`"disable_mlock":true,"ui":false}`
 	_, err = options.Run(ctx, options.Docker, "run", "--detach",
 		"--name", options.Container,
@@ -188,6 +227,7 @@ func (options Options) ensureContainer(ctx context.Context) error {
 		// design claims.
 		"--publish", options.Listen+":8200",
 		"--volume", options.Volume+":/openbao/file",
+		"--volume", filepath.Dir(options.TLSCertPath)+":/openbao/tls:ro",
 		"--cap-add", "IPC_LOCK",
 		"--env", "BAO_LOCAL_CONFIG="+config,
 		"--", options.Image, "server")

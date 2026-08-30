@@ -120,41 +120,73 @@ func ensureTLS(layout Layout, now time.Time) (bool, error) {
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return false, fmt.Errorf("localinstall: read %s: %w", layout.TLSCert, err)
 	}
+	return true, IssueSelfSignedCertificate(layout.TLSCert, layout.TLSKey, "localhost",
+		[]string{"localhost"}, []net.IP{net.ParseIP("127.0.0.1"), net.ParseIP("::1")}, now)
+}
+
+// EnsureSelfSignedCertificate issues a certificate only if one is not already
+// there, and reports whether it made one.
+func EnsureSelfSignedCertificate(certPath, keyPath, commonName string, names []string, addresses []net.IP, now time.Time) (bool, error) {
+	if _, err := os.Stat(certPath); err == nil {
+		if _, keyErr := os.Stat(keyPath); keyErr == nil {
+			return false, nil
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return false, fmt.Errorf("localinstall: read %s: %w", certPath, err)
+	}
+	return true, IssueSelfSignedCertificate(certPath, keyPath, commonName, names, addresses, now)
+}
+
+// IssueSelfSignedCertificate writes a certificate and its key.
+//
+// Self-signed rather than a CA and a leaf: every consumer is on this machine
+// and is handed this exact file as its trust anchor, so a chain adds a file to
+// distribute and buys nothing. It carries every name and address a consumer
+// might use, because a client that trusts the certificate and reaches the
+// server by a name it does not carry still fails the handshake, and that
+// failure reads as "server unreachable".
+func IssueSelfSignedCertificate(certPath, keyPath, commonName string, names []string, addresses []net.IP, now time.Time) error {
+	if err := os.MkdirAll(filepath.Dir(certPath), 0o700); err != nil {
+		return fmt.Errorf("localinstall: create %s: %w", filepath.Dir(certPath), err)
+	}
+	if err := os.MkdirAll(filepath.Dir(keyPath), 0o700); err != nil {
+		return fmt.Errorf("localinstall: create %s: %w", filepath.Dir(keyPath), err)
+	}
 	public, private, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
-		return false, fmt.Errorf("localinstall: generate the TLS key: %w", err)
+		return fmt.Errorf("localinstall: generate the TLS key: %w", err)
 	}
 	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 127))
 	if err != nil {
-		return false, fmt.Errorf("localinstall: generate the certificate serial: %w", err)
+		return fmt.Errorf("localinstall: generate the certificate serial: %w", err)
 	}
 	template := &x509.Certificate{
 		SerialNumber:          serial,
-		Subject:               pkix.Name{CommonName: "localhost", Organization: []string{"Oberth local"}},
+		Subject:               pkix.Name{CommonName: commonName, Organization: []string{"Oberth local"}},
 		NotBefore:             now.Add(-5 * time.Minute),
 		NotAfter:              now.Add(certificateLifetime),
 		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign,
 		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 		BasicConstraintsValid: true,
 		IsCA:                  true,
-		DNSNames:              []string{"localhost"},
-		IPAddresses:           []net.IP{net.ParseIP("127.0.0.1"), net.ParseIP("::1")},
+		DNSNames:              names,
+		IPAddresses:           addresses,
 	}
 	der, err := x509.CreateCertificate(rand.Reader, template, template, public, private)
 	if err != nil {
-		return false, fmt.Errorf("localinstall: create the TLS certificate: %w", err)
+		return fmt.Errorf("localinstall: create the TLS certificate: %w", err)
 	}
 	keyDER, err := x509.MarshalPKCS8PrivateKey(private)
 	if err != nil {
-		return false, fmt.Errorf("localinstall: encode the TLS key: %w", err)
+		return fmt.Errorf("localinstall: encode the TLS key: %w", err)
 	}
-	if err := os.WriteFile(layout.TLSCert, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), 0o600); err != nil {
-		return false, fmt.Errorf("localinstall: write %s: %w", layout.TLSCert, err)
+	if err := os.WriteFile(certPath, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), 0o600); err != nil {
+		return fmt.Errorf("localinstall: write %s: %w", certPath, err)
 	}
-	if err := os.WriteFile(layout.TLSKey, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER}), 0o600); err != nil {
-		return false, fmt.Errorf("localinstall: write %s: %w", layout.TLSKey, err)
+	if err := os.WriteFile(keyPath, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER}), 0o600); err != nil {
+		return fmt.Errorf("localinstall: write %s: %w", keyPath, err)
 	}
-	return true, nil
+	return nil
 }
 
 // ensureSSHKey creates an ed25519 identity and its public half.

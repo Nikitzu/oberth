@@ -398,7 +398,22 @@ func (controller *Controller) deliverIdentity(ctx context.Context, current *job)
 		if err := writer.WriteHeader(header); err != nil {
 			return err
 		}
-		_, err := io.WriteString(writer, token)
+		if _, err := io.WriteString(writer, token); err != nil {
+			return err
+		}
+		anchor := controller.config.SecretStore.CACertPEM
+		if len(anchor) == 0 {
+			return nil
+		}
+		// The trust anchor rides with the identity. It is not a secret, so it
+		// is world readable inside the container: a step that cannot read it
+		// cannot verify the store it is about to send its identity to.
+		caHeader := &tar.Header{Typeflag: tar.TypeReg, Name: IdentityCAName, Mode: 0o444, Size: int64(len(anchor))}
+		rootOwned(caHeader)
+		if err := writer.WriteHeader(caHeader); err != nil {
+			return err
+		}
+		_, err := writer.Write(anchor)
 		return err
 	})
 	if err != nil {
@@ -500,6 +515,13 @@ func (controller *Controller) createArguments(request Request, step Step, attemp
 			"--volume", controller.identityVolumeName(request.Name)+":"+IdentityMountPath+":ro",
 			"--tmpfs", fmt.Sprintf("%s:rw,noexec,nosuid,nodev,mode=0700,size=%d", SecretsMountPath, secretsTmpfsBytes),
 		)
+		// The store runs on the host's loopback, which from inside a container
+		// is the container itself. This is the one name that reaches it, and
+		// it is added only for a credentialed run: an uncredentialed step gets
+		// no route to the store at all.
+		if gateway := strings.TrimSpace(controller.config.SecretStore.HostGatewayName); gateway != "" {
+			arguments = append(arguments, "--add-host", gateway+":host-gateway")
+		}
 	}
 	arguments = append(arguments,
 		"--label", labelJob+"="+request.Name,
@@ -607,6 +629,15 @@ func (controller *Controller) stepEnvironment(request Request, step Step) []stri
 	environment := append([]string(nil), step.Env...)
 	if request.Credentialed {
 		environment = append(environment, controller.config.SecretStore.credentialEnvironment(request.Trigger)...)
+	}
+	if request.Trigger == periapsis.TriggerRelease {
+		// The tag the release runs for, and the exact commit it points at.
+		// The Argo engine injects both, so a release pipeline that reads them
+		// must find them here or it is a pipeline that runs differently under
+		// the two engines while claiming to be the same.
+		environment = append(environment,
+			"OBERTH_RELEASE_TAG="+request.Ref,
+			"OBERTH_RELEASE_SHA="+request.SHA)
 	}
 	return append(environment,
 		"OBERTH_REPO="+request.Repo,

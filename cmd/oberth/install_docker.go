@@ -52,6 +52,10 @@ func runInstallDocker(ctx context.Context, arguments []string, output io.Writer)
 	shellProfile := flags.String("shell-profile", "", "shell profile to add the client environment line to (for example ~/.zshrc); empty prints the line instead")
 	secretStore := flags.Bool("secretstore", false, "also run `secretstore init --engine=docker`, so credentialed pipelines work from the first push")
 	publishOnGreen := flags.Bool("publish-on-green", false, "publish a green run to the upstream automatically")
+	var releaseSecretPaths stringList
+	flags.Var(&releaseSecretPaths, "secretstore-path",
+		"system-namespace secret path a release pipeline may declare (repeatable, exactly as it appears in oberth.ci/secret-paths); "+
+			"this is the clusterless stand-in for the approval table, and only the release tier can reach these")
 	if err := flags.Parse(arguments); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			flags.SetOutput(output)
@@ -89,11 +93,12 @@ func runInstallDocker(ctx context.Context, arguments []string, output io.Writer)
 		return err
 	}
 
+	storeOptions := localbao.Options{SigningKeyPath: layout.SigningKey, Output: output}
 	if *secretStore {
-		if err := localbao.Init(ctx, localbao.Options{
-			SigningKeyPath: layout.SigningKey,
-			Output:         output,
-		}); err != nil {
+		if err := ensureStoreTLS(&storeOptions, ""); err != nil {
+			return err
+		}
+		if err := localbao.Init(ctx, storeOptions); err != nil {
 			return fmt.Errorf("secret store setup: %w", err)
 		}
 	}
@@ -102,7 +107,11 @@ func runInstallDocker(ctx context.Context, arguments []string, output io.Writer)
 	if err != nil {
 		return fmt.Errorf("resolve this binary's path: %w", err)
 	}
-	serveArguments := localServeArguments(layout, *httpsPort, *sshPort, *publishOnGreen, *secretStore)
+	storeCA := ""
+	if *secretStore {
+		storeCA = storeOptions.TLSCertPath
+	}
+	serveArguments := localServeArguments(layout, *httpsPort, *sshPort, *publishOnGreen, storeCA, releaseSecretPaths)
 
 	// The server has to be running before an uplink can be minted: the admin
 	// path talks to the live process's audit gate, which is exactly the point
@@ -175,7 +184,8 @@ func requireDockerDaemon(ctx context.Context) error {
 // localServeArguments is the serve command line this install produces. It is
 // built here rather than in a template so the launchd agent and the foreground
 // run cannot drift.
-func localServeArguments(layout localinstall.Layout, httpsPort, sshPort int, publishOnGreen, secretStore bool) []string {
+func localServeArguments(layout localinstall.Layout, httpsPort, sshPort int, publishOnGreen bool,
+	storeCACert string, releaseSecretPaths []string) []string {
 	arguments := []string{
 		"serve", "--engine=docker",
 		"--data=" + layout.Data,
@@ -189,11 +199,14 @@ func localServeArguments(layout localinstall.Layout, httpsPort, sshPort int, pub
 		"--known-hosts=" + layout.KnownHosts,
 		fmt.Sprintf("--publish-on-green=%t", publishOnGreen),
 	}
-	if secretStore {
+	if storeCACert != "" {
 		arguments = append(arguments,
 			"--secretstore-address="+localbao.DefaultAddress,
-			"--secretstore-insecure-http",
+			"--secretstore-ca-cert="+storeCACert,
 			"--secretstore-jwt-signing-key="+layout.SigningKey)
+		for _, path := range releaseSecretPaths {
+			arguments = append(arguments, "--secretstore-path="+path)
+		}
 	}
 	return arguments
 }

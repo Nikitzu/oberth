@@ -2,11 +2,13 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
 	"github.com/oberthci/oberth/internal/app"
 	"github.com/oberthci/oberth/internal/dockerjob"
+	"github.com/oberthci/oberth/internal/localbao"
 	"github.com/oberthci/oberth/internal/secretstore"
 	"github.com/oberthci/oberth/internal/service"
 )
@@ -71,15 +73,39 @@ func buildDockerSecretStore(options serveOptions) (dockerjob.SecretStoreConfig, 
 	if err != nil {
 		return dockerjob.SecretStoreConfig{}, err
 	}
+	// The store's certificate is this machine's own, so nothing in the system
+	// pool verifies it and the anchor has to travel to the step. Refusing to
+	// start without one is deliberate: the alternative is a credentialed run
+	// that fails at its first login with an error about certificates.
+	var anchor []byte
+	if path := strings.TrimSpace(options.secretStoreCACert); path != "" {
+		body, readErr := readBoundedFile(path, 4<<20)
+		if readErr != nil {
+			return dockerjob.SecretStoreConfig{}, fmt.Errorf("read the secret store CA certificate: %w", readErr)
+		}
+		anchor = body
+	} else if !options.secretStoreInsecureHTTP {
+		return dockerjob.SecretStoreConfig{}, errors.New(
+			"serve: --engine=docker with --secretstore-address needs --secretstore-ca-cert; " +
+				"the local store's certificate is this machine's own and a step container trusts nothing else")
+	}
 	ciRole := strings.TrimSpace(options.secretStoreRole)
 	if ciRole == "" {
 		ciRole = dockerjob.DefaultCIRole
 	}
+	// The address a step reaches the store on is not the address the server
+	// uses. A loopback address names the container from inside one, so it is
+	// rewritten to the daemon's host gateway and that name is mapped on every
+	// credentialed step.
+	containerAddress, gateway := dockerjob.ContainerStoreAddress(address, localbao.ContainerHostName)
 	return dockerjob.SecretStoreConfig{
-		Address:     address,
-		KVMount:     options.secretStoreKVMount,
-		CIRole:      ciRole,
-		ReleaseRole: dockerjob.DefaultReleaseRole,
-		Minter:      minter,
+		Address:          address,
+		ContainerAddress: containerAddress,
+		HostGatewayName:  gateway,
+		CACertPEM:        anchor,
+		KVMount:          options.secretStoreKVMount,
+		CIRole:           ciRole,
+		ReleaseRole:      dockerjob.DefaultReleaseRole,
+		Minter:           minter,
 	}, nil
 }

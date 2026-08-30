@@ -51,13 +51,28 @@ func liveClient(t *testing.T, minter *JWTMinter, address, role string) *Client {
 		t.Fatalf("write token: %v", err)
 	}
 	client, err := New(Config{
-		Address: address, AllowInsecureHTTP: true,
+		Address: address, AllowInsecureHTTP: true, CACertPEM: probeAnchor(t),
 		AuthMountPath: localbao.DefaultJWTMount, Role: role, ServiceAccountTokenPath: path,
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
 	return client
+}
+
+// probeAnchor is the store's own certificate. A local store's signer is this
+// machine's, so nothing in the system pool verifies it.
+func probeAnchor(t *testing.T) []byte {
+	t.Helper()
+	path := os.Getenv("OBERTH_BAO_PROBE_CA")
+	if path == "" {
+		return nil
+	}
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read the store certificate: %v", err)
+	}
+	return body
 }
 
 func TestLiveJWTCITierReadsItsOwnUpstreamPath(t *testing.T) {
@@ -113,7 +128,7 @@ func TestLiveJWTUnboundSubjectCannotLogIn(t *testing.T) {
 		t.Fatalf("write token: %v", err)
 	}
 	impostor, err := New(Config{
-		Address: address, AllowInsecureHTTP: true,
+		Address: address, AllowInsecureHTTP: true, CACertPEM: probeAnchor(t),
 		AuthMountPath: localbao.DefaultJWTMount, Role: localbao.DefaultReleaseRole, ServiceAccountTokenPath: path,
 	})
 	if err != nil {

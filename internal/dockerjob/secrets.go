@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
 	"strings"
 
 	"github.com/oberthci/oberth/pkg/periapsis"
@@ -31,6 +32,11 @@ const (
 	IdentityMountPath = "/var/run/secrets/kubernetes.io/serviceaccount" // #nosec G101 -- a mount path, not a credential.
 	// IdentityTokenName is the file inside it.
 	IdentityTokenName = "token" // #nosec G101 -- a file name, not a credential.
+	// IdentityCAName is the store's trust anchor, delivered beside the token
+	// on the same read-only volume. The path travels as VAULT_CACERT, never
+	// the bytes, which is what the Argo path does with the cluster's own
+	// anchor and for the same reason: the server states what to trust.
+	IdentityCAName = "vault-ca.crt"
 	// SecretsMountPath is the tmpfs a credentialed step materialises secrets
 	// into. It is internal/argojob.SecretsMountPath, and it has to be, because
 	// the pipeline's own `secretstore exec --dir=` names it.
@@ -70,7 +76,21 @@ type SecretStoreConfig struct {
 	// binds its own subject, which is what keeps the tiers apart.
 	CIRole      string
 	ReleaseRole string
-	Minter      IdentityMinter
+	// AuthMount is the OpenBao auth mount a step logs in at. Empty selects
+	// DefaultJWTAuthMount.
+	AuthMount string
+	Minter    IdentityMinter
+	// ContainerAddress is the store as a step container reaches it, which is
+	// not the loopback address the server uses: inside a container 127.0.0.1
+	// is the container. Empty falls back to Address.
+	ContainerAddress string
+	// HostGatewayName, when set, is mapped to the daemon's host gateway on
+	// every credentialed step, so ContainerAddress resolves.
+	HostGatewayName string
+	// CACertPEM is the store's trust anchor. The local store's certificate is
+	// this machine's own, so there is nothing in the system pool that would
+	// verify it.
+	CACertPEM []byte
 }
 
 // Enabled reports whether a credentialed run can be served.
@@ -102,11 +122,27 @@ func (config SecretStoreConfig) credentialEnvironment(trigger periapsis.Trigger)
 	if mount == "" {
 		mount = "oberth"
 	}
-	return []string{
-		"VAULT_ADDR=" + strings.TrimSpace(config.Address),
+	address := strings.TrimSpace(config.ContainerAddress)
+	if address == "" {
+		address = strings.TrimSpace(config.Address)
+	}
+	authMount := strings.TrimSpace(config.AuthMount)
+	if authMount == "" {
+		authMount = DefaultJWTAuthMount
+	}
+	environment := []string{
+		"VAULT_ADDR=" + address,
 		"OBERTH_VAULT_ROLE=" + config.roleFor(trigger),
+		// The mount, because off-cluster the identity is a signed subject and
+		// the method that validates it is jwt, not kubernetes. The client
+		// takes the identical login payload at either mount.
+		"OBERTH_VAULT_AUTH_MOUNT=" + authMount,
 		"OBERTH_SECRETSTORE_KV_MOUNT=" + mount,
 	}
+	if len(config.CACertPEM) != 0 {
+		environment = append(environment, "VAULT_CACERT="+IdentityMountPath+"/"+IdentityCAName)
+	}
+	return environment
 }
 
 // mintIdentity produces the run's token, refusing rather than running a
@@ -124,4 +160,29 @@ func (config SecretStoreConfig) mintIdentity(ctx context.Context, request Reques
 		return "", fmt.Errorf("dockerjob: mint the run identity: %w", err)
 	}
 	return token, nil
+}
+
+// ContainerStoreAddress rewrites a store address for use inside a step
+// container, returning the rewritten address and the host name that must be
+// mapped to the daemon's gateway for it to resolve.
+//
+// A loopback address is the case that matters: the server reaches the store at
+// 127.0.0.1 because that is where it is published, and inside a container that
+// same address names the container. Anything else is left alone, because an
+// address that already names a reachable host is one the operator chose.
+func ContainerStoreAddress(address, gatewayName string) (string, string) {
+	parsed, err := url.Parse(strings.TrimSpace(address))
+	if err != nil || parsed.Host == "" {
+		return address, ""
+	}
+	host := parsed.Hostname()
+	if host != "127.0.0.1" && host != "localhost" && host != "::1" && host != "[::1]" {
+		return address, ""
+	}
+	port := parsed.Port()
+	parsed.Host = gatewayName
+	if port != "" {
+		parsed.Host = gatewayName + ":" + port
+	}
+	return parsed.String(), gatewayName
 }

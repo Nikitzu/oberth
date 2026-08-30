@@ -110,3 +110,44 @@ func TestBootstrapRefusesWithNeitherClientNorStore(t *testing.T) {
 		t.Fatal("a bootstrap with no persistence at all validated")
 	}
 }
+
+// An empty known_hosts is the state a clusterless install leaves behind: the
+// server expects the path to exist, so the file is created empty. The
+// bootstrap must treat it as "nothing pinned yet" rather than as a corrupt pin
+// file it refuses to replace, or the first registration can never happen.
+func TestEmptyKnownHostsReadsAsAbsentRatherThanCorrupt(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "known_hosts")
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	_, err := readKnownHostsFile(path, "github.com:22")
+	if !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("an empty known_hosts did not read as absent: %v", err)
+	}
+	body, keys, selectErr := selectKnownHosts(knownHostsMaterial{}, err, nil, "github.com:22")
+	if selectErr != nil {
+		t.Fatalf("selectKnownHosts refused an empty file: %v", selectErr)
+	}
+	if len(body) != 0 || len(keys) != 0 {
+		t.Fatalf("an empty file produced material: %q %v", body, keys)
+	}
+}
+
+// A file that exists and does not parse is still refused: that is a pin file
+// somebody wrote, and replacing it silently would drop the pins.
+func TestCorruptKnownHostsIsStillRefused(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "known_hosts")
+	if err := os.WriteFile(path, []byte("this is not a known_hosts line\n"), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	_, err := readKnownHostsFile(path, "github.com:22")
+	if err == nil {
+		t.Fatal("a corrupt known_hosts was accepted")
+	}
+	if errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("a corrupt known_hosts was reported as absent: %v", err)
+	}
+	if _, _, selectErr := selectKnownHosts(knownHostsMaterial{}, err, nil, "github.com:22"); selectErr == nil {
+		t.Fatal("selectKnownHosts agreed to replace a corrupt pin file")
+	}
+}

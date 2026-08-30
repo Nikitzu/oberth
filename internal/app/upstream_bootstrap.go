@@ -688,6 +688,16 @@ func (identity privateIdentity) publicIdentity(generated bool) UpstreamSSHIdenti
 }
 
 func readKnownHostsFile(path, address string) (knownHostsMaterial, error) {
+	// An empty file is the same state as no file, and has to be reported as
+	// one. selectKnownHosts refuses to replace a known_hosts it cannot parse,
+	// which is right for a corrupt pin file and wrong for an empty one: an
+	// empty file pins nothing, so there is nothing to protect and the refusal
+	// only blocks the first registration. A clusterless install creates the
+	// file because the server expects the path to exist, so this state is
+	// ordinary there rather than exceptional.
+	if info, err := os.Stat(path); err == nil && info.Mode().IsRegular() && info.Size() == 0 {
+		return knownHostsMaterial{}, fmt.Errorf("upstream known_hosts %s is empty: %w", path, os.ErrNotExist)
+	}
 	if err := validateOperatorFile(path, false); err != nil {
 		return knownHostsMaterial{}, err
 	}

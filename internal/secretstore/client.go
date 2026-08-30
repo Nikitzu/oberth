@@ -516,3 +516,9 @@ func (client *Client) serviceAccountToken() ([]byte, error) {
 	clear(raw) // Zero the file-read buffer; trimmed shares its backing array.
 	return token, nil
 }
+
+// AuthMountPath is the auth mount this client logs in at. It is exposed so a
+// caller that is told which mount to use by its environment can assert that
+// the instruction arrived, which is the difference between a jwt login and a
+// kubernetes one on a host that has no kubelet.
+func (client *Client) AuthMountPath() string { return client.mount }

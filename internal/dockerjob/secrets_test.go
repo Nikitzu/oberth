@@ -134,3 +134,78 @@ func TestCreateRefusesWhenTheIdentityCannotBeMinted(t *testing.T) {
 		t.Fatalf("expected the minting failure to refuse the submission, got %v", err)
 	}
 }
+
+// The address the server uses is not the address a step container can use: a
+// loopback address names the container from inside one.
+func TestContainerStoreAddressRewritesLoopback(t *testing.T) {
+	for _, probe := range []struct{ in, wantAddress, wantGateway string }{
+		{"https://127.0.0.1:8200", "https://host.docker.internal:8200", "host.docker.internal"},
+		{"https://localhost:8200", "https://host.docker.internal:8200", "host.docker.internal"},
+		{"https://openbao.internal:8200", "https://openbao.internal:8200", ""},
+	} {
+		address, gateway := ContainerStoreAddress(probe.in, "host.docker.internal")
+		if address != probe.wantAddress || gateway != probe.wantGateway {
+			t.Fatalf("%s: got %q %q, want %q %q", probe.in, address, gateway, probe.wantAddress, probe.wantGateway)
+		}
+	}
+}
+
+// The trust anchor travels as a path, never as bytes in the environment, and
+// only a credentialed step gets the route to the store at all.
+func TestCredentialedStepGetsTheAnchorPathAndTheGatewayRoute(t *testing.T) {
+	controller, err := NewController(Config{SecretStore: SecretStoreConfig{
+		Address: "https://127.0.0.1:8200", ContainerAddress: "https://host.docker.internal:8200",
+		HostGatewayName: "host.docker.internal", CACertPEM: []byte("-----BEGIN CERTIFICATE-----\n"),
+		CIRole: DefaultCIRole, Minter: &recordingMinter{token: "signed"},
+	}})
+	if err != nil {
+		t.Fatalf("NewController: %v", err)
+	}
+	request := Request{Name: "job", RunID: "run", Repo: "widget", Org: "acme", Trigger: periapsis.TriggerCI, Credentialed: true}
+	values := map[string]string{}
+	for _, variable := range controller.stepEnvironment(request, Step{}) {
+		name, value, _ := strings.Cut(variable, "=")
+		values[name] = value
+	}
+	if values["VAULT_ADDR"] != "https://host.docker.internal:8200" {
+		t.Fatalf("VAULT_ADDR: %q", values["VAULT_ADDR"])
+	}
+	if values["VAULT_CACERT"] != IdentityMountPath+"/"+IdentityCAName {
+		t.Fatalf("VAULT_CACERT: %q", values["VAULT_CACERT"])
+	}
+	if strings.Contains(strings.Join(controller.stepEnvironment(request, Step{}), " "), "BEGIN CERTIFICATE") {
+		t.Fatal("the anchor bytes were put in the environment instead of the path")
+	}
+	joined := strings.Join(controller.createArguments(request, Step{Image: "golang"}, 0), " ")
+	if !strings.Contains(joined, "--add-host host.docker.internal:host-gateway") {
+		t.Fatalf("no gateway route on a credentialed step: %s", joined)
+	}
+	plain := Request{Name: "job", RunID: "run", Repo: "widget", Org: "acme", Trigger: periapsis.TriggerCI}
+	if strings.Contains(strings.Join(controller.createArguments(plain, Step{Image: "golang"}, 0), " "), "--add-host") {
+		t.Fatal("an uncredentialed step was given a route to the store")
+	}
+}
+
+// A release run gets the tag and the commit it points at, because the Argo
+// engine injects both and a pipeline that reads them must not behave
+// differently under the two engines.
+func TestReleaseStepGetsTheTagAndCommit(t *testing.T) {
+	controller := newTestController(t)
+	request := Request{Name: "job", RunID: "run", Repo: "widget", Org: "acme",
+		Ref: "refs/tags/v1.2.3", SHA: "abc123", Trigger: periapsis.TriggerRelease}
+	values := map[string]string{}
+	for _, variable := range controller.stepEnvironment(request, Step{}) {
+		name, value, _ := strings.Cut(variable, "=")
+		values[name] = value
+	}
+	if values["OBERTH_RELEASE_TAG"] != "refs/tags/v1.2.3" || values["OBERTH_RELEASE_SHA"] != "abc123" {
+		t.Fatalf("release variables: %v", values)
+	}
+	ci := request
+	ci.Trigger = periapsis.TriggerCI
+	for _, variable := range controller.stepEnvironment(ci, Step{}) {
+		if strings.HasPrefix(variable, "OBERTH_RELEASE_") {
+			t.Fatalf("a CI run was told about a release tag: %q", variable)
+		}
+	}
+}

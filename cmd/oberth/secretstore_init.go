@@ -6,11 +6,14 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/oberthci/oberth/internal/localbao"
+	"github.com/oberthci/oberth/internal/localinstall"
 )
 
 // DefaultSigningKeyPath is where the run-identity signing key lives when the
@@ -46,6 +49,7 @@ func runSecretStoreInit(ctx context.Context, arguments []string, output io.Write
 	flags.StringVar(&options.Address, "address", localbao.DefaultAddress, "API address to configure the store through")
 	flags.StringVar(&options.KVMount, "kv-mount", localbao.DefaultKVMount, "KV v2 mount to create")
 	signingKey := flags.String("signing-key", "", "run-identity signing key path (default ~/.oberth/jwt-signing.pem)")
+	tlsDir := flags.String("tls-dir", "", "directory holding the store's own server certificate (default beside the signing key)")
 	if err := flags.Parse(arguments); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			flags.SetOutput(output)
@@ -68,6 +72,9 @@ func runSecretStoreInit(ctx context.Context, arguments []string, output io.Write
 		}
 		options.SigningKeyPath = path
 	}
+	if err := ensureStoreTLS(&options, *tlsDir); err != nil {
+		return err
+	}
 	options.Output = output
 	if err := localbao.Init(ctx, options); err != nil {
 		return err
@@ -75,8 +82,29 @@ func runSecretStoreInit(ctx context.Context, arguments []string, output io.Write
 	_, _ = fmt.Fprintf(output, "\nStart the server with:\n"+
 		"  oberth serve --engine=docker ... \\\n"+
 		"    --secretstore-address=%s \\\n"+
-		"    --secretstore-jwt-signing-key=%s\n", options.Address, options.SigningKeyPath)
+		"    --secretstore-ca-cert=%s \\\n"+
+		"    --secretstore-jwt-signing-key=%s\n", options.Address, options.TLSCertPath, options.SigningKeyPath)
 	return nil
+}
+
+// ensureStoreTLS issues the store's own server certificate if it has none.
+//
+// The certificate names every spelling of the store a consumer uses: the
+// loopback the server talks to, and the daemon's host gateway a step container
+// talks to. A certificate that names one and not the other produces a
+// handshake failure that reads as an unreachable store.
+func ensureStoreTLS(options *localbao.Options, directory string) error {
+	trimmed := strings.TrimSpace(directory)
+	if trimmed == "" {
+		trimmed = filepath.Join(filepath.Dir(options.SigningKeyPath), "openbao-tls")
+	}
+	options.TLSCertPath = filepath.Join(trimmed, "tls.crt")
+	options.TLSKeyPath = filepath.Join(trimmed, "tls.key")
+	_, err := localinstall.EnsureSelfSignedCertificate(options.TLSCertPath, options.TLSKeyPath,
+		"oberth-openbao",
+		[]string{"localhost", localbao.ContainerHostName, localbao.DefaultContainer},
+		[]net.IP{net.ParseIP("127.0.0.1"), net.ParseIP("::1")}, time.Now())
+	return err
 }
 
 // runSecretStoreUnseal is the reboot path. A sealed store presents to a
@@ -91,6 +119,7 @@ func runSecretStoreUnseal(ctx context.Context, arguments []string, output io.Wri
 	flags.StringVar(&options.Docker, "docker-binary", "docker", "Docker CLI to drive")
 	flags.StringVar(&options.Container, "container", localbao.DefaultContainer, "container name")
 	flags.StringVar(&options.Address, "address", localbao.DefaultAddress, "API address")
+	signingKey := flags.String("signing-key", "", "run-identity signing key path (default ~/.oberth/jwt-signing.pem), used to locate the store certificate")
 	if err := flags.Parse(arguments); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			flags.SetOutput(output)
@@ -101,6 +130,17 @@ func runSecretStoreUnseal(ctx context.Context, arguments []string, output io.Wri
 	}
 	if strings.TrimSpace(*engine) != engineDocker {
 		return fmt.Errorf("%w: secretstore unseal requires --engine=docker", errUsage)
+	}
+	options.SigningKeyPath = strings.TrimSpace(*signingKey)
+	if options.SigningKeyPath == "" {
+		path, err := defaultSigningKeyPath()
+		if err != nil {
+			return err
+		}
+		options.SigningKeyPath = path
+	}
+	if err := ensureStoreTLS(&options, ""); err != nil {
+		return err
 	}
 	options.Output = output
 	return localbao.Unseal(ctx, options)
@@ -115,6 +155,7 @@ func runSecretStorePut(ctx context.Context, arguments []string, output io.Writer
 	options := localbao.Options{}
 	flags.StringVar(&options.Address, "address", localbao.DefaultAddress, "API address")
 	flags.StringVar(&options.KVMount, "kv-mount", localbao.DefaultKVMount, "KV v2 mount")
+	signingKey := flags.String("signing-key", "", "run-identity signing key path (default ~/.oberth/jwt-signing.pem), used to locate the store certificate")
 	if err := flags.Parse(arguments); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			flags.SetOutput(output)
@@ -125,6 +166,20 @@ func runSecretStorePut(ctx context.Context, arguments []string, output io.Writer
 	}
 	if strings.TrimSpace(*engine) != engineDocker {
 		return fmt.Errorf("%w: secretstore put requires --engine=docker", errUsage)
+	}
+	options.SigningKeyPath = strings.TrimSpace(*signingKey)
+	if options.SigningKeyPath == "" {
+		path, err := defaultSigningKeyPath()
+		if err != nil {
+			return err
+		}
+		options.SigningKeyPath = path
+	}
+	// The store's certificate is this machine's own, so the anchor has to be
+	// named explicitly: without it the platform verifier is consulted and it
+	// has never seen this signer.
+	if err := ensureStoreTLS(&options, ""); err != nil {
+		return err
 	}
 	if flags.NArg() < 2 {
 		return fmt.Errorf("%w: secretstore put --engine=docker <path> <field>=<value> [<field>=<value>...]", errUsage)
