@@ -1,7 +1,9 @@
 package main
 
 import (
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -55,5 +57,29 @@ func TestChartOmitsKubedockByDefault(t *testing.T) {
 	}
 	if strings.Contains(string(rendered), "kubedock") {
 		t.Error("kubedock is deployed without being asked for")
+	}
+}
+
+// The upgrade path, not the fresh-install path. `helm upgrade --reuse-values`
+// reuses the previous release's values and never merges the new chart's
+// defaults, so a release created before the kubedock key existed carries no
+// .Values.kubedock at all, and the template's bare .enabled lookup failed the
+// whole render with "nil pointer evaluating interface {}.enabled". Nulling the
+// key is how that values set is expressed to helm template, which otherwise
+// merges values.yaml back in and can never see the case.
+func TestChartRendersWhenTheValuesPredateKubedock(t *testing.T) {
+	values := filepath.Join(t.TempDir(), "pre-kubedock.yaml")
+	if err := os.WriteFile(values, []byte("kubedock: null\n"), 0o600); err != nil {
+		t.Fatalf("write values: %v", err)
+	}
+	rendered, err := exec.Command("helm", "template", "oberth", "../../charts/oberth",
+		"--set", "image.ref=example.invalid/oberth@"+kubedockTestDigest,
+		"-f", values,
+	).CombinedOutput()
+	if err != nil {
+		t.Fatalf("render chart: %v\n%s", err, rendered)
+	}
+	if strings.Contains(string(rendered), "kubedock") {
+		t.Error("kubedock is deployed from a values set that never mentioned it")
 	}
 }

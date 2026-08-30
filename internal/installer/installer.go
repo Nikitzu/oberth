@@ -24,6 +24,7 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -1535,14 +1536,16 @@ func OberthHelmArgs(cfg Config, openbao OpenBaoResult, rekor RekorResult) []stri
 	if image := strings.TrimSpace(cfg.ImageRef); image != "" {
 		args = append(args, "--set-string", "image.ref="+image)
 	}
+	// Pinned on every install and upgrade, both values, because
+	// --reuse-values never consults a newer chart's values.yaml: a release
+	// created before the kubedock key existed carries no .Values.kubedock,
+	// and the template's lookup then fails the whole upgrade.
+	args = append(args, "--set", "kubedock.enabled="+strconv.FormatBool(cfg.Testcontainers))
 	if cfg.Testcontainers {
 		// Both, together. The shim is the capability and the egress rule is
 		// what makes it reachable; a deployment with one of them is a
 		// deployment where Testcontainers hangs on its wait strategy.
-		args = append(args,
-			"--set", "kubedock.enabled=true",
-			"--set", "networkPolicy.inNamespaceAllPorts=true",
-		)
+		args = append(args, "--set", "networkPolicy.inNamespaceAllPorts=true")
 	}
 	// Indexed --set-string rather than --set name={a,b}: brace list syntax
 	// splits on commas inside the value, and a name is not worth losing to
