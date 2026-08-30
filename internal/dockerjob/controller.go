@@ -332,6 +332,17 @@ func (controller *Controller) runStep(ctx context.Context, current *job, step St
 }
 
 func (controller *Controller) createContainer(ctx context.Context, request Request, step Step, attempt int) (string, error) {
+	container, err := controller.client.run(ctx, controller.createArguments(request, step, attempt)...)
+	if err != nil {
+		return "", fmt.Errorf("dockerjob: create step container for %s/%s: %w", step.Burn, step.Step, err)
+	}
+	return container, nil
+}
+
+// createArguments is the full docker argv for one step attempt. It is separate
+// from the call so the argv itself can be asserted without a daemon: what this
+// engine hands the CLI is a security boundary, not an implementation detail.
+func (controller *Controller) createArguments(request Request, step Step, attempt int) []string {
 	arguments := []string{
 		"create",
 		"--name", fmt.Sprintf("%s-%d-%d", request.Name, step.Ordinal, attempt),
@@ -350,14 +361,25 @@ func (controller *Controller) createContainer(ctx context.Context, request Reque
 	if step.WorkingDir != "" {
 		arguments = append(arguments, "--workdir", step.WorkingDir)
 	}
+	// The document's declared ceilings, already capped by admission. Without
+	// these a step that asked for two cores and four gigabytes could take the
+	// whole machine, which on a cluster the kubelet would not have allowed.
+	if step.CPULimit > 0 {
+		arguments = append(arguments, "--cpus", strconv.FormatFloat(step.CPULimit, 'f', -1, 64))
+	}
+	if step.MemoryLimitBytes > 0 {
+		arguments = append(arguments, "--memory", strconv.FormatInt(step.MemoryLimitBytes, 10))
+	}
+	// Everything after this is the image and its argv. The terminator stops
+	// the CLI reading a leading-dash positional as one of its own flags.
+	// Admission already refuses an image that is not a digest-pinned name off
+	// the allowlist, so this is defence in depth on the argv boundary rather
+	// than the only thing standing there.
+	arguments = append(arguments, "--")
 	arguments = append(arguments, step.Image)
 	arguments = append(arguments, step.Command...)
 	arguments = append(arguments, step.Args...)
-	container, err := controller.client.run(ctx, arguments...)
-	if err != nil {
-		return "", fmt.Errorf("dockerjob: create step container for %s/%s: %w", step.Burn, step.Step, err)
-	}
-	return container, nil
+	return arguments
 }
 
 // stepEnvironment is the server-owned environment every step receives, plus
@@ -423,13 +445,22 @@ func (controller *Controller) runContainer(ctx context.Context, container string
 	if ctx.Err() != nil {
 		return -1, ctx.Err()
 	}
-	raw, err := controller.client.run(ctx, "inspect", "--format", "{{.State.ExitCode}}", container)
+	raw, err := controller.client.run(ctx, "inspect", "--format", "{{.State.ExitCode}}\t{{.State.OOMKilled}}", container)
 	if err != nil {
 		return -1, err
 	}
-	exitCode, err := strconv.Atoi(strings.TrimSpace(raw))
+	fields := strings.Split(strings.TrimSpace(raw), "\t")
+	exitCode, err := strconv.Atoi(strings.TrimSpace(fields[0]))
 	if err != nil {
 		return -1, fmt.Errorf("dockerjob: read exit code of %s: %w", container, err)
+	}
+	// An OOM kill presents as a bare exit 137, which reads as "killed by
+	// something" and sends the author looking in the wrong place. Say what
+	// happened, in the step's own log, while the container still exists.
+	if len(fields) > 1 && strings.TrimSpace(fields[1]) == "true" {
+		if writer, ok := logs.(*stepLogWriter); ok {
+			writer.note("oberth: the container was killed for exceeding its memory limit (OOM)")
+		}
 	}
 	return exitCode, nil
 }

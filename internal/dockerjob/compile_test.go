@@ -560,3 +560,52 @@ func TestCompileRefusesSilentlyIgnoredConstructs(t *testing.T) {
 		})
 	}
 }
+
+func TestCompileCarriesDeclaredResourceLimits(t *testing.T) {
+	plan := mustCompile(t, header(`  templates:
+    - name: ci
+      dag:
+        tasks:
+          - name: unit
+            template: unit
+    - name: unit
+      container:
+        image: "golang:1.26`+digest+`"
+        command: ["true"]
+        resources:
+          requests:
+            cpu: "1"
+          limits:
+            cpu: "2"
+            memory: "4Gi"
+`))
+	if len(plan.Steps) != 1 {
+		t.Fatalf("expected one step, got %d", len(plan.Steps))
+	}
+	if plan.Steps[0].CPULimit != 2 {
+		t.Fatalf("cpu limit: got %v", plan.Steps[0].CPULimit)
+	}
+	if plan.Steps[0].MemoryLimitBytes != 4<<30 {
+		t.Fatalf("memory limit: got %d", plan.Steps[0].MemoryLimitBytes)
+	}
+}
+
+// A cluster evicts a Pod that exceeds its ephemeral-storage limit. Docker has
+// no equivalent bound on a volume, so the limit is refused rather than
+// accepted and quietly not enforced.
+func TestCompileRefusesEphemeralStorageLimit(t *testing.T) {
+	refusal(t, header(`  templates:
+    - name: ci
+      dag:
+        tasks:
+          - name: unit
+            template: unit
+    - name: unit
+      container:
+        image: "golang:1.26`+digest+`"
+        command: ["true"]
+        resources:
+          limits:
+            ephemeral-storage: "1Gi"
+`), "resources.limits.ephemeral-storage")
+}

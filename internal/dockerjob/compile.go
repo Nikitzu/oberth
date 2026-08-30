@@ -14,7 +14,8 @@
 // a per-burn dag or steps template, and `container` leaves carrying image,
 // command, args, env, and workingDir. Dependencies order execution.
 // activeDeadlineSeconds bounds the run. retryStrategy.limit re-runs a failed
-// step. The per-run shared volume replaces volumeClaimTemplates.
+// step. resources.limits.cpu and resources.limits.memory bound the container.
+// The per-run shared volume replaces volumeClaimTemplates.
 //
 // Refused by name: synchronization, withItems, withParam, withSequence,
 // onExit and lifecycle hooks at every level, continueOn, `when` guards,
@@ -33,6 +34,7 @@ import (
 	"strings"
 
 	wfv1 "github.com/argoproj/argo-workflows/v4/pkg/apis/workflow/v1alpha1"
+	corev1 "k8s.io/api/core/v1"
 
 	"github.com/oberthci/oberth/pkg/argoworkflow"
 )
@@ -77,6 +79,12 @@ type Step struct {
 	// RetryLimit is the number of ADDITIONAL attempts after the first, taken
 	// from retryStrategy.limit. Zero means one attempt.
 	RetryLimit int
+	// CPULimit is resources.limits.cpu expressed in whole cores, ready for
+	// docker --cpus. Zero means the document declared none.
+	CPULimit float64
+	// MemoryLimitBytes is resources.limits.memory in bytes, ready for docker
+	// --memory. Zero means the document declared none.
+	MemoryLimitBytes int64
 }
 
 // Plan is a whole compiled pipeline: a flat, dependency-ordered chain of
@@ -240,6 +248,9 @@ func (c *compiler) appendLeaf(enclosing string, called invocation, target *wfv1.
 	if len(container.EnvFrom) != 0 {
 		return unsupported("envFrom", fmt.Sprintf("step %s/%s", burn, step))
 	}
+	if err := applyResourceLimits(&compiled, container.Resources, burn, step); err != nil {
+		return err
+	}
 	if target.RetryStrategy != nil {
 		limit, err := retryLimit(target.RetryStrategy)
 		if err != nil {
@@ -263,6 +274,41 @@ func retryLimit(strategy *wfv1.RetryStrategy) (int, error) {
 		return 0, fmt.Errorf("retryStrategy.limit %d is outside 0..%d", value, argoworkflow.MaxRetryLimit)
 	}
 	return value, nil
+}
+
+// applyResourceLimits carries the document's declared limits onto the
+// container, so a step is bounded here by the same numbers the kubelet would
+// enforce on a cluster. Admission has already capped them; this only has to
+// translate them.
+//
+// Requests are deliberately dropped. On a cluster a request is a scheduling
+// input, and this engine has one host and Oberth's own concurrency limiter, so
+// a request describes nothing it could act on. A limit, by contrast, is a
+// ceiling the step can actually hit, and ignoring it meant a step declaring
+// 2 CPUs and 4 GiB could take the whole laptop.
+func applyResourceLimits(compiled *Step, resources corev1.ResourceRequirements, burn, step string) error {
+	if quantity, declared := resources.Limits[corev1.ResourceEphemeralStorage]; declared && !quantity.IsZero() {
+		// A cluster evicts a Pod that exceeds this. Docker has no equivalent
+		// bound on a volume, so honouring it is not possible and ignoring it
+		// would be the silent divergence this compiler exists to prevent.
+		return unsupported("resources.limits.ephemeral-storage",
+			fmt.Sprintf("step %s/%s; the docker engine cannot bound the run volume", burn, step))
+	}
+	if quantity, declared := resources.Limits[corev1.ResourceCPU]; declared && !quantity.IsZero() {
+		cores := quantity.AsApproximateFloat64()
+		if cores <= 0 {
+			return fmt.Errorf("dockerjob: step %s/%s declares an unusable resources.limits.cpu %q", burn, step, quantity.String())
+		}
+		compiled.CPULimit = cores
+	}
+	if quantity, declared := resources.Limits[corev1.ResourceMemory]; declared && !quantity.IsZero() {
+		bytes, ok := quantity.AsInt64()
+		if !ok || bytes <= 0 {
+			return fmt.Errorf("dockerjob: step %s/%s declares an unusable resources.limits.memory %q", burn, step, quantity.String())
+		}
+		compiled.MemoryLimitBytes = bytes
+	}
+	return nil
 }
 
 // refuseInterpolation refuses any {{...}} placeholder. This engine substitutes
