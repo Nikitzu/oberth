@@ -34,6 +34,11 @@ const (
 	// reconstruction after a restart has to be able to tell a run that
 	// finished from a run that was cut short.
 	labelSteps = "oberth.ci/steps"
+	// labelCache marks the per-repository cross-run cache volumes, which
+	// outlive every run and are therefore the one thing cleanup must not
+	// remove. The value is "<trigger>/<repo>" so an operator can see whose
+	// cache a volume is without decoding its name.
+	labelCache = "oberth.ci/cache"
 )
 
 // ErrNotTerminal mirrors argojob.ErrNotTerminal: the named job is absent or
@@ -174,7 +179,28 @@ func (controller *Controller) PlanFor(name string) (Plan, bool) {
 	return existing.plan, true
 }
 
-func (controller *Controller) volumeName(name string) string  { return name + "-work" }
+func (controller *Controller) volumeName(name string) string { return name + "-work" }
+
+// cacheVolumeName is the per-repository, per-tier cross-run cache volume.
+//
+// A named volume rather than a host path, unlike the Argo engine's node
+// hostPath, for two reasons. It is root-owned inside the daemon, which is what
+// a step running as root with CAP_DAC_OVERRIDE dropped needs; and on Docker
+// Desktop a host bind mount crosses the file-sharing layer, which is precisely
+// the cost a build cache exists to avoid.
+//
+// The isolation semantics are the Argo engine's: one cache per repository per
+// tier, shared between concurrent runs of that repository, reachable by no
+// other repository and by no other tier. The name is derived through the same
+// periapsis.RepoCacheSegment both engines use, so neither can decide a
+// repository owns a cache the other would give to someone else.
+func (controller *Controller) cacheVolumeName(trigger periapsis.Trigger, repo string) string {
+	tier := strings.TrimSpace(string(trigger))
+	if tier == "" {
+		tier = "ci"
+	}
+	return "oberth-cache-" + tier + "-" + periapsis.RepoCacheSegment(repo)
+}
 func (controller *Controller) networkName(name string) string { return name + "-net" }
 
 // Wait runs the whole pipeline and streams its logs and progress markers into
@@ -280,6 +306,15 @@ func (controller *Controller) provision(ctx context.Context, request Request) er
 	if _, err := controller.client.run(ctx, append(networkArgs, controller.networkName(request.Name))...); err != nil {
 		return fmt.Errorf("dockerjob: create run network: %w", err)
 	}
+	// The cache volume outlives the run. Creating it is idempotent, so the
+	// first run for a repository provisions it and every later run finds it
+	// already warm.
+	cache := controller.cacheVolumeName(request.Trigger, request.Repo)
+	cacheLabel := string(request.Trigger) + "/" + request.Repo
+	if _, err := controller.client.run(ctx, "volume", "create",
+		"--label", labelCache+"="+cacheLabel, cache); err != nil {
+		return fmt.Errorf("dockerjob: create the repository cache volume: %w", err)
+	}
 	return nil
 }
 
@@ -362,6 +397,10 @@ func (controller *Controller) createArguments(request Request, step Step, attemp
 		"--name", fmt.Sprintf("%s-%d-%d", request.Name, step.Ordinal, attempt),
 		"--network", controller.networkName(request.Name),
 		"--volume", controller.volumeName(request.Name) + ":" + WorkMountPath,
+		// Mounted over the run volume's own cache directory. The longer path
+		// wins, so /work/cache is the repository's persistent cache and
+		// everything else under /work stays per-run.
+		"--volume", controller.cacheVolumeName(request.Trigger, request.Repo) + ":" + CacheMountPath,
 		"--label", labelJob + "=" + request.Name,
 		"--label", labelRun + "=" + request.RunID,
 		"--label", labelBurn + "=" + step.Burn,

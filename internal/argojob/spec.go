@@ -12,9 +12,7 @@
 package argojob
 
 import (
-	"crypto/sha256"
 	"crypto/x509"
-	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
@@ -1126,7 +1124,7 @@ const (
 
 	// maxRepoCacheNameLength bounds the readable half of a cache directory name.
 	// The digest that follows it is what actually keeps two repositories apart.
-	maxRepoCacheNameLength = 48
+	maxRepoCacheNameLength = periapsis.MaxRepoCacheNameLength
 
 	// WorkspaceVolumeName is the conventional volumeClaimTemplate name an
 	// Argo-authored pipeline declares for its cross-step workspace. When a
@@ -1177,37 +1175,11 @@ func (config Config) cacheRootFor(trigger periapsis.Trigger) string {
 	}
 }
 
-// repoCacheSegment derives the single directory name a repository's cache lives
-// under, inside its tier's root.
-//
-// The repository name arrives from a push, so it is never used verbatim in a
-// node path. Only lowercase alphanumerics, '-' and '_' survive; '.' is
-// deliberately not in that set, which makes "." and ".." structurally
-// unreachable rather than filtered for. The trailing digest is taken over the
-// original name, so two repositories that sanitise or truncate to the same
-// readable prefix still land in different directories.
-func repoCacheSegment(repo string) string {
-	digest := sha256.Sum256([]byte(repo))
-	var safe strings.Builder
-	for _, character := range strings.ToLower(repo) {
-		switch {
-		case character >= 'a' && character <= 'z',
-			character >= '0' && character <= '9',
-			character == '-', character == '_':
-			safe.WriteRune(character)
-		default:
-			safe.WriteByte('-')
-		}
-	}
-	readable := strings.Trim(safe.String(), "-_")
-	if len(readable) > maxRepoCacheNameLength {
-		readable = strings.Trim(readable[:maxRepoCacheNameLength], "-_")
-	}
-	if readable == "" {
-		readable = "repo"
-	}
-	return readable + "-" + hex.EncodeToString(digest[:])[:12]
-}
+// repoCacheSegment is pkg/periapsis.RepoCacheSegment. The implementation moved
+// there when the Docker engine needed the same answer for its per-repository
+// cache volume name, so that two engines cannot disagree about which cache
+// belongs to which repository.
+func repoCacheSegment(repo string) string { return periapsis.RepoCacheSegment(repo) }
 
 // cacheVolumeAndMount builds this run's cache volume, or reports that the tier
 // has no cache configured.

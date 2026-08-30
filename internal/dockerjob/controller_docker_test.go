@@ -415,3 +415,79 @@ func TestDockerSeedsARootOwnedWorkTree(t *testing.T) {
 		}
 	}
 }
+
+// The cache survives the run that wrote it, and is scoped to one repository
+// and one tier. Before this /work/cache was a directory inside the per-run
+// volume, so every run was a cold run.
+func TestDockerCacheIsSharedAcrossRunsOfOneRepository(t *testing.T) {
+	controller := requireDocker(t)
+	document := pipeline(t, `  templates:
+    - name: ci
+      dag:
+        tasks:
+          - name: cache
+            template: cache
+    - name: cache
+      container:
+        image: "`+goImage+`"
+        command: ["sh", "-c"]
+        args: ["if [ -f $OBERTH_CACHE_DIR/warm ]; then echo CACHE_WARM; else echo CACHE_COLD; fi; echo warm > $OBERTH_CACHE_DIR/warm"]
+`)
+	run := func(name, repo string) string {
+		sourceDir := t.TempDir()
+		request := Request{
+			RunID: name + "-run", Name: name, Repo: repo, Ref: "refs/heads/main",
+			SHA: strings.Repeat("a", 40), Trigger: periapsis.TriggerCI, Source: document, SourceDir: sourceDir,
+		}
+		if _, err := controller.Create(context.Background(), request); err != nil {
+			t.Fatalf("Create %s: %v", name, err)
+		}
+		var log bytes.Buffer
+		completion, err := controller.Wait(context.Background(), name, request.RunID, &log)
+		if err != nil {
+			t.Fatalf("Wait %s: %v", name, err)
+		}
+		if !completion.Succeeded {
+			t.Fatalf("%s went red: %s", name, log.String())
+		}
+		return log.String()
+	}
+	repo := "acme/cache-probe"
+	defer func() {
+		_, _ = controller.client.run(context.Background(), "volume", "rm", "--force",
+			controller.cacheVolumeName(periapsis.TriggerCI, repo))
+		_, _ = controller.client.run(context.Background(), "volume", "rm", "--force",
+			controller.cacheVolumeName(periapsis.TriggerCI, "acme/other-repo"))
+	}()
+
+	if first := run("oberth-it-cache-1", repo); !strings.Contains(first, "CACHE_COLD") {
+		t.Fatalf("the first run for a repository was not cold: %s", first)
+	}
+	if second := run("oberth-it-cache-2", repo); !strings.Contains(second, "CACHE_WARM") {
+		t.Fatalf("the second run for the same repository was not warm: %s", second)
+	}
+	// A different repository must not see it.
+	if other := run("oberth-it-cache-3", "acme/other-repo"); !strings.Contains(other, "CACHE_COLD") {
+		t.Fatalf("another repository read this repository's cache: %s", other)
+	}
+}
+
+// Cleanup removes everything the run created and nothing that outlives it.
+func TestDockerCleanupKeepsTheRepositoryCache(t *testing.T) {
+	controller := requireDocker(t)
+	ctx := context.Background()
+	repo := "acme/cleanup-probe"
+	request := Request{RunID: "oberth-it-cachekeep-run", Name: "oberth-it-cachekeep", Repo: repo, Trigger: periapsis.TriggerCI}
+	if err := controller.provision(ctx, request); err != nil {
+		t.Fatalf("provision: %v", err)
+	}
+	cache := controller.cacheVolumeName(periapsis.TriggerCI, repo)
+	defer func() { _, _ = controller.client.run(ctx, "volume", "rm", "--force", cache) }()
+	controller.cleanup(ctx, request.Name)
+	if _, err := controller.client.run(ctx, "volume", "inspect", cache); err != nil {
+		t.Fatalf("cleanup removed the repository cache volume: %v", err)
+	}
+	if _, err := controller.client.run(ctx, "volume", "inspect", controller.volumeName(request.Name)); err == nil {
+		t.Fatalf("cleanup left the per-run volume behind")
+	}
+}

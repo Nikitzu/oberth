@@ -44,8 +44,11 @@ import (
 // other. Here they are directories inside a single per-run Docker volume
 // rather than four separate Kubernetes volumes.
 const (
-	WorkMountPath      = "/work"
-	SourceMountPath    = "/work/src"
+	WorkMountPath   = "/work"
+	SourceMountPath = "/work/src"
+	// CacheMountPath is the cross-run, per-repository build cache. Unlike
+	// everything else under /work it is not part of the run volume: a
+	// separate named volume is mounted over it, so it survives the run.
 	CacheMountPath     = "/work/cache"
 	ArtifactsMountPath = "/work/artifacts"
 	FilesMountPath     = "/work/files"
