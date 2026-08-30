@@ -1,4 +1,4 @@
-{{- if .Values.kubedock.enabled }}
+{{- if and .Values.kubedock .Values.kubedock.enabled }}
 # Kubedock: a Docker API shim that orchestrates Kubernetes pods.
 #
 # It exists so Testcontainers-backed tests can run inside an Oberth pipeline.
@@ -15,6 +15,11 @@
 # where a pipeline needs a Docker API, which is what `oberth install
 # --testcontainers` asks for. That flag also opens in-namespace egress,
 # because the shim is unreachable from a pipeline pod without it.
+#
+# The guard above tests the whole key, not just .enabled: `helm upgrade
+# --reuse-values` reuses the previous release's values and never merges a
+# newer chart's defaults, so a release created before this key existed has
+# no .Values.kubedock at all and a bare .enabled lookup fails the render.
 apiVersion: v1
 kind: ServiceAccount
 metadata:

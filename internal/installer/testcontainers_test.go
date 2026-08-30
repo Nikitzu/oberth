@@ -18,7 +18,20 @@ func TestTestcontainersDeploysTheShimAndOpensTheEgressTogether(t *testing.T) {
 	}
 
 	without := strings.Join(OberthHelmArgs(Config{}, OpenBaoResult{}, RekorResult{}), " ")
-	if strings.Contains(without, "kubedock") || strings.Contains(without, "inNamespaceAllPorts") {
+	if strings.Contains(without, "inNamespaceAllPorts") {
 		t.Fatalf("an ordinary install carries the preset anyway:\n%s", without)
+	}
+}
+
+// A re-run without --testcontainers still has to say kubedock.enabled=false
+// out loud. helm upgrade --reuse-values reuses the previous release's values
+// and never merges the new chart's defaults, so leaving the value unset left
+// a release created before the key existed with no .Values.kubedock at all,
+// and every upgrade of one failed rendering the template.
+func TestOrdinaryInstallPinsKubedockOffForReuseValues(t *testing.T) {
+	t.Parallel()
+	args := strings.Join(OberthHelmArgs(Config{}, OpenBaoResult{}, RekorResult{}), " ")
+	if !strings.Contains(args, "--set kubedock.enabled=false") {
+		t.Fatalf("helm args do not pin kubedock off:\n%s", args)
 	}
 }
