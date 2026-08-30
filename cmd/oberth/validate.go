@@ -11,8 +11,6 @@ import (
 	"strings"
 	"time"
 
-	wfv1 "github.com/argoproj/argo-workflows/v4/pkg/apis/workflow/v1alpha1"
-
 	"github.com/oberthci/oberth/internal/dockerjob"
 	"github.com/oberthci/oberth/pkg/argoworkflow"
 	"github.com/oberthci/oberth/pkg/periapsis"
@@ -196,11 +194,13 @@ func executeValidate(target validateTarget, output io.Writer) error {
 		// message is the compiler's own, so what validate prints and what the
 		// run would have printed are the same sentence.
 		if target.engine == engineDocker {
-			if err := dockerEngineRefusal(workflow); err != nil {
+			plan, err := dockerjob.Compile(workflow)
+			if err != nil {
 				report.problem("engine docker %s: %v", entry.file, err)
 				continue
 			}
 			report.line("  ok  docker engine execution subset")
+			report.line("      %s", plan.ExecutionNote())
 		}
 
 		// The step inventory the server will seed for a run of this document,
@@ -280,12 +280,4 @@ func readConfinedPipelineFile(repoRoot, relative string) ([]byte, error) {
 		return nil, fmt.Errorf("%s exceeds the source-size limit", relative)
 	}
 	return source, nil
-}
-
-// dockerEngineRefusal runs the docker engine's compiler for its refusals only.
-// The compiled plan is discarded: nothing here executes anything, and the
-// question is exactly whether compilation would have refused.
-func dockerEngineRefusal(workflow *wfv1.Workflow) error {
-	_, err := dockerjob.Compile(workflow)
-	return err
 }

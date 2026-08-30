@@ -95,3 +95,17 @@ func TestValidateRejectsAnUnknownEngine(t *testing.T) {
 		t.Fatalf("unknown engine accepted: %v", err)
 	}
 }
+
+// Sequential execution is the one difference this engine does not refuse, so
+// it has to be visible without running anything.
+func TestValidateDockerEngineStatesTheExecutionOrder(t *testing.T) {
+	t.Parallel()
+	var output bytes.Buffer
+	root := writeEnginePipeline(t, supportedPipeline())
+	if err := runValidate(context.Background(), []string{"--engine=docker", "--runner-image-prefixes=golang:", root}, &output); err != nil {
+		t.Fatalf("validate: %v\n%s", err, output.String())
+	}
+	if !strings.Contains(output.String(), "do not run concurrently") {
+		t.Fatalf("the execution order is not stated:\n%s", output.String())
+	}
+}

@@ -108,6 +108,18 @@ type Plan struct {
 	DeadlineSeconds int64
 }
 
+// ExecutionNote states the one behavioural difference this engine does not
+// refuse: it runs every step one at a time, where Argo runs independent DAG
+// branches concurrently. A pipeline gets the same verdict and takes longer.
+//
+// It is printed at the top of every run log, and by `oberth validate
+// --engine=docker`, because a difference that is not refused has to be visible
+// somewhere or it is a surprise waiting for someone timing a build.
+func (plan Plan) ExecutionNote() string {
+	return fmt.Sprintf("oberth: docker engine, %d step(s) run one at a time in dependency order; "+
+		"independent branches do not run concurrently here, which the Argo engine does", len(plan.Steps))
+}
+
 // Compile turns an admitted Workflow into an executable Plan, or refuses.
 //
 // The caller must have run argoworkflow.Admit first. Compile does not repeat

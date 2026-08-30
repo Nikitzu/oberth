@@ -491,3 +491,23 @@ func TestDockerCleanupKeepsTheRepositoryCache(t *testing.T) {
 		t.Fatalf("cleanup left the per-run volume behind")
 	}
 }
+
+// The same statement has to reach the run log, because that is where someone
+// timing a build against the server will be looking.
+func TestDockerRunLogStatesTheExecutionOrder(t *testing.T) {
+	controller := requireDocker(t)
+	_, log := submit(t, controller, "oberth-it-order", pipeline(t, `  templates:
+    - name: ci
+      dag:
+        tasks:
+          - name: only
+            template: only
+    - name: only
+      container:
+        image: "`+goImage+`"
+        command: ["true"]
+`))
+	if !strings.Contains(log, "do not run concurrently") {
+		t.Fatalf("the run log does not state the execution order: %s", log)
+	}
+}

@@ -244,6 +244,7 @@ func (controller *Controller) execute(ctx context.Context, current *job, destina
 	name := current.request.Name
 	completion := Completion{Name: name, Succeeded: false, Phase: "job"}
 
+	_, _ = io.WriteString(destination, current.plan.ExecutionNote()+"\n")
 	if err := controller.provision(ctx, current.request); err != nil {
 		completion.Reason = err.Error()
 		return completion, err
