@@ -82,7 +82,7 @@ func TestRunCLISecretstoreRouting(t *testing.T) {
 		args    []string
 		wantErr string
 	}{
-		{name: "no subcommand", args: []string{"secretstore"}, wantErr: "secretstore setup|verify"},
+		{name: "no subcommand", args: []string{"secretstore"}, wantErr: "secretstore init|unseal|put|setup|verify"},
 		{name: "unknown", args: []string{"secretstore", "unknown"}, wantErr: "unknown secretstore command"},
 	}
 	for _, test := range tests {

@@ -99,6 +99,12 @@ type UpstreamSSHBootstrap struct {
 	// manager because known_hosts is a single merged document.
 	KeyFieldManager string
 
+	// KeyStore overrides where the deploy key and known_hosts are persisted.
+	// Nil selects the Kubernetes Secret store built from the fields above,
+	// which is what every in-cluster caller gets. A clusterless server passes
+	// a FileUpstreamKeyStore instead and runs the identical flow.
+	KeyStore UpstreamKeyStore
+
 	// Registration polling: after printing a generated or Secret-recovered
 	// deploy key whose authentication probe does not yet succeed, Ensure waits
 	// for the operator to register the key on the forge instead of demanding
@@ -167,11 +173,15 @@ func (bootstrap UpstreamSSHBootstrap) Ensure(ctx context.Context, baseURL string
 		confirmations = newConfirmationReader(bootstrap.Input)
 	}
 
-	client, err := bootstrap.KubernetesClient()
-	if err != nil {
-		return UpstreamSSHIdentity{}, fmt.Errorf("app: create Kubernetes client for upstream bootstrap: %w", err)
+	store := bootstrap.KeyStore
+	if store == nil {
+		client, err := bootstrap.KubernetesClient()
+		if err != nil {
+			return UpstreamSSHIdentity{}, fmt.Errorf("app: create Kubernetes client for upstream bootstrap: %w", err)
+		}
+		store = kubernetesUpstreamKeyStore{bootstrap: bootstrap, client: client}
 	}
-	persisted, err := bootstrap.loadPersisted(ctx, client)
+	persisted, err := store.Load(ctx)
 	if err != nil {
 		return UpstreamSSHIdentity{}, err
 	}
@@ -198,28 +208,12 @@ func (bootstrap UpstreamSSHBootstrap) Ensure(ctx context.Context, baseURL string
 	}
 
 	if acquiredHosts {
-		if err := bootstrap.applySecret(ctx, client, bootstrap.KnownHostsSecret, map[string][]byte{
-			bootstrap.KnownHostsDataKey: knownHosts,
-		}, bootstrapFieldManager); err != nil {
-			return UpstreamSSHIdentity{}, err
-		}
-		if err := bootstrap.verifySecretData(ctx, client, bootstrap.KnownHostsSecret, map[string][]byte{
-			bootstrap.KnownHostsDataKey: knownHosts,
-		}); err != nil {
+		if err := store.SaveKnownHosts(ctx, knownHosts); err != nil {
 			return UpstreamSSHIdentity{}, err
 		}
 	}
 	if generated {
-		if err := bootstrap.applySecret(ctx, client, bootstrap.PrivateKeySecret, map[string][]byte{
-			bootstrap.PrivateKeyDataKey: identity.privateKey,
-			bootstrap.PublicKeyDataKey:  identity.publicKey,
-		}, bootstrap.KeyFieldManager); err != nil {
-			return UpstreamSSHIdentity{}, err
-		}
-		if err := bootstrap.verifySecretData(ctx, client, bootstrap.PrivateKeySecret, map[string][]byte{
-			bootstrap.PrivateKeyDataKey: identity.privateKey,
-			bootstrap.PublicKeyDataKey:  identity.publicKey,
-		}); err != nil {
+		if err := store.SaveIdentity(ctx, identity.privateKey, identity.publicKey); err != nil {
 			return UpstreamSSHIdentity{}, err
 		}
 		if err := bootstrap.printGeneratedIdentity(identity, host, port); err != nil {
@@ -342,28 +336,37 @@ func terseProbeError(err error) string {
 }
 
 func (bootstrap UpstreamSSHBootstrap) validate() error {
-	if bootstrap.Input == nil || bootstrap.Output == nil || bootstrap.KubernetesClient == nil || bootstrap.ScanHostKeys == nil || bootstrap.Probe == nil {
-		return errors.New("app: upstream bootstrap input, output, Kubernetes client, host-key scanner, and authentication probe are required")
+	if bootstrap.Input == nil || bootstrap.Output == nil || bootstrap.ScanHostKeys == nil || bootstrap.Probe == nil {
+		return errors.New("app: upstream bootstrap input, output, host-key scanner, and authentication probe are required")
 	}
-	if bootstrap.PrivateKeySecret == bootstrap.KnownHostsSecret {
-		return errors.New("app: upstream private-key and known-hosts Secrets must be distinct")
-	}
-	for kind, value := range map[string]string{
-		"namespace":          bootstrap.Namespace,
-		"private-key Secret": bootstrap.PrivateKeySecret,
-		"known-hosts Secret": bootstrap.KnownHostsSecret,
-	} {
-		if problems := validation.IsDNS1123Subdomain(value); len(problems) != 0 {
-			return fmt.Errorf("app: invalid %s %q: %s", kind, value, strings.Join(problems, "; "))
+	// The Secret names and data keys describe the Kubernetes store only. A
+	// caller that supplied its own store is not required to invent them, and
+	// validating names nothing will read would be a check for a code path that
+	// never runs.
+	if bootstrap.KeyStore == nil {
+		if bootstrap.KubernetesClient == nil {
+			return errors.New("app: upstream bootstrap needs either a Kubernetes client or an explicit key store")
 		}
-	}
-	for kind, value := range map[string]string{
-		"private-key data key": bootstrap.PrivateKeyDataKey,
-		"public-key data key":  bootstrap.PublicKeyDataKey,
-		"known-hosts data key": bootstrap.KnownHostsDataKey,
-	} {
-		if problems := validation.IsConfigMapKey(value); len(problems) != 0 {
-			return fmt.Errorf("app: invalid %s %q: %s", kind, value, strings.Join(problems, "; "))
+		if bootstrap.PrivateKeySecret == bootstrap.KnownHostsSecret {
+			return errors.New("app: upstream private-key and known-hosts Secrets must be distinct")
+		}
+		for kind, value := range map[string]string{
+			"namespace":          bootstrap.Namespace,
+			"private-key Secret": bootstrap.PrivateKeySecret,
+			"known-hosts Secret": bootstrap.KnownHostsSecret,
+		} {
+			if problems := validation.IsDNS1123Subdomain(value); len(problems) != 0 {
+				return fmt.Errorf("app: invalid %s %q: %s", kind, value, strings.Join(problems, "; "))
+			}
+		}
+		for kind, value := range map[string]string{
+			"private-key data key": bootstrap.PrivateKeyDataKey,
+			"public-key data key":  bootstrap.PublicKeyDataKey,
+			"known-hosts data key": bootstrap.KnownHostsDataKey,
+		} {
+			if problems := validation.IsConfigMapKey(value); len(problems) != 0 {
+				return fmt.Errorf("app: invalid %s %q: %s", kind, value, strings.Join(problems, "; "))
+			}
 		}
 	}
 	if err := validateOperatorPath(bootstrap.PrivateKeyPath); err != nil {
@@ -685,6 +688,16 @@ func (identity privateIdentity) publicIdentity(generated bool) UpstreamSSHIdenti
 }
 
 func readKnownHostsFile(path, address string) (knownHostsMaterial, error) {
+	// An empty file is the same state as no file, and has to be reported as
+	// one. selectKnownHosts refuses to replace a known_hosts it cannot parse,
+	// which is right for a corrupt pin file and wrong for an empty one: an
+	// empty file pins nothing, so there is nothing to protect and the refusal
+	// only blocks the first registration. A clusterless install creates the
+	// file because the server expects the path to exist, so this state is
+	// ordinary there rather than exceptional.
+	if info, err := os.Stat(path); err == nil && info.Mode().IsRegular() && info.Size() == 0 {
+		return knownHostsMaterial{}, fmt.Errorf("upstream known_hosts %s is empty: %w", path, os.ErrNotExist)
+	}
 	if err := validateOperatorFile(path, false); err != nil {
 		return knownHostsMaterial{}, err
 	}

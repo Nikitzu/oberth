@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"github.com/oberthci/oberth/internal/secretstore"
 	"io"
 	"os"
 	"path/filepath"
@@ -717,5 +718,29 @@ func TestExecNoSwapWarningWhenInactive(t *testing.T) {
 
 	if strings.Contains(stderr.String(), "swap") {
 		t.Fatalf("unexpected swap warning when swap is inactive: %q", stderr.String())
+	}
+}
+
+// The auth mount is server-injected, exactly like VAULT_ADDR and
+// OBERTH_VAULT_ROLE, so the pipeline's own invocation of this command is the
+// same sentence under either engine. Unset means the kubernetes mount, which
+// is what every in-cluster run gets and what this command did before it could
+// be told otherwise.
+func TestSecretStoreExecUsesTheInjectedAuthMount(t *testing.T) {
+	for _, probe := range []struct{ injected, want string }{
+		{"", secretstore.DefaultAuthMountPath},
+		{"jwt", "jwt"},
+	} {
+		t.Setenv("OBERTH_VAULT_AUTH_MOUNT", probe.injected)
+		mount := os.Getenv("OBERTH_VAULT_AUTH_MOUNT")
+		client, err := secretstore.New(secretstore.Config{
+			Address: "https://store.example:8200", Role: "oberth-ci", AuthMountPath: mount,
+		})
+		if err != nil {
+			t.Fatalf("New(%q): %v", probe.injected, err)
+		}
+		if got := client.AuthMountPath(); got != probe.want {
+			t.Fatalf("injected %q selected mount %q, want %q", probe.injected, got, probe.want)
+		}
 	}
 }

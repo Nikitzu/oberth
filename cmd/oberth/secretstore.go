@@ -42,9 +42,15 @@ const maximumServeCmdlineBytes = 1 << 20
 
 func runSecretStore(ctx context.Context, arguments []string, output io.Writer) error {
 	if len(arguments) == 0 {
-		return fmt.Errorf("%w: secretstore setup|verify|exec|materialize", errUsage)
+		return fmt.Errorf("%w: secretstore init|unseal|put|setup|verify|exec|materialize", errUsage)
 	}
 	switch arguments[0] {
+	case "init":
+		return runSecretStoreInit(ctx, arguments[1:], output)
+	case "unseal":
+		return runSecretStoreUnseal(ctx, arguments[1:], output)
+	case "put":
+		return runSecretStorePut(ctx, arguments[1:], output)
 	case "setup":
 		return runSecretStoreSetup(arguments[1:], output)
 	case "verify":

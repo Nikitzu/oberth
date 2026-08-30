@@ -439,7 +439,7 @@ func TestRunCLIRoutesSecretStore(t *testing.T) {
 	t.Parallel()
 	var output bytes.Buffer
 	err := runCLI(context.Background(), []string{"secretstore"}, strings.NewReader(""), &output)
-	if err == nil || !strings.Contains(err.Error(), "secretstore setup|verify") {
+	if err == nil || !strings.Contains(err.Error(), "secretstore init|unseal|put|setup|verify") {
 		t.Fatalf("error = %v", err)
 	}
 	err = runCLI(context.Background(), []string{"secretstore", "unknown"}, strings.NewReader(""), &output)

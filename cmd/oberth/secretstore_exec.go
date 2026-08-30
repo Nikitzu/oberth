@@ -113,6 +113,14 @@ func runSecretStoreExec(ctx context.Context, arguments []string, standardOut, er
 	if vaultRole == "" {
 		return errors.New("OBERTH_VAULT_ROLE is not set; this command must run in a credentialed Oberth pipeline container")
 	}
+	// Which auth method the store presents this identity to. Unset means the
+	// kubernetes mount, which is what an in-cluster run gets and what this
+	// command did unconditionally before. A clusterless server sets it to the
+	// jwt mount, where the same login payload is bound to a subject claim
+	// instead of a ServiceAccount name. Server-injected, exactly like
+	// VAULT_ADDR and OBERTH_VAULT_ROLE, so the pipeline's own invocation of
+	// this command is unchanged under either engine.
+	vaultAuthMount := os.Getenv("OBERTH_VAULT_AUTH_MOUNT")
 
 	// Optional CA cert path from the server-injected VAULT_CACERT.
 	var caPEM []byte
@@ -125,10 +133,12 @@ func runSecretStoreExec(ctx context.Context, arguments []string, standardOut, er
 	}
 
 	client, err := secretstore.New(secretstore.Config{
-		Address:   vaultAddr,
-		Role:      vaultRole,
-		CACertPEM: caPEM,
-		// SA token at the conventional projected path.
+		Address:       vaultAddr,
+		Role:          vaultRole,
+		AuthMountPath: vaultAuthMount,
+		CACertPEM:     caPEM,
+		// Identity token at the conventional projected path, written by the
+		// kubelet in a cluster and by the server off-cluster.
 	})
 	if err != nil {
 		return fmt.Errorf("configure secret store client: %w", err)

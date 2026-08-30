@@ -12,9 +12,7 @@
 package argojob
 
 import (
-	"crypto/sha256"
 	"crypto/x509"
-	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
@@ -1135,7 +1133,7 @@ const (
 
 	// maxRepoCacheNameLength bounds the readable half of a cache directory name.
 	// The digest that follows it is what actually keeps two repositories apart.
-	maxRepoCacheNameLength = 48
+	maxRepoCacheNameLength = periapsis.MaxRepoCacheNameLength
 
 	// WorkspaceVolumeName is the conventional volumeClaimTemplate name an
 	// Argo-authored pipeline declares for its cross-step workspace. When a
@@ -1186,47 +1184,13 @@ func (config Config) cacheRootFor(trigger periapsis.Trigger) string {
 	}
 }
 
-// repoCacheSegment derives the single directory name a repository's cache lives
-// under, inside its tier's root.
-//
-// The digest key is the org-qualified identity (org/repo), so same-name repos
-// under different upstreams land in different cache directories. Upstream org
-// uniqueness is enforced at registration time, making org/repo sufficient for
-// isolation.
-//
-// The readable prefix and digest are both taken over the qualified form.
-// Only lowercase alphanumerics, '-' and '_' survive; '.' and '/' are
-// deliberately not in that set, which makes "." and ".." structurally
-// unreachable rather than filtered for.
-//
-// NOTE: This changed in v0.14 from bare-name to org-qualified digesting.
-// Existing build caches start cold after this change; old cache directories
-// are orphaned but harmless.
+// repoCacheSegment is pkg/periapsis.RepoCacheSegment. The implementation moved
+// there when the Docker engine needed the same answer for its per-repository
+// cache volume name, so that two engines cannot disagree about which cache
+// belongs to which repository. The digest key is the org-qualified identity,
+// so same-name repos under different upstreams do not share a cache.
 func repoCacheSegment(repo, upstreamOrg string) string {
-	qualified := repo
-	if upstreamOrg != "" {
-		qualified = upstreamOrg + "/" + repo
-	}
-	digest := sha256.Sum256([]byte(qualified))
-	var safe strings.Builder
-	for _, character := range strings.ToLower(qualified) {
-		switch {
-		case character >= 'a' && character <= 'z',
-			character >= '0' && character <= '9',
-			character == '-', character == '_':
-			safe.WriteRune(character)
-		default:
-			safe.WriteByte('-')
-		}
-	}
-	readable := strings.Trim(safe.String(), "-_")
-	if len(readable) > maxRepoCacheNameLength {
-		readable = strings.Trim(readable[:maxRepoCacheNameLength], "-_")
-	}
-	if readable == "" {
-		readable = "repo"
-	}
-	return readable + "-" + hex.EncodeToString(digest[:])[:12]
+	return periapsis.RepoCacheSegment(repo, upstreamOrg)
 }
 
 // cacheVolumeAndMount builds this run's cache volume, or reports that the tier

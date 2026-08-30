@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/oberthci/oberth/internal/dockerjob"
 	"github.com/oberthci/oberth/pkg/argoworkflow"
 	"github.com/oberthci/oberth/pkg/periapsis"
 )
@@ -25,6 +26,9 @@ func runValidate(_ context.Context, arguments []string, output io.Writer) error 
 	_ = flags.Duration("timeout", validateDefaultTimeout, "reserved for future use")
 	_ = flags.Bool("static", false, "reserved for future use")
 	var imagePrefixes string
+	var engine string
+	flags.StringVar(&engine, "engine", engineArgo,
+		"execution engine to validate against: \"argo\", or \"docker\" to also run the docker engine's refusal pass")
 	allowUnresolved := flags.Bool("allow-unresolved-fragments", false,
 		"report fragment references without failing; their contents are still unchecked")
 	flags.StringVar(&imagePrefixes, "runner-image-prefixes", strings.Join(periapsis.DefaultRunnerImagePrefixes, ","), "comma-separated allowlist of permitted runner image prefixes")
@@ -43,6 +47,12 @@ func runValidate(_ context.Context, arguments []string, output io.Writer) error 
 	if err != nil {
 		return err
 	}
+	switch engine {
+	case engineArgo, engineDocker:
+	default:
+		return fmt.Errorf("%w: unknown --engine %q, expected %q or %q", errUsage, engine, engineArgo, engineDocker)
+	}
+	target.engine = engine
 	target.imagePrefixes = splitRunnerImagePrefixes(imagePrefixes)
 	target.allowUnresolvedFragments = *allowUnresolved
 	return executeValidate(target, output)
@@ -53,6 +63,7 @@ type validateTarget struct {
 	allowUnresolvedFragments bool
 	repoRoot                 string   // the repository root
 	imagePrefixes            []string // administrator-allowed runner image prefixes
+	engine                   string   // which engine's execution subset to check
 }
 
 // resolveValidateTarget accepts the same spellings a developer reaches for:
@@ -175,6 +186,22 @@ func executeValidate(target validateTarget, output io.Writer) error {
 			continue
 		}
 		report.line("  ok  admission (%s trigger)", entry.trigger)
+
+		// The docker engine interprets a documented subset of the admitted
+		// document, and refuses everything outside it at submission. Running
+		// that same refusal pass here is what lets an author find out before
+		// pushing rather than from a run that never started a container. The
+		// message is the compiler's own, so what validate prints and what the
+		// run would have printed are the same sentence.
+		if target.engine == engineDocker {
+			plan, err := dockerjob.Compile(workflow)
+			if err != nil {
+				report.problem("engine docker %s: %v", entry.file, err)
+				continue
+			}
+			report.line("  ok  docker engine execution subset")
+			report.line("      %s", plan.ExecutionNote())
+		}
 
 		// The step inventory the server will seed for a run of this document,
 		// printed from the same enumeration, so what a push shows is knowable

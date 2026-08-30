@@ -13,6 +13,14 @@ import (
 )
 
 func runInstall(ctx context.Context, arguments []string, input io.Reader, output io.Writer) error {
+	// --engine=docker installs a clusterless server on this machine. It shares
+	// nothing with the Helm path below except the client configuration it
+	// writes at the end, so it is routed before any of the chart flags are
+	// parsed rather than being threaded through a Config that describes a
+	// cluster it does not have.
+	if dockerEngineArguments(arguments) {
+		return runInstallDocker(ctx, arguments, output)
+	}
 	flags := flag.NewFlagSet("install", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 
