@@ -131,7 +131,19 @@ spec:
             */}}
             - "--runner-image-prefixes={{ join "," .Values.runnerImagePrefixes }}"
             - --max-concurrent-jobs={{ .Values.maxConcurrentJobs }}
-            - --publish-on-green={{ .Values.publishOnGreen }}
+            {{- /*
+            The fallback exists because `helm upgrade --reuse-values` reuses the
+            previous release's values and never merges a newer chart's
+            defaults, so a release created before this key existed carries no
+            .Values.publishOnGreen and rendered "--publish-on-green=" into a
+            flag the server parses as a bool and refuses.
+
+            kindIs "bool" rather than `default`: sprig's default treats false as
+            empty, so `.Values.publishOnGreen | default X` renders X for an
+            operator who explicitly asked for false, which on a chart whose
+            default is true would publish behind the advisory gate's back.
+            */}}
+            - --publish-on-green={{ if kindIs "bool" .Values.publishOnGreen }}{{ .Values.publishOnGreen }}{{ else }}true{{ end }}
             - --ci-cache-root={{ .Values.cache.ciRoot }}
             - --release-cache-root={{ .Values.cache.releaseRoot }}
             {{- if .Values.pushBannerURL }}
