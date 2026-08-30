@@ -1,6 +1,7 @@
 package dockerjob
 
 import (
+	"bytes"
 	"compress/gzip"
 	"context"
 	"errors"
@@ -263,6 +264,11 @@ func skippedAfter(steps []Step, ordinal int) []StepResult {
 // The network is a per-run bridge with no special rules. That is not egress
 // containment; it is the place containment would go. See the spike report.
 func (controller *Controller) provision(ctx context.Context, request Request) error {
+	// A deterministic job name means a leftover volume or network can only
+	// have come from an earlier, abandoned attempt at this same run. Docker
+	// refuses to create a network that already exists, so without this a
+	// second attempt fails at provisioning and never reaches a step.
+	controller.cleanup(ctx, request.Name)
 	labels := []string{"--label", labelJob + "=" + request.Name, "--label", labelRun + "=" + request.RunID}
 	volumeArgs := append([]string{"volume", "create"}, labels...)
 	if _, err := controller.client.run(ctx, append(volumeArgs, controller.volumeName(request.Name))...); err != nil {
@@ -473,11 +479,17 @@ func (controller *Controller) runContainer(ctx context.Context, container string
 
 // collect streams /work/artifacts out of the run volume as a gzipped tar, the
 // same archive shape internal/artifacts already ingests from the Argo engine.
+// collect runs on a context that outlives the run's own cancellation. By the
+// time a deadline or a cancel reaches here the run context is already dead,
+// and a red or timed-out run's artifacts are exactly the ones an author wants
+// to read, so inheriting the cancellation would throw away the evidence.
 func (controller *Controller) collect(ctx context.Context, container string, destination io.Writer) []byte {
 	if container == "" {
 		return nil
 	}
-	archive, err := controller.readArtifacts(ctx, container)
+	collectCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Minute)
+	defer cancel()
+	archive, err := controller.readArtifacts(collectCtx, container)
 	if err != nil {
 		_, _ = io.WriteString(destination, fmt.Sprintf("oberth: artifact collection failed: %v\n", err))
 		return nil
@@ -487,7 +499,7 @@ func (controller *Controller) collect(ctx context.Context, container string, des
 
 func (controller *Controller) readArtifacts(ctx context.Context, container string) ([]byte, error) {
 	limit := controller.config.ArtifactsLimitBytes
-	var compressed strings.Builder
+	var compressed bytes.Buffer
 	writer := gzip.NewWriter(&compressed)
 	copied := int64(0)
 	err := controller.client.pipe(ctx, func(stream io.Reader) error {
@@ -504,7 +516,7 @@ func (controller *Controller) readArtifacts(ctx context.Context, container strin
 	if copied > limit {
 		return nil, fmt.Errorf("dockerjob: artifacts exceed the %d byte limit", limit)
 	}
-	return []byte(compressed.String()), nil
+	return compressed.Bytes(), nil
 }
 
 // Cancel stops a job's containers and removes everything it created.

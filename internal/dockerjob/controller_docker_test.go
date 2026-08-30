@@ -229,3 +229,58 @@ func TestDockerRunRemovesEverythingItCreated(t *testing.T) {
 		}
 	}
 }
+
+// A run that hits its deadline still produced artifacts, and those are exactly
+// the ones an author needs to see. Collection used to inherit the run's own
+// dead context and hand back nothing.
+func TestDockerCollectsArtifactsFromATimedOutRun(t *testing.T) {
+	controller := requireDocker(t)
+	source := []byte("apiVersion: argoproj.io/v1alpha1\nkind: Workflow\nspec:\n  entrypoint: ci\n  activeDeadlineSeconds: 5\n" + `  templates:
+    - name: ci
+      dag:
+        tasks:
+          - name: slow
+            template: slow
+    - name: slow
+      container:
+        image: "` + goImage + `"
+        command: ["sh", "-c"]
+        args: ["mkdir -p $OBERTH_ARTIFACTS && echo partial > $OBERTH_ARTIFACTS/partial.txt && sleep 120"]
+`)
+	name := "oberth-it-deadline"
+	sourceDir := t.TempDir()
+	request := Request{
+		RunID: name + "-run", Name: name, Repo: "acme/widget", Ref: "refs/heads/main",
+		SHA: strings.Repeat("a", 40), Trigger: periapsis.TriggerCI, Source: source, SourceDir: sourceDir,
+	}
+	if _, err := controller.Create(context.Background(), request); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	var log bytes.Buffer
+	completion, err := controller.Wait(context.Background(), name, request.RunID, &log)
+	if err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+	if completion.Succeeded {
+		t.Fatalf("a run that blew its deadline was reported green: %+v", completion)
+	}
+	if len(completion.Artifacts) == 0 {
+		t.Fatalf("no artifacts collected from a timed-out run (log: %s)", log.String())
+	}
+}
+
+// Provisioning has to survive an abandoned earlier attempt at the same run:
+// docker refuses to create a network that already exists, so a leftover one
+// used to stop the retry before it reached a step.
+func TestDockerProvisionSurvivesLeftoversFromAnEarlierAttempt(t *testing.T) {
+	controller := requireDocker(t)
+	ctx := context.Background()
+	request := Request{RunID: "oberth-it-leftover-run", Name: "oberth-it-leftover"}
+	if err := controller.provision(ctx, request); err != nil {
+		t.Fatalf("first provision: %v", err)
+	}
+	defer controller.cleanup(ctx, request.Name)
+	if err := controller.provision(ctx, request); err != nil {
+		t.Fatalf("second provision over leftovers: %v", err)
+	}
+}
