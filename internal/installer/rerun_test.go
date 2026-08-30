@@ -87,6 +87,56 @@ func TestAPublishedImageIsNotTreatedAsCustom(t *testing.T) {
 	}
 }
 
+// A fork publishes its releases to its own registry, so its previous release
+// is not under the canonical GAR prefix. Treating that as a hand-deployed
+// image kept every fork install pinned to the digest it already ran: the
+// install reported the new version while the deployment stayed on the old
+// image. Sharing the repository with this binary's own default image is what
+// makes a deployed image a release rather than the operator's own.
+func TestAForksOwnPreviousReleaseIsUpgradedNotKept(t *testing.T) {
+	t.Parallel()
+	previous := "ghcr.io/fork-owner/oberth@sha256:" + strings.Repeat("d", 64)
+	next := "ghcr.io/fork-owner/oberth@sha256:" + strings.Repeat("e", 64)
+	var out bytes.Buffer
+	deps := Deps{
+		Output:     &out,
+		KubeClient: fake.NewClientset(oberthDeploymentWithImage(DefaultNamespace, previous)),
+	}
+	cfg := Config{ImageRef: next}
+
+	keepCustomDeployedImage(context.Background(), &cfg, deps, DefaultNamespace)
+
+	if cfg.ImageRef != next {
+		t.Fatalf("image = %q, want the upgrade to proceed", cfg.ImageRef)
+	}
+	if out.Len() != 0 {
+		t.Fatalf("a release-to-release move warned about a custom image:\n%s", out.String())
+	}
+}
+
+// An image from a registry that is neither this binary's own nor the canonical
+// one is still the operator's: a digest is no evidence that a release put it
+// there.
+func TestADigestFromAnotherRegistryIsStillKept(t *testing.T) {
+	t.Parallel()
+	deployed := "oberth-registry:5000/oberth@sha256:" + strings.Repeat("f", 64)
+	var out bytes.Buffer
+	deps := Deps{
+		Output:     &out,
+		KubeClient: fake.NewClientset(oberthDeploymentWithImage(DefaultNamespace, deployed)),
+	}
+	cfg := Config{ImageRef: "ghcr.io/fork-owner/oberth@sha256:" + strings.Repeat("e", 64)}
+
+	keepCustomDeployedImage(context.Background(), &cfg, deps, DefaultNamespace)
+
+	if cfg.ImageRef != deployed {
+		t.Fatalf("image = %q, want the deployed one kept", cfg.ImageRef)
+	}
+	if !strings.Contains(out.String(), deployed) || !strings.Contains(out.String(), "--image") {
+		t.Fatalf("the substitution was silent:\n%s", out.String())
+	}
+}
+
 // A fresh install has nothing to preserve and must not say anything.
 func TestAFreshInstallHasNoImageToKeep(t *testing.T) {
 	t.Parallel()

@@ -18,6 +18,26 @@ import (
 // CloudTaser images. Published chart refs must resolve to this registry.
 const canonicalGARPrefix = "europe-west4-docker.pkg.dev/skipopsmain/cloudtaser/"
 
+// imageRefIsPublished reports whether an image ref came from a release rather
+// than from the operator's own build.
+//
+// Published means the ref lives in the same repository as the image this
+// binary was built to deploy, or under the canonical GAR prefix releases go
+// to. A prefix test alone is wrong for a build that publishes elsewhere: its
+// own previous release then looks like a hand-deployed image, and every
+// re-run is silently kept at the digest it already ran.
+func imageRefIsPublished(ref, binaryDefaultRef string) bool {
+	repo := imageRepository(strings.TrimSpace(ref))
+	if repo == "" {
+		return false
+	}
+	if strings.HasPrefix(repo, canonicalGARPrefix) {
+		return true
+	}
+	binaryRepo := imageRepository(strings.TrimSpace(binaryDefaultRef))
+	return binaryRepo != "" && repo == binaryRepo
+}
+
 // UpgradeConfig holds options for the upgrade command.
 type UpgradeConfig struct {
 	Namespace     string
