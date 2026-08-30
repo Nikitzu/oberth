@@ -170,6 +170,12 @@ type Config struct {
 	// file that had to be applied together and in order, which is two chances
 	// to end up with half of a working setup.
 	Testcontainers bool
+	// TestcontainersExplicit records that --testcontainers was named on this
+	// run, which is what distinguishes an explicit off from saying nothing at
+	// all: Testcontainers being true is already a choice, since the flag
+	// defaults to false.
+	TestcontainersExplicit bool
+
 	// NetworkPolicy controls pipeline egress NetworkPolicy enforcement:
 	// "auto" (default) enables on all CNIs except k3s's built-in kube-router
 	// (which has a DNAT incompatibility), "true" forces on, "false" forces off.
@@ -1320,11 +1326,16 @@ func OberthHelmArgs(cfg Config, openbao OpenBaoResult, rekor RekorResult) []stri
 	if image := strings.TrimSpace(cfg.ImageRef); image != "" {
 		args = append(args, "--set-string", "image.ref="+image)
 	}
-	// Pinned on every install and upgrade, both values, because
-	// --reuse-values never consults a newer chart's values.yaml: a release
-	// created before the kubedock key existed carries no .Values.kubedock,
-	// and the template's lookup then fails the whole upgrade.
-	args = append(args, "--set", "kubedock.enabled="+strconv.FormatBool(cfg.Testcontainers))
+	// Pinned only when the operator expressed a choice, the same tri-state
+	// --network-policy uses, so an install that never mentioned kubedock
+	// leaves a values file's own setting alone. --reuse-values never consults
+	// a newer chart's values.yaml, so an unpinned value stays absent on an
+	// upgraded install; the template tolerates that by testing the whole key,
+	// which is what keeps a release created before kubedock existed
+	// renderable.
+	if cfg.Testcontainers || cfg.TestcontainersExplicit {
+		args = append(args, "--set", "kubedock.enabled="+strconv.FormatBool(cfg.Testcontainers))
+	}
 	if cfg.Testcontainers {
 		// Both, together. The shim is the capability and the egress rule is
 		// what makes it reachable; a deployment with one of them is a

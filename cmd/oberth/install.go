@@ -83,6 +83,16 @@ func runInstall(ctx context.Context, arguments []string, input io.Reader, output
 		return fmt.Errorf("%w: install accepts flags only, no positional arguments", errUsage)
 	}
 
+	// Whether --testcontainers was named on this run, as opposed to holding
+	// its default: the installer pins kubedock.enabled only when the operator
+	// said something, so that a value set in their own values file is not
+	// overridden by one they never asked for.
+	flags.Visit(func(f *flag.Flag) {
+		if f.Name == "testcontainers" {
+			cfg.TestcontainersExplicit = true
+		}
+	})
+
 	cfg.Timeout = *timeout
 	cfg.BinaryVersion = version
 	cfg.SecretStoreUndecided = !cfg.InstallSecretStore && !cfg.InstallSecretStoreDev

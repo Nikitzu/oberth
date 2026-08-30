@@ -1297,9 +1297,6 @@ func TestOberthHelmArgs(t *testing.T) {
 			want := []string{
 				"upgrade", "--install", "oberth", "oberth-charts/oberth",
 				"-n", "oberth", "--create-namespace",
-				// Pinned on every run, --testcontainers or not, because --reuse-values
-				// never merges a newer chart's defaults for a key it has not seen.
-				"--set", "kubedock.enabled=false",
 				// The execution engine binding is unconditional: Argo is how
 				// every pipeline runs, not an optional integration.
 				"--set", "argo.namespace=oberth-argo",
@@ -1445,9 +1442,6 @@ func TestOberthHelmArgsWithoutSecretStore(t *testing.T) {
 	want := []string{
 		"upgrade", "--install", "oberth", "oberth-charts/oberth",
 		"-n", "oberth", "--create-namespace",
-		// Pinned on every run, --testcontainers or not, because --reuse-values
-		// never merges a newer chart's defaults for a key it has not seen.
-		"--set", "kubedock.enabled=false",
 		"--set", "argo.namespace=oberth-argo",
 		"--version", "v0.10.54",
 		"--reuse-values",
@@ -1472,9 +1466,6 @@ func TestOberthHelmArgsWithRekor(t *testing.T) {
 	want := []string{
 		"upgrade", "--install", "oberth", "oberth-charts/oberth",
 		"-n", "oberth", "--create-namespace",
-		// Pinned on every run, --testcontainers or not, because --reuse-values
-		// never merges a newer chart's defaults for a key it has not seen.
-		"--set", "kubedock.enabled=false",
 		"--set", "argo.namespace=oberth-argo",
 		"--set", "auditAnchor.rekorURL=http://rekor-server.rekor.svc:80",
 		"--set", "auditAnchor.rekorInsecureHTTP=true",
@@ -2512,9 +2503,6 @@ func TestInstallOberthReconcilesRekorAtInstalledVersion(t *testing.T) {
 			want := []string{
 				"upgrade", "--install", "oberth", "oberth-charts/oberth",
 				"-n", "oberth", "--create-namespace",
-				// Pinned on every run, --testcontainers or not, because --reuse-values
-				// never merges a newer chart's defaults for a key it has not seen.
-				"--set", "kubedock.enabled=false",
 				"--set", "argo.namespace=oberth-argo",
 				"--set", "auditAnchor.rekorURL=http://rekor-server.rekor.svc:80",
 				"--set", "auditAnchor.rekorInsecureHTTP=true",
@@ -2663,9 +2651,6 @@ func TestInstallOberthRekorUpgradeAllowsUnknownInstalledVersion(t *testing.T) {
 	want := []string{
 		"upgrade", "--install", "oberth", "oberth-charts/oberth",
 		"-n", "oberth", "--create-namespace",
-		// Pinned on every run, --testcontainers or not, because --reuse-values
-		// never merges a newer chart's defaults for a key it has not seen.
-		"--set", "kubedock.enabled=false",
 		"--set", "argo.namespace=oberth-argo",
 		"--set", "auditAnchor.rekorURL=http://rekor-server.rekor.svc:80",
 		"--set", "auditAnchor.rekorInsecureHTTP=true",
