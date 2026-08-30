@@ -58,6 +58,9 @@ type Config struct {
 	// TmpfsBytes bounds the writable scratch mount at /tmp. Zero selects
 	// DefaultTmpfsBytes.
 	TmpfsBytes int64
+	// SecretStore carries the coordinates a credentialed run needs. Left
+	// empty, a pipeline declaring secret paths is refused at submission.
+	SecretStore SecretStoreConfig
 }
 
 // Request is one submission, shaped like argojob.Request so the adapter layer
@@ -71,6 +74,12 @@ type Request struct {
 	Trigger   periapsis.Trigger
 	Source    []byte
 	SourceDir string
+	// Credentialed says the pipeline declared secret-store paths, and the
+	// declarations themselves, already authorized for this trigger, org and
+	// repo by the caller. The engine never derives this from the document: it
+	// is told, so that admission and execution cannot disagree.
+	Credentialed bool
+	SecretPaths  []string
 }
 
 // StepResult is one executed step in Oberth's vocabulary.
@@ -112,6 +121,11 @@ type job struct {
 	request Request
 	plan    Plan
 	cancel  context.CancelFunc
+	// identity is the run's minted secret-store token. It is held for the
+	// life of the run and nowhere else: it is never written to the run log,
+	// never recorded on the completion, and the volume carrying it is
+	// destroyed with everything else at cleanup.
+	identity string
 }
 
 func NewController(config Config) (*Controller, error) {
@@ -158,12 +172,22 @@ func (controller *Controller) Create(ctx context.Context, request Request) (stri
 	if err != nil {
 		return "", err
 	}
+	identity := ""
+	if request.Credentialed {
+		// Minted at submission, not at the first container, so a run that
+		// cannot get an identity is refused before it claims a workspace
+		// rather than failing partway through its first step.
+		identity, err = controller.config.SecretStore.mintIdentity(ctx, request)
+		if err != nil {
+			return "", err
+		}
+	}
 	controller.mu.Lock()
 	defer controller.mu.Unlock()
 	if existing, occupied := controller.jobs[request.Name]; occupied && existing.request.RunID != request.RunID {
 		return "", fmt.Errorf("dockerjob: job %s is already in flight for run %s", request.Name, existing.request.RunID)
 	}
-	controller.jobs[request.Name] = &job{request: request, plan: plan}
+	controller.jobs[request.Name] = &job{request: request, plan: plan, identity: identity}
 	return request.Name, nil
 }
 
@@ -201,7 +225,8 @@ func (controller *Controller) cacheVolumeName(trigger periapsis.Trigger, repo st
 	}
 	return "oberth-cache-" + tier + "-" + periapsis.RepoCacheSegment(repo)
 }
-func (controller *Controller) networkName(name string) string { return name + "-net" }
+func (controller *Controller) networkName(name string) string     { return name + "-net" }
+func (controller *Controller) identityVolumeName(n string) string { return n + "-identity" }
 
 // Wait runs the whole pipeline and streams its logs and progress markers into
 // destination, returning when the run reaches a terminal state.
@@ -250,6 +275,12 @@ func (controller *Controller) execute(ctx context.Context, current *job, destina
 		return completion, err
 	}
 
+	if current.request.Credentialed {
+		if err := controller.deliverIdentity(ctx, current); err != nil {
+			completion.Reason = err.Error()
+			return completion, err
+		}
+	}
 	seeded := false
 	lastContainer := ""
 	for _, step := range current.plan.Steps {
@@ -310,11 +341,64 @@ func (controller *Controller) provision(ctx context.Context, request Request) er
 	// The cache volume outlives the run. Creating it is idempotent, so the
 	// first run for a repository provisions it and every later run finds it
 	// already warm.
+	if request.Credentialed {
+		if _, err := controller.client.run(ctx, append(append([]string{"volume", "create"}, labels...),
+			controller.identityVolumeName(request.Name))...); err != nil {
+			return fmt.Errorf("dockerjob: create the run identity volume: %w", err)
+		}
+	}
 	cache := controller.cacheVolumeName(request.Trigger, request.Repo)
 	cacheLabel := string(request.Trigger) + "/" + request.Repo
 	if _, err := controller.client.run(ctx, "volume", "create",
 		"--label", labelCache+"="+cacheLabel, cache); err != nil {
 		return fmt.Errorf("dockerjob: create the repository cache volume: %w", err)
+	}
+	return nil
+}
+
+// deliverIdentity writes the run's minted token onto the identity volume.
+//
+// It uses a container of its own, created and never started, because every
+// step mounts that volume read-only: a step must not be able to rewrite the
+// identity it was given, and the cluster's projected token volume is
+// read-only for the same reason. The seed container is built from the first
+// step's image, so no helper image exists anywhere and nothing extra is
+// pulled.
+func (controller *Controller) deliverIdentity(ctx context.Context, current *job) error {
+	if strings.TrimSpace(current.identity) == "" {
+		return errors.New("dockerjob: a credentialed run reached execution with no minted identity")
+	}
+	if len(current.plan.Steps) == 0 {
+		return errors.New("dockerjob: a credentialed run has no step to seed its identity from")
+	}
+	name := current.request.Name + "-identity-seed"
+	_, _ = controller.client.run(ctx, "rm", "--force", name)
+	container, err := controller.client.run(ctx, "create", "--name", name,
+		"--label", labelJob+"="+current.request.Name,
+		"--label", labelRun+"="+current.request.RunID,
+		"--volume", controller.identityVolumeName(current.request.Name)+":"+IdentityMountPath,
+		"--", current.plan.Steps[0].Image, "true")
+	if err != nil {
+		return fmt.Errorf("dockerjob: stage the run identity: %w", err)
+	}
+	defer func() { _, _ = controller.client.run(ctx, "rm", "--force", container) }()
+	token := current.identity
+	err = seedTree(ctx, controller.client.binary, container, IdentityMountPath, func(writer *tar.Writer) error {
+		header := &tar.Header{
+			Typeflag: tar.TypeReg, Name: IdentityTokenName,
+			// Owner-read only, and the step runs as root, so the token is
+			// readable by the step and by nothing else in the container.
+			Mode: 0o400, Size: int64(len(token)),
+		}
+		rootOwned(header)
+		if err := writer.WriteHeader(header); err != nil {
+			return err
+		}
+		_, err := io.WriteString(writer, token)
+		return err
+	})
+	if err != nil {
+		return fmt.Errorf("dockerjob: deliver the run identity: %w", err)
 	}
 	return nil
 }
@@ -402,14 +486,26 @@ func (controller *Controller) createArguments(request Request, step Step, attemp
 		// wins, so /work/cache is the repository's persistent cache and
 		// everything else under /work stays per-run.
 		"--volume", controller.cacheVolumeName(request.Trigger, request.Repo) + ":" + CacheMountPath,
-		"--label", labelJob + "=" + request.Name,
-		"--label", labelRun + "=" + request.RunID,
-		"--label", labelBurn + "=" + step.Burn,
-		"--label", labelStep + "=" + step.Step,
-		"--label", labelOrdinal + "=" + strconv.Itoa(step.Ordinal),
-		"--label", labelAttempt + "=" + strconv.Itoa(attempt),
-		"--label", labelSteps + "=" + strconv.Itoa(step.PlanSteps),
 	}
+	if request.Credentialed {
+		// The minted identity, read-only, at the path the in-cluster projected
+		// token occupies, plus the memory-backed directory `secretstore exec`
+		// materialises into. Only a credentialed run gets either, exactly as
+		// only a credentialed Pod gets the token volume on a cluster.
+		arguments = append(arguments,
+			"--volume", controller.identityVolumeName(request.Name)+":"+IdentityMountPath+":ro",
+			"--tmpfs", fmt.Sprintf("%s:rw,noexec,nosuid,nodev,mode=0700,size=%d", SecretsMountPath, secretsTmpfsBytes),
+		)
+	}
+	arguments = append(arguments,
+		"--label", labelJob+"="+request.Name,
+		"--label", labelRun+"="+request.RunID,
+		"--label", labelBurn+"="+step.Burn,
+		"--label", labelStep+"="+step.Step,
+		"--label", labelOrdinal+"="+strconv.Itoa(step.Ordinal),
+		"--label", labelAttempt+"="+strconv.Itoa(attempt),
+		"--label", labelSteps+"="+strconv.Itoa(step.PlanSteps),
+	)
 	for _, variable := range controller.stepEnvironment(request, step) {
 		arguments = append(arguments, "--env", variable)
 	}
@@ -505,6 +601,9 @@ func hardeningHint() string {
 // so the order here is deliberate and the opposite would be a hole.
 func (controller *Controller) stepEnvironment(request Request, step Step) []string {
 	environment := append([]string(nil), step.Env...)
+	if request.Credentialed {
+		environment = append(environment, controller.config.SecretStore.credentialEnvironment(request.Trigger)...)
+	}
 	return append(environment,
 		"OBERTH_REPO="+request.Repo,
 		"OBERTH_REF="+request.Ref,
@@ -792,6 +891,8 @@ func (controller *Controller) cleanup(ctx context.Context, name string) {
 	}
 	_, _ = controller.client.run(ctx, "network", "rm", controller.networkName(name))
 	_, _ = controller.client.run(ctx, "volume", "rm", "--force", controller.volumeName(name))
+	// The identity volume holds the run's minted token. It goes with the run.
+	_, _ = controller.client.run(ctx, "volume", "rm", "--force", controller.identityVolumeName(name))
 }
 
 func (controller *Controller) forget(name, runID string) {

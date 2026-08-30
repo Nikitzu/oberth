@@ -46,6 +46,11 @@ type DockerJobs struct {
 	artifactLimit  int64
 	artifactBudget int64
 
+	// secretStore reports whether the engine can credential a run. When it
+	// cannot, a pipeline declaring secret paths is refused at submission
+	// rather than run without the credentials it asked for.
+	secretStore bool
+
 	mu               sync.Mutex
 	runs             map[string]string // job name -> run ID
 	artifactFailures map[string]string
@@ -62,6 +67,10 @@ func NewDockerJobs(controller dockerControl, auditor service.Auditor) (*DockerJo
 	}
 	return &DockerJobs{controller: controller, auditor: auditor, runs: map[string]string{}}, nil
 }
+
+// SetSecretStore declares that the engine has secret-store coordinates and can
+// therefore run a credentialed pipeline.
+func (jobs *DockerJobs) SetSecretStore(configured bool) { jobs.secretStore = configured }
 
 // SetArtifacts wires artifact persistence, mirroring ArgoJobs.SetArtifacts.
 func (jobs *DockerJobs) SetArtifacts(store ArtifactStore, limit, budget int64) {
@@ -93,9 +102,12 @@ func (jobs *DockerJobs) create(ctx context.Context, request service.JobRequest, 
 	if err != nil {
 		return noPipelineError(err, trigger, request.Repository.Name)
 	}
-	// A credentialed pipeline must refuse cleanly rather than run without the
-	// credentials it declared and fail somewhere deep inside a build.
-	if err := refuseCredentialedPipeline(source, request.Repository.Name); err != nil {
+	// The declared paths, authorized for this trigger, this org and this
+	// repository before anything runs. The engine is told the answer rather
+	// than deriving it, so admission and execution cannot disagree about what
+	// a run was allowed to reach.
+	paths, err := jobs.authorizeSecretPaths(source, request, trigger)
+	if err != nil {
 		return err
 	}
 	testedSHA := request.Run.TestedSHA
@@ -106,6 +118,7 @@ func (jobs *DockerJobs) create(ctx context.Context, request service.JobRequest, 
 		RunID: request.Run.ID, Name: request.JobName, Repo: request.Repository.Name,
 		Ref: request.Run.Ref, SHA: testedSHA, Trigger: trigger,
 		Source: source, SourceDir: request.SourceDir,
+		Credentialed: len(paths) > 0, SecretPaths: paths,
 	}
 	if err := jobs.auditSubmission(ctx, request, submission); err != nil {
 		return err
@@ -124,23 +137,41 @@ func (jobs *DockerJobs) create(ctx context.Context, request service.JobRequest, 
 	return nil
 }
 
-// refuseCredentialedPipeline rejects a pipeline that declares secret paths.
-// The secret store is out of scope for the docker engine, and silently running
-// a credentialed pipeline without its credentials would produce a confusing
-// red run instead of a clear refusal.
-func refuseCredentialedPipeline(source []byte, repo string) error {
+// authorizeSecretPaths returns the secret-store paths a run is allowed to
+// reach, or refuses.
+//
+// The rules are the Argo engine's, because they have to be: an upstream-scoped
+// path is authorized structurally against the declaring repository's own org
+// and name, and a system-namespace path is refused outright on the CI trigger,
+// where the identity's own policy could not read it anyway. What the docker
+// engine does not have is the approval table, which the Argo path consults
+// only for system-namespace paths on the release trigger; the release tier is
+// separately unavailable here, so there is no case in which a grant row would
+// have been the deciding factor.
+func (jobs *DockerJobs) authorizeSecretPaths(source []byte, request service.JobRequest,
+	trigger periapsis.Trigger) ([]string, error) {
 	workflow, err := argoworkflow.Decode(source)
 	if err != nil {
 		// Let Create surface the decode error with its own framing.
-		return nil
+		return nil, nil
 	}
 	paths, err := argoworkflow.DeclaredSecretPaths(workflow)
-	if err != nil || len(paths) == 0 {
-		return nil
+	if err != nil {
+		return nil, fmt.Errorf("app: read declared secret-store paths: %w", err)
 	}
-	return fmt.Errorf("app: repository %q declares secret-store paths (%s), and the docker engine has no secret store; "+
-		"run this pipeline on the Argo engine or remove the secret declarations",
-		repo, strings.Join(paths, ", "))
+	if len(paths) == 0 {
+		return nil, nil
+	}
+	if !jobs.secretStore {
+		return nil, fmt.Errorf("app: repository %q declares secret-store paths (%s), and this server has no secret store "+
+			"configured for the docker engine; run `oberth secretstore init --engine=docker` and set "+
+			"--secretstore-address and --secretstore-jwt-signing-key, or remove the secret declarations",
+			request.Repository.Name, strings.Join(paths, ", "))
+	}
+	if err := argoworkflow.AuthorizeSecretPaths(paths, nil, trigger, request.UpstreamOrg, request.Repository.Name); err != nil {
+		return nil, err
+	}
+	return paths, nil
 }
 
 // auditSubmission records what this run was allowed to reach, before anything
@@ -156,11 +187,14 @@ func (jobs *DockerJobs) auditSubmission(ctx context.Context, request service.Job
 		"repo": request.Repository.Name, "ref": request.Run.Ref,
 		"sha": submission.SHA, "object_sha": request.Run.SHA,
 		"trigger": string(submission.Trigger), "engine": "docker", "job": submission.Name,
-		"declared_secret_paths": "",
-		// Stated rather than implied: this engine grants no platform identity,
-		// so there is no ServiceAccount binding to record.
+		"declared_secret_paths": strings.Join(submission.SecretPaths, ","),
+		// Stated rather than implied: this engine grants no platform identity.
+		// What it grants instead is a signed subject, and naming it is the
+		// point: an auditor reading the chain can tell the two apart, and can
+		// see that the server minted this run's identity rather than a kubelet.
 		"service_account": "",
-		"credentialed":    false,
+		"run_identity":    dockerRunIdentity(submission),
+		"credentialed":    submission.Credentialed,
 	}
 	encoded, err := json.Marshal(details)
 	if err != nil {
@@ -273,10 +307,28 @@ func (jobs *DockerJobs) PlannedSteps(_ context.Context, request service.JobReque
 	return steps, nil
 }
 
-// PipelineCredentialed always reports false: a credentialed pipeline is
-// refused at submission by this engine, so no run reaching here is one.
-func (jobs *DockerJobs) PipelineCredentialed(context.Context, service.JobRequest) (bool, error) {
-	return false, nil
+// PipelineCredentialed reports whether the document declares secret paths, the
+// same single signal the Argo engine keys everything off.
+func (jobs *DockerJobs) PipelineCredentialed(_ context.Context, request service.JobRequest) (bool, error) {
+	workflow, err := jobs.decodeRequest(request)
+	if err != nil {
+		return false, err
+	}
+	paths, err := argoworkflow.DeclaredSecretPaths(workflow)
+	if err != nil {
+		return false, fmt.Errorf("app: read declared secret-store paths: %w", err)
+	}
+	return len(paths) > 0, nil
+}
+
+// dockerRunIdentity is the subject the run's minted token carries, recorded on
+// the submission binding. It is derived, not read back from the token: the
+// token itself is a credential and never leaves the engine.
+func dockerRunIdentity(submission dockerjob.Request) string {
+	if !submission.Credentialed {
+		return ""
+	}
+	return "jwt:" + string(submission.Trigger)
 }
 
 func (jobs *DockerJobs) decodeRequest(request service.JobRequest) (*wfv1.Workflow, error) {

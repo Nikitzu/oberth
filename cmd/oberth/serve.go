@@ -31,6 +31,7 @@ import (
 	"github.com/oberthci/oberth/internal/artifacts"
 	"github.com/oberthci/oberth/internal/auditanchor"
 	"github.com/oberthci/oberth/internal/auth"
+	"github.com/oberthci/oberth/internal/dockerjob"
 	"github.com/oberthci/oberth/internal/gitcache"
 	"github.com/oberthci/oberth/internal/gitoid"
 	"github.com/oberthci/oberth/internal/model"
@@ -104,6 +105,10 @@ type serveOptions struct {
 	secretStoreTransitMount string
 	secretStoreTransitKey   string
 	secretStoreInsecureHTTP bool
+	// secretStoreJWTSigningKey is the RSA private key the docker engine signs
+	// per-run identities with. It is the one flag the local credential chain
+	// adds: everything else it needs is already a serve flag.
+	secretStoreJWTSigningKey string
 
 	// engine selects the execution backend: "argo" (the default, and the only
 	// one that needs Kubernetes) or "docker", which runs pipeline steps as
@@ -202,6 +207,8 @@ func parseServeOptions(arguments []string, output io.Writer) (serveOptions, erro
 	flags.StringVar(&options.secretStoreTransitMount, "secretstore-transit-mount", "", "OpenBao transit mount for trusted Plan artifacts (enables trusted Plan/Apply with --secretstore-transit-key)")
 	flags.StringVar(&options.secretStoreTransitKey, "secretstore-transit-key", "", "OpenBao transit key for trusted Plan artifacts")
 	flags.BoolVar(&options.secretStoreInsecureHTTP, "secretstore-insecure-http", false, "DEVELOPMENT ONLY: allow a plain-HTTP OpenBao address")
+	flags.StringVar(&options.secretStoreJWTSigningKey, "secretstore-jwt-signing-key", "",
+		"RSA private key the --engine=docker backend signs per-run OpenBao jwt identities with (created by `oberth secretstore init --engine=docker`)")
 	flags.StringVar(&options.argoNamespace, "argo-namespace", "", "namespace for Argo Workflow pipelines (required)")
 	flags.StringVar(&options.argoSourceStorageClass, "argo-source-storage-class", "", "storage class for per-run pipeline source volumes (empty: cluster default)")
 	flags.StringVar(&options.argoPipelineAccount, "argo-pipeline-serviceaccount", "oberth-argo-pipeline", "ServiceAccount for pipeline templates without approved secrets; no Vault role, no token")
@@ -243,6 +250,14 @@ func parseServeOptions(arguments []string, output io.Writer) (serveOptions, erro
 	}
 	if flags.NArg() != 0 {
 		return serveOptions{}, fmt.Errorf("%w: serve accepts flags only", errUsage)
+	}
+	// The docker engine's tier roles are the ones `oberth secretstore init
+	// --engine=docker` creates, so an operator who ran that command does not
+	// have to repeat their names here. An explicit --secretstore-role still
+	// wins, for a store someone set up by hand.
+	if options.engine == engineDocker && strings.TrimSpace(options.secretStoreRole) == "" &&
+		strings.TrimSpace(options.secretStoreAddress) != "" {
+		options.secretStoreRole = dockerjob.DefaultCIRole
 	}
 	if err := validateServeOptions(options); err != nil {
 		return serveOptions{}, err
@@ -359,6 +374,27 @@ func validateServeOptions(options serveOptions) error {
 }
 
 func validateSecretStoreServeOptions(options serveOptions) error {
+	// The signing key is what makes a local identity possible at all, so it
+	// belongs to the docker engine and to a configured store, and saying so
+	// here is cheaper than a run failing to mint one.
+	if strings.TrimSpace(options.secretStoreJWTSigningKey) != "" {
+		if options.engine != engineDocker {
+			return errors.New("serve: --secretstore-jwt-signing-key applies only to --engine=docker; " +
+				"the argo engine's identities are minted by the kubelet")
+		}
+		if strings.TrimSpace(options.secretStoreAddress) == "" {
+			return errors.New("serve: --secretstore-jwt-signing-key requires --secretstore-address")
+		}
+		if !filepath.IsAbs(options.secretStoreJWTSigningKey) ||
+			filepath.Clean(options.secretStoreJWTSigningKey) != options.secretStoreJWTSigningKey {
+			return errors.New("serve: --secretstore-jwt-signing-key must be a clean absolute path")
+		}
+	}
+	if options.engine == engineDocker && strings.TrimSpace(options.secretStoreAddress) != "" &&
+		strings.TrimSpace(options.secretStoreJWTSigningKey) == "" {
+		return errors.New("serve: --engine=docker with --secretstore-address requires " +
+			"--secretstore-jwt-signing-key; with no kubelet there is nothing else to mint a run identity")
+	}
 	if options.secretStoreAddress == "" {
 		if options.secretStoreRole != "" || options.secretStoreCACert != "" || options.secretStoreSAToken != "" ||
 			len(options.secretStorePaths) != 0 || options.secretStoreInsecureHTTP || options.secretStoreAuthMount != secretstore.DefaultAuthMountPath ||
@@ -647,8 +683,14 @@ func serve(ctx context.Context, options serveOptions, logger *log.Logger) (resul
 			return err
 		}
 		ciJobs, releaseJobs = dockerJobs, dockerJobs
-		logger.Printf("docker execution engine: steps run as containers on the local daemon; " +
-			"the release tier and the secret store are unavailable on this engine")
+		if strings.TrimSpace(options.secretStoreAddress) != "" {
+			logger.Printf("docker execution engine: steps run as containers on the local daemon; "+
+				"credentialed runs log in to %s over the jwt auth mount with a server-minted, %s identity",
+				options.secretStoreAddress, secretstore.RunIdentityTTL)
+		} else {
+			logger.Printf("docker execution engine: steps run as containers on the local daemon; " +
+				"no secret store is configured, so a pipeline declaring secret paths is refused at submission")
+		}
 	} else {
 		built, err := buildArgoEngine(options, restConfig, kube, database, database, fragmentLoader, fileLoader,
 			artifactAdapter, options.artifactsLimitBytes, options.artifactsBudgetBytes)
