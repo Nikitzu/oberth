@@ -50,7 +50,7 @@ func buildDockerEngine(
 		return nil, err
 	}
 	jobs.SetArtifacts(artifactStore, artifactLimit, artifactBudget)
-	jobs.SetSecretStore(store.Enabled())
+	jobs.SetSecretStore(store.Enabled(), options.secretStorePaths)
 	return jobs, nil
 }
 

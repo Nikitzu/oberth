@@ -119,20 +119,9 @@ func (config SecretStoreConfig) mintIdentity(ctx context.Context, request Reques
 	if role == "" {
 		return "", fmt.Errorf("dockerjob: no secret store role is configured for the %q tier", request.Trigger)
 	}
-	org, repo := splitOrgRepo(request.Repo)
-	token, err := config.Minter.Mint(ctx, role, org, repo, request.RunID)
+	token, err := config.Minter.Mint(ctx, role, request.Org, request.Repo, request.RunID)
 	if err != nil {
 		return "", fmt.Errorf("dockerjob: mint the run identity: %w", err)
 	}
 	return token, nil
-}
-
-// splitOrgRepo separates "org/name". It exists so the org and the repo reach
-// the minter, which is what a per-repository subject will need.
-func splitOrgRepo(repo string) (string, string) {
-	org, name, found := strings.Cut(strings.TrimSpace(repo), "/")
-	if !found {
-		return "", org
-	}
-	return org, name
 }

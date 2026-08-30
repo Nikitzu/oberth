@@ -66,9 +66,13 @@ type Config struct {
 // Request is one submission, shaped like argojob.Request so the adapter layer
 // reads the same under either engine.
 type Request struct {
-	RunID     string
-	Name      string
-	Repo      string
+	RunID string
+	Name  string
+	Repo  string
+	// Org is the registered upstream org this repository belongs to. It is
+	// separate from Repo because Repo is the bare catalog name: the org comes
+	// from the upstream registration, never from the repository.
+	Org       string
 	Ref       string
 	SHA       string
 	Trigger   periapsis.Trigger

@@ -685,8 +685,10 @@ func serve(ctx context.Context, options serveOptions, logger *log.Logger) (resul
 		ciJobs, releaseJobs = dockerJobs, dockerJobs
 		if strings.TrimSpace(options.secretStoreAddress) != "" {
 			logger.Printf("docker execution engine: steps run as containers on the local daemon; "+
-				"credentialed runs log in to %s over the jwt auth mount with a server-minted, %s identity",
-				options.secretStoreAddress, secretstore.RunIdentityTTL)
+				"credentialed runs log in to %s over the jwt auth mount with a server-minted, %s identity; "+
+				"tier roles ci=%s release=%s, and %d system-namespace path(s) allowlisted for the release tier",
+				options.secretStoreAddress, secretstore.RunIdentityTTL,
+				options.secretStoreRole, dockerjob.DefaultReleaseRole, len(options.secretStorePaths))
 		} else {
 			logger.Printf("docker execution engine: steps run as containers on the local daemon; " +
 				"no secret store is configured, so a pipeline declaring secret paths is refused at submission")

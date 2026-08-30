@@ -634,6 +634,34 @@ implementation detail disagree.
   counts only, and zeroes every fetched value. Renaming a `--secretstore-*`
   serve flag is a breaking change for this discovery
   (`TestSecretStoreCmdlineMatchesServeParsing` pins it).
+- Two execution engines, one identity model. `--engine=argo` runs steps as Argo
+  Workflows in Kubernetes and its credentialed runs log in to OpenBao over the
+  `kubernetes` auth method, where the role binds a ServiceAccount name.
+  `--engine=docker` runs steps as containers on a local Docker daemon, has no
+  cluster, and its credentialed runs log in over the `jwt` auth method, where
+  the role binds a subject claim the server signs. The subject is the run's
+  tier, taken from the durable run's own trigger and never from the document,
+  and it carries a ten minute TTL and a bound audience.
+  The guarantee is the same under both and is stated once: **a CI identity is
+  refused a release credential by OpenBao, not by Oberth**. Under the docker
+  engine that refusal is the `oberth-ci` policy, which reaches
+  `<kvMount>/data/upstream/*` and nothing else.
+  What is weaker off-cluster, stated rather than glossed: the server holds the
+  JWT signing key, so a compromised server process can mint either tier's
+  subject, where in-cluster it cannot forge a kubelet-issued token. There is no
+  TokenReview, so a minted identity is good until it expires. Both are recorded
+  in `docs/docker-engine-secrets.md`.
+  The docker engine also interprets a documented subset of the Argo Workflow
+  object model and refuses every construct outside it **by name, at submission,
+  before any container starts**. It never ignores one. `oberth validate
+  --engine=docker` runs that same refusal pass without pushing. Independent DAG
+  branches run sequentially under it, which is the one difference it does not
+  refuse, and it is printed at the top of every run log.
+  Every step it runs carries the Argo path's own security baseline: UID 0, all
+  Linux capabilities dropped, no privilege escalation, a read-only root
+  filesystem, and a writable exec-capable scratch mount at `/tmp`. There is no
+  per-pipeline escape hatch, because admission refuses a repository-authored
+  security context on the Argo path for the same reason.
 
 ## Compatibility matrix
 
@@ -654,6 +682,10 @@ implementation detail disagree.
 | Reduce a resource ceiling without verifying all known pipeline documents remain admissible | Breaking |
 | Admit a construct that reaches the node (`hostPort`, `hostPath`, `hostNetwork`, `nodeSelector`, `affinity`) or the cluster (`workflowTemplateRef`, `imagePullSecrets`) | Forbidden |
 | Bind an OpenBao role to a wildcard ServiceAccount name or namespace, or grant the CI tier a ServiceAccount token | Forbidden |
+| Bind an OpenBao `jwt` role to a wildcard subject or audience, or give the CI and release tiers the same subject | Forbidden |
+| Move the CI/release tier decision out of an OpenBao policy and into Oberth's own process, under any engine | Forbidden |
+| Change the docker engine's run-identity subject grammar, its audience, or its TTL | Breaking security change |
+| Widen the docker engine's `oberth-ci` policy beyond `<kvMount>/data/upstream/*` | Forbidden |
 | Change the RunnerImage declaration shape or widen the default prefix allowlist | Breaking security change |
 | Change token-to-uplink cardinality or accepted Git ref namespaces | Breaking security change |
 | Mount any Secret in a branch Job or share/nest CI and release cache roots | Forbidden |

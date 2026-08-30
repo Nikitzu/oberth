@@ -50,6 +50,13 @@ type DockerJobs struct {
 	// cannot, a pipeline declaring secret paths is refused at submission
 	// rather than run without the credentials it asked for.
 	secretStore bool
+	// secretAllowlist is the administrator's exact-path allowlist for the
+	// oberth/data/ system namespace, which only the release tier can declare.
+	// On the Argo path the equivalent list is the approval table the access
+	// reconciler converges from a ConfigMap; with no cluster it is the
+	// operator's own --secretstore-path flags, which is a narrower and more
+	// legible surface, not a wider one.
+	secretAllowlist []string
 
 	mu               sync.Mutex
 	runs             map[string]string // job name -> run ID
@@ -70,7 +77,10 @@ func NewDockerJobs(controller dockerControl, auditor service.Auditor) (*DockerJo
 
 // SetSecretStore declares that the engine has secret-store coordinates and can
 // therefore run a credentialed pipeline.
-func (jobs *DockerJobs) SetSecretStore(configured bool) { jobs.secretStore = configured }
+func (jobs *DockerJobs) SetSecretStore(configured bool, systemAllowlist []string) {
+	jobs.secretStore = configured
+	jobs.secretAllowlist = append([]string(nil), systemAllowlist...)
+}
 
 // SetArtifacts wires artifact persistence, mirroring ArgoJobs.SetArtifacts.
 func (jobs *DockerJobs) SetArtifacts(store ArtifactStore, limit, budget int64) {
@@ -81,14 +91,29 @@ func (jobs *DockerJobs) CreateCI(ctx context.Context, request service.JobRequest
 	return jobs.create(ctx, request, periapsis.TriggerCI)
 }
 
-// CreateRelease refuses. The release tier's security property is that OpenBao
-// itself refuses a CI identity a release credential, because the role binds a
-// Kubernetes ServiceAccount name. With no Kubernetes there is no such binding,
-// and the docker engine will not pretend to offer one by moving the boundary
-// into Oberth's own process and calling it equivalent.
-func (jobs *DockerJobs) CreateRelease(context.Context, service.JobRequest) error {
-	return errors.New("app: the release tier is not supported by the docker engine; " +
-		"its credential separation is enforced by OpenBao's Kubernetes auth binding, which does not exist here")
+// CreateRelease runs a release-tier pipeline.
+//
+// It refused, on the grounds that the release tier's security property is that
+// OpenBao itself refuses a CI identity a release credential because the role
+// binds a Kubernetes ServiceAccount name, and no such binding exists here.
+// That reasoning was right about the property and wrong about the mechanism.
+// An OpenBao jwt role binds a subject claim exactly as a kubernetes role binds
+// a ServiceAccount name, so the refusal still comes from the store: a CI run's
+// identity carries the oberth-ci subject, whose policy reaches the upstream
+// subtree only, and the store answers a release path with 403.
+// internal/secretstore/jwtauth_live_test.go asserts that against a live store,
+// including that a CI subject cannot log in through the release role at all.
+//
+// What is genuinely weaker is stated in docs/docker-engine-secrets.md and is
+// not this: the server holds the signing key, so a compromised server process
+// could mint either subject. OpenBao still enforces the policy for whoever it
+// believes is asking; what is weaker is who it can be persuaded to believe.
+//
+// With no store configured, a release pipeline that declares no secret paths
+// runs as a plain pipeline, exactly as it does on the Argo engine, and one
+// that declares them is refused at submission.
+func (jobs *DockerJobs) CreateRelease(ctx context.Context, request service.JobRequest) error {
+	return jobs.create(ctx, request, periapsis.TriggerRelease)
 }
 
 func (jobs *DockerJobs) create(ctx context.Context, request service.JobRequest, trigger periapsis.Trigger) error {
@@ -115,7 +140,7 @@ func (jobs *DockerJobs) create(ctx context.Context, request service.JobRequest, 
 		testedSHA = request.Run.SHA
 	}
 	submission := dockerjob.Request{
-		RunID: request.Run.ID, Name: request.JobName, Repo: request.Repository.Name,
+		RunID: request.Run.ID, Name: request.JobName, Repo: request.Repository.Name, Org: request.UpstreamOrg,
 		Ref: request.Run.Ref, SHA: testedSHA, Trigger: trigger,
 		Source: source, SourceDir: request.SourceDir,
 		Credentialed: len(paths) > 0, SecretPaths: paths,
@@ -144,10 +169,11 @@ func (jobs *DockerJobs) create(ctx context.Context, request service.JobRequest, 
 // path is authorized structurally against the declaring repository's own org
 // and name, and a system-namespace path is refused outright on the CI trigger,
 // where the identity's own policy could not read it anyway. What the docker
-// engine does not have is the approval table, which the Argo path consults
-// only for system-namespace paths on the release trigger; the release tier is
-// separately unavailable here, so there is no case in which a grant row would
-// have been the deciding factor.
+// engine does not have is the approval table, which the Argo path consults only
+// for system-namespace paths on the release trigger. Its place is taken by the
+// operator's own --secretstore-path allowlist, which reaches the same decision
+// from a flag on the serve command line rather than from a ConfigMap no
+// clusterless deployment has.
 func (jobs *DockerJobs) authorizeSecretPaths(source []byte, request service.JobRequest,
 	trigger periapsis.Trigger) ([]string, error) {
 	workflow, err := argoworkflow.Decode(source)
@@ -168,7 +194,7 @@ func (jobs *DockerJobs) authorizeSecretPaths(source []byte, request service.JobR
 			"--secretstore-address and --secretstore-jwt-signing-key, or remove the secret declarations",
 			request.Repository.Name, strings.Join(paths, ", "))
 	}
-	if err := argoworkflow.AuthorizeSecretPaths(paths, nil, trigger, request.UpstreamOrg, request.Repository.Name); err != nil {
+	if err := argoworkflow.AuthorizeSecretPaths(paths, jobs.secretAllowlist, trigger, request.UpstreamOrg, request.Repository.Name); err != nil {
 		return nil, err
 	}
 	return paths, nil

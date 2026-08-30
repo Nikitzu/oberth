@@ -97,7 +97,7 @@ func TestMintingUsesTheRunsOwnTierOrgAndRepo(t *testing.T) {
 	minter := &recordingMinter{token: "signed"}
 	config := SecretStoreConfig{Address: "http://127.0.0.1:8200", CIRole: DefaultCIRole, ReleaseRole: DefaultReleaseRole, Minter: minter}
 	if _, err := config.mintIdentity(context.Background(), Request{
-		RunID: "run-7", Repo: "acme/widget", Trigger: periapsis.TriggerRelease, Credentialed: true,
+		RunID: "run-7", Org: "acme", Repo: "widget", Trigger: periapsis.TriggerRelease, Credentialed: true,
 	}); err != nil {
 		t.Fatalf("mintIdentity: %v", err)
 	}
