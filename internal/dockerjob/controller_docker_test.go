@@ -173,6 +173,11 @@ func TestDockerRunGoesRedWithStepAttribution(t *testing.T) {
 
 // A step that fails then succeeds must consume its retry budget rather than
 // failing the run on the first attempt.
+//
+// The attempt marker lives on the per-run volume, not in /work/cache: the
+// cache is now shared across runs of a repository, so a marker there would
+// make this test pass on its first execution and pass for the wrong reason on
+// every later one.
 func TestDockerRunHonoursRetryStrategy(t *testing.T) {
 	controller := requireDocker(t)
 	completion, log := submit(t, controller, "oberth-it-retry", pipeline(t, `  templates:
@@ -187,7 +192,7 @@ func TestDockerRunHonoursRetryStrategy(t *testing.T) {
       container:
         image: "`+goImage+`"
         command: ["sh", "-c"]
-        args: ["if [ -f /work/cache/attempted ]; then echo SECOND_ATTEMPT; else touch /work/cache/attempted; echo FIRST_ATTEMPT; exit 1; fi"]
+        args: ["if [ -f /work/attempted ]; then echo SECOND_ATTEMPT; else touch /work/attempted; echo FIRST_ATTEMPT; exit 1; fi"]
 `))
 	if !completion.Succeeded {
 		t.Fatalf("expected the retry to rescue the run, got %+v (log: %s)", completion, log)
