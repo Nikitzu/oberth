@@ -85,6 +85,10 @@ type Step struct {
 	// MemoryLimitBytes is resources.limits.memory in bytes, ready for docker
 	// --memory. Zero means the document declared none.
 	MemoryLimitBytes int64
+	// PlanSteps is how many steps the whole plan has. It travels on each step
+	// so the engine can stamp it on every container it creates, which is what
+	// lets a restarted server tell a finished run from a truncated one.
+	PlanSteps int
 }
 
 // Plan is a whole compiled pipeline: a flat, dependency-ordered chain of
@@ -183,6 +187,9 @@ func Compile(workflow *wfv1.Workflow) (Plan, error) {
 	}
 	if len(compiler.steps) == 0 {
 		return Plan{}, errors.New("dockerjob: pipeline declares no runnable container steps")
+	}
+	for index := range compiler.steps {
+		compiler.steps[index].PlanSteps = len(compiler.steps)
 	}
 	return Plan{Steps: compiler.steps, DeadlineSeconds: deadline}, nil
 }

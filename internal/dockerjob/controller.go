@@ -29,6 +29,11 @@ const (
 	labelStep    = "oberth.ci/step"
 	labelOrdinal = "oberth.ci/ordinal"
 	labelAttempt = "oberth.ci/attempt"
+	// labelSteps is how many steps the compiled plan had. It is stamped on
+	// every container because the plan itself lives only in this process, and
+	// reconstruction after a restart has to be able to tell a run that
+	// finished from a run that was cut short.
+	labelSteps = "oberth.ci/steps"
 )
 
 // ErrNotTerminal mirrors argojob.ErrNotTerminal: the named job is absent or
@@ -354,6 +359,7 @@ func (controller *Controller) createArguments(request Request, step Step, attemp
 		"--label", labelStep + "=" + step.Step,
 		"--label", labelOrdinal + "=" + strconv.Itoa(step.Ordinal),
 		"--label", labelAttempt + "=" + strconv.Itoa(attempt),
+		"--label", labelSteps + "=" + strconv.Itoa(step.PlanSteps),
 	}
 	for _, variable := range controller.stepEnvironment(request, step) {
 		arguments = append(arguments, "--env", variable)
@@ -542,6 +548,14 @@ func (controller *Controller) TerminalState(ctx context.Context, name string) (*
 	if err != nil {
 		return nil, err
 	}
+	return reconstruct(name, containers)
+}
+
+// reconstruct derives a completion from the containers a job left behind. It
+// is separate from the daemon call so the restart path can be asserted
+// exhaustively without one: this is the code that decides whether an
+// interrupted run is reported green, and that decision is worth pinning.
+func reconstruct(name string, containers []containerState) (*Completion, error) {
 	if len(containers) == 0 {
 		return nil, ErrNotTerminal
 	}
@@ -563,10 +577,32 @@ func (controller *Controller) TerminalState(ctx context.Context, name string) (*
 		final[container.ordinal] = container
 	}
 	ordinals := make([]int, 0, len(final))
-	for ordinal := range final {
+	planSteps := 0
+	for ordinal, container := range final {
 		ordinals = append(ordinals, ordinal)
+		if container.planSteps > planSteps {
+			planSteps = container.planSteps
+		}
 	}
 	sort.Ints(ordinals)
+	// A run whose containers stop short of the plan did not finish, it was
+	// interrupted. Reporting the steps that happened to pass as a green run
+	// would publish a commit no one ever finished testing, which is the one
+	// outcome reconstruction must never produce.
+	if planSteps > 0 && len(ordinals) < planSteps {
+		completion.Succeeded = false
+		completion.Phase = "job"
+		completion.Reason = fmt.Sprintf(
+			"the run was interrupted: %d of %d steps left a container behind, so the rest never ran",
+			len(ordinals), planSteps)
+	}
+	if planSteps == 0 {
+		// Containers from before this label existed, or a plan that recorded
+		// no count. Nothing here can prove the run finished, so it did not.
+		completion.Succeeded = false
+		completion.Phase = "job"
+		completion.Reason = "the run left containers that do not record how many steps the plan had, so its outcome cannot be reconstructed"
+	}
 	for _, ordinal := range ordinals {
 		container := final[ordinal]
 		status := runprogress.StepPassed
@@ -577,7 +613,7 @@ func (controller *Controller) TerminalState(ctx context.Context, name string) (*
 			Burn: container.burn, Step: container.step, Ordinal: ordinal,
 			Status: status, ExitCode: container.exitCode,
 		})
-		if container.exitCode != 0 && completion.Succeeded {
+		if container.exitCode != 0 && completion.FailedStep == "" {
 			completion.Succeeded = false
 			completion.Phase = container.burn
 			completion.FailedBurn, completion.FailedStep = container.burn, container.step
@@ -588,13 +624,14 @@ func (controller *Controller) TerminalState(ctx context.Context, name string) (*
 }
 
 type containerState struct {
-	id       string
-	burn     string
-	step     string
-	ordinal  int
-	attempt  int
-	exitCode int
-	running  bool
+	id        string
+	burn      string
+	step      string
+	ordinal   int
+	attempt   int
+	exitCode  int
+	running   bool
+	planSteps int
 }
 
 func (controller *Controller) listContainers(ctx context.Context, name string) ([]containerState, error) {
@@ -607,22 +644,23 @@ func (controller *Controller) listContainers(ctx context.Context, name string) (
 	for _, id := range strings.Fields(raw) {
 		format := "{{.State.ExitCode}}\t{{.State.Running}}\t{{index .Config.Labels \"" + labelBurn + "\"}}\t" +
 			"{{index .Config.Labels \"" + labelStep + "\"}}\t{{index .Config.Labels \"" + labelOrdinal + "\"}}\t" +
-			"{{index .Config.Labels \"" + labelAttempt + "\"}}"
+			"{{index .Config.Labels \"" + labelAttempt + "\"}}\t{{index .Config.Labels \"" + labelSteps + "\"}}"
 		line, inspectErr := controller.client.run(ctx, "inspect", "--format", format, id)
 		if inspectErr != nil {
 			continue
 		}
 		fields := strings.Split(line, "\t")
-		if len(fields) != 6 {
+		if len(fields) != 7 {
 			continue
 		}
 		exitCode, _ := strconv.Atoi(strings.TrimSpace(fields[0]))
 		ordinal, _ := strconv.Atoi(strings.TrimSpace(fields[4]))
 		attempt, _ := strconv.Atoi(strings.TrimSpace(fields[5]))
+		planSteps, _ := strconv.Atoi(strings.TrimSpace(fields[6]))
 		states = append(states, containerState{
 			id: id, exitCode: exitCode, running: strings.TrimSpace(fields[1]) == "true",
 			burn: strings.TrimSpace(fields[2]), step: strings.TrimSpace(fields[3]),
-			ordinal: ordinal, attempt: attempt,
+			ordinal: ordinal, attempt: attempt, planSteps: planSteps,
 		})
 	}
 	return states, nil
