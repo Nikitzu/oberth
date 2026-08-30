@@ -17,9 +17,12 @@
 // step. The per-run shared volume replaces volumeClaimTemplates.
 //
 // Refused by name: synchronization, withItems, withParam, withSequence,
-// onExit and lifecycle hooks, `when` guards, parameter interpolation,
-// script/resource/plugin/http/data/containerSet/suspend templates, nesting
-// beyond one level, and repository-declared volumeMounts.
+// onExit and lifecycle hooks at every level, continueOn, `when` guards,
+// parameter interpolation, script/resource/plugin/http/data/containerSet/
+// suspend templates, initContainers, sidecars, daemon templates, per-template
+// activeDeadlineSeconds and timeout, dag failFast: false, every retryStrategy
+// field other than limit, nesting beyond one level, and repository-declared
+// volumeMounts.
 package dockerjob
 
 import (
@@ -320,12 +323,91 @@ func refuseTemplateKind(template *wfv1.Template) error {
 	if len(template.Sidecars) != 0 {
 		return unsupported("sidecars", named+"; the docker engine runs one container per step")
 	}
-	if template.DAG != nil && len(template.DAG.Tasks) != 0 {
+	if len(template.InitContainers) != 0 {
+		return unsupported("initContainers", named+"; the docker engine runs one container per step")
+	}
+	if template.Daemon != nil && *template.Daemon {
+		return unsupported("daemon templates", named+"; the docker engine runs every step to completion")
+	}
+	if template.ActiveDeadlineSeconds != nil {
+		return unsupported("template activeDeadlineSeconds",
+			named+"; the docker engine bounds the whole run, not a single step")
+	}
+	if strings.TrimSpace(template.Timeout) != "" {
+		return unsupported("template timeout",
+			named+"; the docker engine bounds the whole run, not a single step")
+	}
+	if err := refuseRetryStrategy(template.RetryStrategy, named); err != nil {
+		return err
+	}
+	if template.DAG != nil {
+		// failFast defaults to true. An explicit false asks Argo to run every
+		// remaining branch after one fails, which this engine cannot do: it
+		// stops at the first failed step.
+		if template.DAG.FailFast != nil && !*template.DAG.FailFast {
+			return unsupported("dag failFast: false",
+				named+"; the docker engine stops at the first failed step")
+		}
 		for index := range template.DAG.Tasks {
-			if strings.TrimSpace(template.DAG.Tasks[index].OnExit) != "" {
-				return unsupported("task onExit", fmt.Sprintf("%s task %q", named, template.DAG.Tasks[index].Name))
+			task := &template.DAG.Tasks[index]
+			where := fmt.Sprintf("%s task %q", named, task.Name)
+			if err := refuseCallSiteHooks(task.OnExit, task.Hooks, task.ContinueOn, where); err != nil {
+				return err
 			}
 		}
+	}
+	for group := range template.Steps {
+		for index := range template.Steps[group].Steps {
+			step := &template.Steps[group].Steps[index]
+			where := fmt.Sprintf("%s step %q", named, step.Name)
+			if err := refuseCallSiteHooks(step.OnExit, step.Hooks, step.ContinueOn, where); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// refuseCallSiteHooks refuses the per-call-site constructs that change what
+// runs or what a failure means. All three are admitted by the gate, because
+// none of them is a way to reach substrate Oberth did not grant; they are
+// refused here because this engine does not implement them, and running a
+// pipeline that declares one while ignoring it would produce a different
+// verdict than the same document produces on a cluster.
+func refuseCallSiteHooks(onExit string, hooks wfv1.LifecycleHooks, continueOn *wfv1.ContinueOn, where string) error {
+	if strings.TrimSpace(onExit) != "" {
+		return unsupported("onExit", where)
+	}
+	if len(hooks) != 0 {
+		return unsupported("lifecycle hooks", where)
+	}
+	if continueOn != nil {
+		return unsupported("continueOn", where+
+			"; the docker engine stops the run at the first failed step")
+	}
+	return nil
+}
+
+// refuseRetryStrategy admits only retryStrategy.limit. Every other field asks
+// for behaviour this engine does not have: a backoff it does not wait, a
+// policy it does not evaluate, an expression it does not parse, and a node
+// affinity that has no meaning with one host.
+func refuseRetryStrategy(strategy *wfv1.RetryStrategy, named string) error {
+	if strategy == nil {
+		return nil
+	}
+	if strategy.Backoff != nil {
+		return unsupported("retryStrategy.backoff", named+"; the docker engine retries immediately")
+	}
+	if strings.TrimSpace(string(strategy.RetryPolicy)) != "" {
+		return unsupported("retryStrategy.retryPolicy",
+			named+"; the docker engine retries every failed attempt up to the limit")
+	}
+	if strings.TrimSpace(strategy.Expression) != "" {
+		return unsupported("retryStrategy.expression", named+"; the docker engine evaluates no expressions")
+	}
+	if strategy.Affinity != nil {
+		return unsupported("retryStrategy.affinity", named+"; the docker engine runs every attempt on one host")
 	}
 	return nil
 }

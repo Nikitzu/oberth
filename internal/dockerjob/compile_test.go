@@ -339,3 +339,224 @@ func TestCompileRefusesPipelineWithNoSteps(t *testing.T) {
 		t.Fatal("expected an empty pipeline to be refused")
 	}
 }
+
+// The constructs below are all admitted by the gate, because none of them is
+// a way to reach substrate Oberth did not grant. They are refused here because
+// this engine does not implement them, and the whole contract of this compiler
+// is that an unimplemented construct is named and refused rather than ignored.
+// Each case is a construct that compiled silently before, and would therefore
+// have run something other than what the document declared.
+func TestCompileRefusesSilentlyIgnoredConstructs(t *testing.T) {
+	leaf := `    - name: unit
+      container:
+        image: "golang:1.26` + digest + `"
+        command: ["true"]
+`
+	cases := []struct {
+		name     string
+		document string
+		mentions string
+	}{
+		{
+			name: "template initContainers",
+			document: header(`  templates:
+    - name: ci
+      dag:
+        tasks:
+          - name: unit
+            template: unit
+    - name: unit
+      initContainers:
+        - name: prep
+          image: "golang:1.26` + digest + `"
+      container:
+        image: "golang:1.26` + digest + `"
+        command: ["true"]
+`),
+			mentions: "initContainers",
+		},
+		{
+			name: "daemon template",
+			document: header(`  templates:
+    - name: ci
+      dag:
+        tasks:
+          - name: unit
+            template: unit
+    - name: unit
+      daemon: true
+      container:
+        image: "golang:1.26` + digest + `"
+        command: ["true"]
+`),
+			mentions: "daemon templates",
+		},
+		{
+			name: "template activeDeadlineSeconds",
+			document: header(`  templates:
+    - name: ci
+      dag:
+        tasks:
+          - name: unit
+            template: unit
+    - name: unit
+      activeDeadlineSeconds: 30
+      container:
+        image: "golang:1.26` + digest + `"
+        command: ["true"]
+`),
+			mentions: "template activeDeadlineSeconds",
+		},
+		{
+			name: "template timeout",
+			document: header(`  templates:
+    - name: ci
+      dag:
+        tasks:
+          - name: unit
+            template: unit
+    - name: unit
+      timeout: 30s
+      container:
+        image: "golang:1.26` + digest + `"
+        command: ["true"]
+`),
+			mentions: "template timeout",
+		},
+		{
+			name: "retryStrategy backoff",
+			document: header(`  templates:
+    - name: ci
+      dag:
+        tasks:
+          - name: unit
+            template: unit
+    - name: unit
+      retryStrategy:
+        limit: "2"
+        backoff:
+          duration: "1"
+      container:
+        image: "golang:1.26` + digest + `"
+        command: ["true"]
+`),
+			mentions: "retryStrategy.backoff",
+		},
+		{
+			name: "retryStrategy retryPolicy",
+			document: header(`  templates:
+    - name: ci
+      dag:
+        tasks:
+          - name: unit
+            template: unit
+    - name: unit
+      retryStrategy:
+        limit: "2"
+        retryPolicy: "Always"
+      container:
+        image: "golang:1.26` + digest + `"
+        command: ["true"]
+`),
+			mentions: "retryStrategy.retryPolicy",
+		},
+		{
+			name: "retryStrategy expression",
+			document: header(`  templates:
+    - name: ci
+      dag:
+        tasks:
+          - name: unit
+            template: unit
+    - name: unit
+      retryStrategy:
+        limit: "2"
+        expression: "true"
+      container:
+        image: "golang:1.26` + digest + `"
+        command: ["true"]
+`),
+			mentions: "retryStrategy.expression",
+		},
+		{
+			name: "dag failFast false",
+			document: header(`  templates:
+    - name: ci
+      dag:
+        failFast: false
+        tasks:
+          - name: unit
+            template: unit
+` + leaf),
+			mentions: "dag failFast: false",
+		},
+		{
+			name: "dag task continueOn",
+			document: header(`  templates:
+    - name: ci
+      dag:
+        tasks:
+          - name: unit
+            template: unit
+            continueOn:
+              failed: true
+` + leaf),
+			mentions: "continueOn",
+		},
+		{
+			name: "dag task hooks",
+			document: header(`  templates:
+    - name: ci
+      dag:
+        tasks:
+          - name: unit
+            template: unit
+            hooks:
+              done:
+                template: unit
+` + leaf),
+			mentions: "lifecycle hooks",
+		},
+		{
+			name: "steps step onExit",
+			document: header(`  templates:
+    - name: ci
+      steps:
+        - - name: unit
+            template: unit
+            onExit: unit
+` + leaf),
+			mentions: "onExit",
+		},
+		{
+			name: "steps step continueOn",
+			document: header(`  templates:
+    - name: ci
+      steps:
+        - - name: unit
+            template: unit
+            continueOn:
+              failed: true
+` + leaf),
+			mentions: "continueOn",
+		},
+		{
+			name: "steps step hooks",
+			document: header(`  templates:
+    - name: ci
+      steps:
+        - - name: unit
+            template: unit
+            hooks:
+              done:
+                template: unit
+` + leaf),
+			mentions: "lifecycle hooks",
+		},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			refusal(t, testCase.document, testCase.mentions)
+		})
+	}
+}

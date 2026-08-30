@@ -112,7 +112,9 @@ func NewController(config Config) (*Controller, error) {
 }
 
 // Available reports whether the Docker daemon answers.
-func (controller *Controller) Available(ctx context.Context) error { return controller.client.available(ctx) }
+func (controller *Controller) Available(ctx context.Context) error {
+	return controller.client.available(ctx)
+}
 
 // Create admits and compiles the pipeline, then records it as ready to run.
 //
