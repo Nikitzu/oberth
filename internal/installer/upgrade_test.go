@@ -453,7 +453,7 @@ func TestResolveChartImageRef(t *testing.T) {
 			return nil, fmt.Errorf("unexpected: %v", args)
 		},
 	}
-	ref, err := resolveChartImageRef(context.Background(), deps, "oberth-charts/oberth", "0.12.35", false)
+	ref, err := resolveChartImageRef(context.Background(), deps, "oberth-charts/oberth", "0.12.35", false, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -473,7 +473,7 @@ func TestResolveChartImageRefEmpty(t *testing.T) {
 			return nil, fmt.Errorf("unexpected: %v", args)
 		},
 	}
-	_, err := resolveChartImageRef(context.Background(), deps, "oberth-charts/oberth", "0.12.35", false)
+	_, err := resolveChartImageRef(context.Background(), deps, "oberth-charts/oberth", "0.12.35", false, "")
 	if err == nil || !strings.Contains(err.Error(), "chart does not define image.ref") {
 		t.Fatalf("error = %v", err)
 	}
@@ -581,7 +581,7 @@ func TestResolveChartImageRefRejectsTagOnly(t *testing.T) {
 			return nil, fmt.Errorf("unexpected: %v", args)
 		},
 	}
-	_, err := resolveChartImageRef(context.Background(), deps, "oberth-charts/oberth", "0.12.35", false)
+	_, err := resolveChartImageRef(context.Background(), deps, "oberth-charts/oberth", "0.12.35", false, "")
 	if err == nil || !strings.Contains(err.Error(), "not in digest-pinned form") {
 		t.Fatalf("tag-only ref error = %v", err)
 	}
@@ -598,7 +598,7 @@ func TestResolveChartImageRefRejectsShortDigest(t *testing.T) {
 			return nil, fmt.Errorf("unexpected: %v", args)
 		},
 	}
-	_, err := resolveChartImageRef(context.Background(), deps, "oberth-charts/oberth", "0.12.35", false)
+	_, err := resolveChartImageRef(context.Background(), deps, "oberth-charts/oberth", "0.12.35", false, "")
 	if err == nil || !strings.Contains(err.Error(), "not in digest-pinned form") {
 		t.Fatalf("short digest ref error = %v", err)
 	}
@@ -616,7 +616,7 @@ func TestResolveChartImageRefRejectsNonGARRegistry(t *testing.T) {
 			return nil, fmt.Errorf("unexpected: %v", args)
 		},
 	}
-	_, err := resolveChartImageRef(context.Background(), deps, "oberth-charts/oberth", "0.12.35", false)
+	_, err := resolveChartImageRef(context.Background(), deps, "oberth-charts/oberth", "0.12.35", false, "")
 	if err == nil || !strings.Contains(err.Error(), "canonical GAR prefix") {
 		t.Fatalf("non-GAR registry error = %v", err)
 	}
@@ -634,7 +634,7 @@ func TestResolveChartImageRefLocalChartSkipsRegistryCheck(t *testing.T) {
 			return nil, fmt.Errorf("unexpected: %v", args)
 		},
 	}
-	ref, err := resolveChartImageRef(context.Background(), deps, "/tmp/chart", "0.12.35", true)
+	ref, err := resolveChartImageRef(context.Background(), deps, "/tmp/chart", "0.12.35", true, "")
 	if err != nil {
 		t.Fatalf("local chart with non-GAR registry should pass: %v", err)
 	}
@@ -654,7 +654,7 @@ func TestResolveChartImageRefLocalChartStillRequiresDigest(t *testing.T) {
 			return nil, fmt.Errorf("unexpected: %v", args)
 		},
 	}
-	_, err := resolveChartImageRef(context.Background(), deps, "/tmp/chart", "0.12.35", true)
+	_, err := resolveChartImageRef(context.Background(), deps, "/tmp/chart", "0.12.35", true, "")
 	if err == nil || !strings.Contains(err.Error(), "not in digest-pinned form") {
 		t.Fatalf("local chart without digest error = %v", err)
 	}
@@ -1156,5 +1156,54 @@ func TestRunUpgradeRecoveryGuidanceOnRolloutFailure(t *testing.T) {
 	}
 	if !strings.Contains(text, "kubectl logs") {
 		t.Fatalf("missing kubectl logs pointer in output: %q", text)
+	}
+}
+
+// A fork publishes its releases to its own registry, so the chart it ships
+// names that repository rather than the canonical GAR one. Rejecting it would
+// make `oberth upgrade` unusable on every build that is not upstream's.
+func TestResolveChartImageRefAcceptsThisBinarysOwnRepository(t *testing.T) {
+	t.Parallel()
+	validDigest := "sha256:abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+	forkRef := "ghcr.io/nikitzu/oberth@" + validDigest
+	deps := Deps{
+		Output: io.Discard,
+		RunHelm: func(_ context.Context, args []string) ([]byte, error) {
+			if args[0] == "show" && args[1] == "values" {
+				return []byte("image:\n  ref: " + forkRef + "\n"), nil
+			}
+			return nil, fmt.Errorf("unexpected: %v", args)
+		},
+	}
+
+	ref, err := resolveChartImageRef(context.Background(), deps, "oberth-charts/oberth", "0.12.35", false,
+		"ghcr.io/nikitzu/oberth@sha256:1111111111111111111111111111111111111111111111111111111111111111")
+	if err != nil {
+		t.Fatalf("a chart in this binary's own image repository was rejected: %v", err)
+	}
+	if ref != forkRef {
+		t.Fatalf("ref = %q, want %q", ref, forkRef)
+	}
+}
+
+// A registry that is neither this binary's own nor the canonical one is still
+// refused: the repository test replaces the prefix test, it does not drop it.
+func TestResolveChartImageRefStillRejectsAThirdPartyRegistry(t *testing.T) {
+	t.Parallel()
+	validDigest := "sha256:abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+	deps := Deps{
+		Output: io.Discard,
+		RunHelm: func(_ context.Context, args []string) ([]byte, error) {
+			if args[0] == "show" && args[1] == "values" {
+				return []byte("image:\n  ref: other-registry.example.com/repo/oberth@" + validDigest + "\n"), nil
+			}
+			return nil, fmt.Errorf("unexpected: %v", args)
+		},
+	}
+
+	_, err := resolveChartImageRef(context.Background(), deps, "oberth-charts/oberth", "0.12.35", false,
+		"ghcr.io/nikitzu/oberth@sha256:1111111111111111111111111111111111111111111111111111111111111111")
+	if err == nil || !strings.Contains(err.Error(), "canonical GAR prefix") {
+		t.Fatalf("third-party registry error = %v", err)
 	}
 }

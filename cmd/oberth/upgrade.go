@@ -38,6 +38,7 @@ func runUpgrade(ctx context.Context, arguments []string, output io.Writer) error
 
 	cfg.Timeout = *timeout
 	cfg.BinaryVersion = version
+	cfg.DefaultImageRef = imageRef
 
 	// Validate early so dev-build rejection does not require a cluster.
 	if err := cfg.ValidateUpgrade(); err != nil {

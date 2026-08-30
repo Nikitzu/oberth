@@ -1455,7 +1455,10 @@ func InstallOberth(ctx context.Context, cfg Config, deps Deps, openbao OpenBaoRe
 //
 // A published image is left alone: moving one release's image to the next is
 // what a re-run with a newer binary is FOR, so only an image from outside the
-// published registry counts as the operator's own.
+// repositories this build publishes to counts as the operator's own. That is
+// the binary's own default image repository as well as the canonical upstream
+// registry, so a fork upgrading from its previous release is not mistaken for
+// a hand-deployed image.
 func keepCustomDeployedImage(ctx context.Context, cfg *Config, deps Deps, namespace string) {
 	if cfg.ImageRefExplicit {
 		return
@@ -1464,7 +1467,7 @@ func keepCustomDeployedImage(ctx context.Context, cfg *Config, deps Deps, namesp
 	if deployed == "" || deployed == strings.TrimSpace(cfg.ImageRef) {
 		return
 	}
-	if strings.HasPrefix(deployed, canonicalGARPrefix) {
+	if imageRefIsPublished(deployed, cfg.ImageRef) {
 		return
 	}
 	_, _ = fmt.Fprintf(deps.Output,

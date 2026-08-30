@@ -18,6 +18,26 @@ import (
 // CloudTaser images. Published chart refs must resolve to this registry.
 const canonicalGARPrefix = "europe-west4-docker.pkg.dev/skipopsmain/cloudtaser/"
 
+// imageRefIsPublished reports whether an image ref came from a release rather
+// than from the operator's own build.
+//
+// Published means the ref lives in the same repository as the image this
+// binary was built to deploy, or under the canonical GAR prefix upstream
+// releases to. A prefix test alone was wrong for a fork: a fork publishes
+// under its own registry, so its previous release looked like a hand-deployed
+// image and every upgrade was silently kept at the old digest.
+func imageRefIsPublished(ref, binaryDefaultRef string) bool {
+	repo := imageRepository(strings.TrimSpace(ref))
+	if repo == "" {
+		return false
+	}
+	if strings.HasPrefix(repo, canonicalGARPrefix) {
+		return true
+	}
+	binaryRepo := imageRepository(strings.TrimSpace(binaryDefaultRef))
+	return binaryRepo != "" && repo == binaryRepo
+}
+
 // UpgradeConfig holds options for the upgrade command.
 type UpgradeConfig struct {
 	Namespace     string
@@ -25,7 +45,11 @@ type UpgradeConfig struct {
 	Yes           bool   // --yes: proceed without confirmation for non-local targets
 	ChartOverride string // --chart: override the chart reference
 	BinaryVersion string
-	Timeout       time.Duration
+	// DefaultImageRef is the server image this binary was built to deploy.
+	// A chart published by this build refers to that repository, which need
+	// not be the canonical upstream registry when the build is a fork's.
+	DefaultImageRef string
+	Timeout         time.Duration
 }
 
 // UpgradeResult describes the outcome of an upgrade.
@@ -141,7 +165,7 @@ func RunUpgrade(ctx context.Context, cfg UpgradeConfig, deps Deps) (UpgradeResul
 	}
 
 	// Resolve the target chart's image ref so the upgrade pins the exact image.
-	imageRef, err := resolveChartImageRef(ctx, deps, chart, targetVersion, cfg.ChartOverride != "")
+	imageRef, err := resolveChartImageRef(ctx, deps, chart, targetVersion, cfg.ChartOverride != "", cfg.DefaultImageRef)
 	if err != nil {
 		return result, fmt.Errorf("resolve chart image: %w", err)
 	}
@@ -179,7 +203,7 @@ func RunUpgrade(ctx context.Context, cfg UpgradeConfig, deps Deps) (UpgradeResul
 // upgrade pins the exact image the chart was built against, rather than
 // relying on an implicit default that --reuse-values might override with a
 // stale value.
-func resolveChartImageRef(ctx context.Context, deps Deps, chart, targetVersion string, isLocalChart bool) (string, error) {
+func resolveChartImageRef(ctx context.Context, deps Deps, chart, targetVersion string, isLocalChart bool, defaultImageRef string) (string, error) {
 	args := []string{"show", "values", chart}
 	if !isLocalChart && targetVersion != "" {
 		args = append(args, "--version", targetVersion)
@@ -205,11 +229,14 @@ func resolveChartImageRef(ctx context.Context, deps Deps, chart, targetVersion s
 		return "", fmt.Errorf("chart image.ref %q is not in digest-pinned form (<registry>/<repo>@sha256:<64hex>)", ref)
 	}
 
-	// Validate the registry prefix for published charts. The --chart dev-loop
-	// override allows any registry (local builds, mirrors) but still requires
-	// digest form above.
-	if !isLocalChart && !strings.HasPrefix(repo, canonicalGARPrefix) {
-		return "", fmt.Errorf("chart image.ref %q does not start with the canonical GAR prefix %s", ref, canonicalGARPrefix)
+	// Validate the registry for published charts: the chart must point either
+	// at this binary's own image repository, which is what a fork's release
+	// publishes to, or at the canonical GAR prefix upstream releases to. The
+	// --chart dev-loop override allows any registry (local builds, mirrors)
+	// but still requires digest form above.
+	if !isLocalChart && !imageRefIsPublished(repo, defaultImageRef) {
+		return "", fmt.Errorf("chart image.ref %q is in neither this binary's image repository %q "+
+			"nor under the canonical GAR prefix %s", ref, imageRepository(strings.TrimSpace(defaultImageRef)), canonicalGARPrefix)
 	}
 
 	return ref, nil
