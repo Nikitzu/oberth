@@ -59,3 +59,46 @@ func TestRunDetailKeepsQueuedBurnsPending(t *testing.T) {
 		t.Fatal("queued burn headers do not render the queued state")
 	}
 }
+
+func TestRunsServerSideRepoFilter(t *testing.T) {
+	t.Parallel()
+	script, ok := staticAssets["app.js"]
+	if !ok {
+		t.Fatal("app.js is not embedded")
+	}
+	source := string(script.body)
+
+	// Fix 1: /runs filtered view uses the server-side repo query parameter.
+	if !strings.Contains(source, `/api/runs?limit=100&repo=`) {
+		t.Fatal("app.js does not use the server-side repo filter endpoint")
+	}
+
+	// Fix 2: historyStrip emits data-run-id on .hist buttons (not bare <i>).
+	histStart := strings.Index(source, "function historyStrip(")
+	if histStart < 0 {
+		t.Fatal("app.js is missing historyStrip")
+	}
+	histEnd := strings.Index(source[histStart:], "\n}")
+	if histEnd < 0 {
+		t.Fatal("app.js historyStrip has no closing brace")
+	}
+	hist := source[histStart : histStart+histEnd]
+	if !strings.Contains(hist, `class="hist `) {
+		t.Fatal("historyStrip does not emit .hist class on its elements")
+	}
+	if !strings.Contains(hist, `data-run-id="`) {
+		t.Fatal("historyStrip does not emit data-run-id on history blocks")
+	}
+
+	// Fix 2 (ordering): data-run-id check must appear before data-repo-runs
+	// in the click handler — history buttons sit inside repo rows, so the
+	// reversed order would swallow the click.
+	runIDPos := strings.Index(source, `event.target.closest("[data-run-id]")`)
+	repoRunsPos := strings.Index(source, `event.target.closest("[data-repo-runs]")`)
+	if runIDPos < 0 || repoRunsPos < 0 {
+		t.Fatal("app.js is missing data-run-id or data-repo-runs click handlers")
+	}
+	if runIDPos >= repoRunsPos {
+		t.Fatal("data-run-id click handler must appear before data-repo-runs — history buttons nest inside repo rows")
+	}
+}

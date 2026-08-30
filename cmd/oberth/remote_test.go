@@ -342,3 +342,64 @@ func TestArtifactsAcceptsTheShortRunID(t *testing.T) {
 		t.Fatalf("artifacts were listed at %q, want the expanded identifier", artifactsPath)
 	}
 }
+
+// --- #242: status and issues --json is wired through ---
+
+func TestStatusRendersKeyValueWithoutJSON(t *testing.T) {
+	payload := `{"database":"ready","vcs":"ready","cluster":"ready","audit":"ready","version":"0.12.15","upstreams":2,"repositories":5}`
+	configure(t, remoteServer(t, payload))
+	var out bytes.Buffer
+	if err := runRemoteStatus(context.Background(), nil, &out); err != nil {
+		t.Fatal(err)
+	}
+	body := out.String()
+	for _, want := range []string{"database:", "ready", "0.12.15"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("output missing %q:\n%s", want, body)
+		}
+	}
+	if strings.Contains(body, `"database"`) {
+		t.Fatalf("status without --json emitted JSON instead of a rendered table:\n%s", body)
+	}
+}
+
+func TestStatusJSONEmitsRawPayload(t *testing.T) {
+	payload := `{"database":"ready","vcs":"ready"}`
+	configure(t, remoteServer(t, payload))
+	var out bytes.Buffer
+	if err := runRemoteStatus(context.Background(), []string{"--json"}, &out); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), `"database"`) {
+		t.Fatalf("--json did not emit the raw server payload:\n%s", out.String())
+	}
+}
+
+func TestIssuesRendersTableWithoutJSON(t *testing.T) {
+	payload := `{"Issues":[{"ID":42,"State":"open","Kind":"ci","Title":"lint failed"}],"NextBefore":0}`
+	configure(t, remoteServer(t, payload))
+	var out bytes.Buffer
+	if err := runIssues(context.Background(), nil, &out); err != nil {
+		t.Fatal(err)
+	}
+	body := out.String()
+	for _, want := range []string{"42", "open", "ci", "lint failed", "ID"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("output missing %q:\n%s", want, body)
+		}
+	}
+	if strings.Contains(body, `"Issues"`) {
+		t.Fatalf("issues without --json emitted JSON instead of a rendered table:\n%s", body)
+	}
+}
+
+func TestIssuesEmptyShowsNoIssues(t *testing.T) {
+	configure(t, remoteServer(t, `{"Issues":[]}`))
+	var out bytes.Buffer
+	if err := runIssues(context.Background(), nil, &out); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "no issues") {
+		t.Fatalf("empty issue list did not show a message:\n%s", out.String())
+	}
+}

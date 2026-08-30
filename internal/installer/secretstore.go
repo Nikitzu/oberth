@@ -911,6 +911,15 @@ func ConfigureSecretStore(ctx context.Context, cfg Config, deps Deps, store open
 	}
 	result.Items = append(result.Items, configItem{Name: "ci-secrets policy", Status: "✓"})
 
+	// --- Per-repo identities: each secret-declaring repo gets its own ---
+	if len(cfg.PerRepoIdentities) > 0 {
+		perRepoItems, err := ConfigurePerRepoIdentities(ctx, store, rootToken, cfg.PerRepoIdentities, argoNS)
+		if err != nil {
+			return result, fmt.Errorf("per-repo identities: %w", err)
+		}
+		result.Items = append(result.Items, perRepoItems...)
+	}
+
 	// Reaching this point proves each production object was either observed
 	// with its exact managed shape or created through the exact bounded command
 	// above. Callers must carry this positive result into Oberth Helm enablement;
@@ -991,27 +1000,45 @@ path "auth/token/revoke-self" {
 }`, kvPrefix)
 }
 
-// credentialedPolicyPaths converts approval-table path vocabulary — the full
-// KV data paths pipeline documents declare and `oberth access allow` records,
-// e.g. oberth/data/release/cosign-secret — into the under-prefix form the
-// policy grammar uses (release/cosign-secret). Every path must be an exact
-// data path under "<kvPrefix>/data/": anything else is refused so a typo or a
-// wildcard fails the install instead of writing an unintended policy grant.
-// Vault's policy globs ("*" suffix, "+" segment) are rejected outright — the
+// credentialedPolicyPaths converts approval-table path vocabulary into the
+// under-prefix form the policy grammar uses. It accepts two path forms:
+//
+//   - Full KV v2 data path: oberth/data/release/cosign-secret → release/cosign-secret
+//   - Logical mount path:   oberth/upstream/org/repo/secret   → upstream/org/repo/secret
+//
+// The logical form is what `oberth access allow` records for upstream-scoped
+// grants; the KV v2 data API adds /data/ between the mount point and the
+// logical path, so both forms produce the same Vault policy entry (e.g.
+// path "oberth/data/upstream/org/repo/secret"). Every path must be exact —
+// Vault globs ("*" suffix, "+" segment) are rejected outright because the
 // entire point of the grant-synced policy is exact-path read access.
 func credentialedPolicyPaths(kvPrefix string, paths []string) ([]string, error) {
-	prefix := kvPrefix + "/data/"
+	dataPrefix := kvPrefix + "/data/"
+	upstreamPrefix := kvPrefix + "/upstream/"
 	var out []string
 	for _, path := range paths {
 		trimmed := strings.TrimSpace(path)
 		if trimmed == "" {
 			continue
 		}
-		rest, ok := strings.CutPrefix(trimmed, prefix)
-		if !ok || rest == "" {
+		var rest string
+		switch {
+		case strings.HasPrefix(trimmed, dataPrefix):
+			// Full KV v2 data path: oberth/data/release/cosign-secret
+			rest = trimmed[len(dataPrefix):]
+		case strings.HasPrefix(trimmed, upstreamPrefix):
+			// Logical upstream path: oberth/upstream/org/repo/secret
+			// Strip mount prefix only — the consumer re-adds kvPrefix/data/
+			// when writing the policy, producing the correct KV v2 data path.
+			rest = trimmed[len(kvPrefix)+1:]
+		default:
 			return nil, fmt.Errorf(
-				"credentialed secret path %q must be a full KV data path under %q (e.g. %srelease/cosign-secret)",
-				trimmed, prefix, prefix)
+				"credentialed secret path %q must be a KV data path under %q or an upstream path under %q",
+				trimmed, dataPrefix, upstreamPrefix)
+		}
+		if rest == "" {
+			return nil, fmt.Errorf(
+				"credentialed secret path %q resolves to an empty path", trimmed)
 		}
 		if strings.ContainsAny(rest, "*+") || strings.HasSuffix(rest, "/") || strings.Contains(rest, "//") {
 			return nil, fmt.Errorf(

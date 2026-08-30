@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/oberthci/oberth/internal/gitcache"
 	"github.com/oberthci/oberth/internal/model"
 )
 
@@ -24,6 +25,11 @@ type UplinkStatus struct {
 func (s *Store) RegisterUpstream(ctx context.Context, actor string, spec model.UpstreamSpec) (model.Upstream, error) {
 	if strings.TrimSpace(actor) == "" || strings.TrimSpace(spec.Name) == "" || strings.TrimSpace(spec.Kind) == "" || strings.TrimSpace(spec.BaseURL) == "" {
 		return model.Upstream{}, fmt.Errorf("%w: actor and upstream fields are required", ErrInvalid)
+	}
+	// Guard 1: upstream names must match the repo segment charset and must not
+	// be reserved names that would alias security boundaries (issue #245).
+	if err := gitcache.ValidateUpstreamName(spec.Name); err != nil {
+		return model.Upstream{}, fmt.Errorf("%w: %w", ErrInvalid, err)
 	}
 	details, err := json.Marshal(map[string]string{"name": spec.Name, "kind": spec.Kind, "base_url": spec.BaseURL, "key_name": spec.KeyName})
 	if err != nil {
@@ -58,6 +64,30 @@ func (s *Store) RegisterUpstream(ctx context.Context, actor string, spec model.U
 	}
 	if existing != "" {
 		return model.Upstream{}, fmt.Errorf("%w: organization %q is already claimed by upstream %q; two upstreams with the same org would alias org-scoped secret paths (oberth/upstream/%s/*)", ErrInvalid, newOrg, existing, newOrg)
+	}
+	// Guard 2: namespace disjointness — upstream name must not collide with
+	// any known upstream's org identity, and vice versa (issue #245). An
+	// upstream named "oberthci" whose registered org is also "oberthci"
+	// would make a 2-segment path like "oberthci/oberth" ambiguous: is it
+	// org/repo or upstream/repo?
+	orgConflictWithName, err := upstreamNameCollidesWithOrg(ctx, tx, spec.Name)
+	if err != nil {
+		return model.Upstream{}, err
+	}
+	if orgConflictWithName != "" {
+		return model.Upstream{}, fmt.Errorf("%w: upstream name %q collides with the org identity of upstream %q; this would make 2-segment paths ambiguous", ErrInvalid, spec.Name, orgConflictWithName)
+	}
+	// Guard 3 (G2 reverse): the new upstream's org must not collide with
+	// any existing upstream's NAME. Without this, adding upstream "acme"
+	// with org "codeberg" when an upstream named "codeberg" already exists
+	// would make "codeberg/repo" resolve ambiguously: is "codeberg" the
+	// upstream name or the org identity? (issue #245 G2)
+	nameConflictWithOrg, err := upstreamOrgCollidesWithName(ctx, tx, newOrg)
+	if err != nil {
+		return model.Upstream{}, err
+	}
+	if nameConflictWithOrg != "" {
+		return model.Upstream{}, fmt.Errorf("%w: organization %q from base URL collides with existing upstream name %q; this would make 2-segment paths ambiguous", ErrInvalid, newOrg, nameConflictWithOrg)
 	}
 
 	result, err := tx.ExecContext(ctx, `
@@ -105,6 +135,53 @@ func upstreamOrgConflict(ctx context.Context, tx *sql.Tx, org string) (string, e
 	}
 	if err := rows.Err(); err != nil {
 		return "", fmt.Errorf("check upstream org uniqueness: %w", err)
+	}
+	return conflict, nil
+}
+
+// upstreamNameCollidesWithOrg checks whether a proposed upstream name matches
+// the Org() of any existing upstream (namespace disjointness guard #245).
+// Returns the name of the conflicting upstream, or "" when no collision exists.
+func upstreamNameCollidesWithOrg(ctx context.Context, tx *sql.Tx, upstreamName string) (string, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT name, base_url FROM upstreams`)
+	if err != nil {
+		return "", fmt.Errorf("check upstream name/org disjointness: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var conflict string
+	lowerName := strings.ToLower(upstreamName)
+	for rows.Next() {
+		var name, baseURL string
+		if err := rows.Scan(&name, &baseURL); err != nil {
+			return "", fmt.Errorf("scan upstream name/org: %w", err)
+		}
+		existingOrg := (model.Upstream{BaseURL: baseURL}).Org()
+		// The proposed upstream NAME must not equal any existing upstream's ORG.
+		if conflict == "" && strings.EqualFold(existingOrg, upstreamName) {
+			conflict = name
+		}
+		// The reverse (existing NAME = new ORG) is checked by
+		// upstreamOrgCollidesWithName in the caller.
+		_ = lowerName
+	}
+	if err := rows.Err(); err != nil {
+		return "", fmt.Errorf("check upstream name/org disjointness: %w", err)
+	}
+	return conflict, nil
+}
+
+// upstreamOrgCollidesWithName checks whether the proposed upstream's org
+// identity (from its base URL) matches the NAME of any existing upstream
+// (G2 reverse direction, issue #245). Returns the name of the conflicting
+// upstream, or "" when no collision exists.
+func upstreamOrgCollidesWithName(ctx context.Context, tx *sql.Tx, org string) (string, error) {
+	var conflict string
+	err := tx.QueryRowContext(ctx, `SELECT name FROM upstreams WHERE LOWER(name) = LOWER(?)`, org).Scan(&conflict)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("check upstream org/name reverse disjointness: %w", err)
 	}
 	return conflict, nil
 }

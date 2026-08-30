@@ -624,8 +624,19 @@ ALTER TABLE step_results DROP COLUMN declared_size;
 ALTER TABLE uplinks DROP COLUMN admin;
 ALTER TABLE upstreams DROP COLUMN key_name;
 ALTER TABLE runs DROP COLUMN credentialed;
+CREATE TABLE repositories_v1 (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE,
+    upstream_id INTEGER NOT NULL REFERENCES upstreams(id),
+    default_branch TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+INSERT INTO repositories_v1 SELECT * FROM repositories;
+DROP TABLE repositories;
+ALTER TABLE repositories_v1 RENAME TO repositories;
 DROP TABLE IF EXISTS schedule_fires;
-DELETE FROM schema_migrations WHERE version IN (3, 4, 5, 6, 7, 8, 9);
+DELETE FROM schema_migrations WHERE version IN (3, 4, 5, 6, 7, 8, 9, 10, 11, 12);
 COMMIT;
 PRAGMA foreign_keys = ON;
 `); err != nil {
@@ -746,8 +757,19 @@ DROP TABLE uplinks;
 ALTER TABLE uplinks_v1 RENAME TO uplinks;
 CREATE UNIQUE INDEX uplinks_token_credential_idx ON uplinks(token_credential_id);
 ALTER TABLE runs DROP COLUMN credentialed;
+CREATE TABLE repositories_v1 (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE,
+    upstream_id INTEGER NOT NULL REFERENCES upstreams(id),
+    default_branch TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+INSERT INTO repositories_v1 SELECT * FROM repositories;
+DROP TABLE repositories;
+ALTER TABLE repositories_v1 RENAME TO repositories;
 DROP TABLE IF EXISTS schedule_fires;
-DELETE FROM schema_migrations WHERE version IN (2, 3, 4, 5, 6, 7, 8, 9);
+DELETE FROM schema_migrations WHERE version IN (2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12);
 COMMIT;
 PRAGMA foreign_keys = ON;
 `); err != nil {

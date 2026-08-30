@@ -10,7 +10,7 @@ const listPollMs = 4000;
 const slowPollMs = 10000;
 const livePollMs = 2000;
 const state = {
-  repos: [], runs: [], status: null,
+  repos: [], runs: [], repoRuns: [], status: null,
   timer: null, routeSeq: 0,
   repo: localStorage.getItem("oberth-repo") || "all",
   step: "", stepRunID: "",
@@ -303,6 +303,10 @@ function setAuto(ms) {
 /* ---------- data loading ---------- */
 async function loadRepos() { state.repos = await api("/api/repos") || []; }
 async function loadRuns() { state.runs = await api("/api/runs?limit=100") || []; }
+async function loadRepoRuns() {
+  if (state.repo === "all") { state.repoRuns = []; return; }
+  state.repoRuns = await api(`/api/runs?limit=100&repo=${enc(state.repo)}`) || [];
+}
 async function loadStatus() {
   state.status = await api("/api/status");
   setVersion(true, state.status?.version);
@@ -426,10 +430,11 @@ function streamStats(blocks) {
 
 async function renderRuns(seq) {
   setChrome("runs");
-  await Promise.all([loadRepos(), loadRuns()]);
+  await Promise.all([loadRepos(), loadRuns(), loadRepoRuns()]);
   if (!currentRoute(seq)) return;
   localStorage.setItem("oberth-stream", state.stream);
-  const blocks = branchBlocks(state.runs);
+  localStorage.setItem("oberth-repo", state.repo);
+  const blocks = branchBlocks(state.repo !== "all" ? state.repoRuns : state.runs);
   if (!state.me && state.runs.length) state.me = state.runs[0].Actor || "";
   const visible = blocks.filter(branchMatches);
   await Promise.all(visible.filter(block => state.openBranches.has(block.key)).map(block => loadBranchDetail(block.head.ID)));
@@ -895,7 +900,7 @@ function upstreamName(upstreamID) {
   return info ? info.name : (upstreamID ? "#" + upstreamID : "--");
 }
 function historyStrip(runs) {
-  return `<div class="strip" aria-label="recent runs, oldest to newest">${runs.slice(0, 12).reverse().map(run => `<i class="${statusKind(run.Status)}" style="height:${Math.max(5, Math.min(16, Math.round((runDuration(run) || 0) / 25)))}px" title="${esc(`${run.Ref} · ${statusLabel(run.Status)} · ${fmtTime(runWhen(run))}`)}"></i>`).join("") || '<span class="meta">--</span>'}</div>`;
+  return `<div class="strip" aria-label="recent runs, oldest to newest">${runs.slice(0, 12).reverse().map(run => `<button type="button" class="hist ${statusKind(run.Status)}" data-run-id="${esc(run.ID)}" style="height:${Math.max(5, Math.min(16, Math.round((runDuration(run) || 0) / 25)))}px" title="${esc(`${run.Ref} · ${statusLabel(run.Status)} · ${fmtTime(runWhen(run))}`)}"></button>`).join("") || '<span class="meta">--</span>'}</div>`;
 }
 async function renderRepos(seq) {
   setChrome("repos");

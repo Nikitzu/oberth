@@ -32,8 +32,10 @@ type argoControl interface {
 
 // SecretAccessLoader loads approved secret grants for a repository at
 // admission time. The store.Store satisfies this interface directly.
+// The repository is identified by its durable ID to prevent same-name
+// repos under different upstreams from aliasing each other's grants.
 type SecretAccessLoader interface {
-	ActiveSecretGrants(ctx context.Context, repo string) (map[string]map[string]bool, error)
+	ActiveSecretGrants(ctx context.Context, repoID int64) (map[string]map[string]bool, error)
 }
 
 // ReconcilerHealthChecker reports whether the access reconciler has completed
@@ -265,7 +267,7 @@ func (jobs *ArgoJobs) create(ctx context.Context, request service.JobRequest, tr
 	// Pre-load approved secrets from the approval table.
 	var approvedSecrets map[string]bool
 	if jobs.secretAccess != nil {
-		grants, loadErr := jobs.secretAccess.ActiveSecretGrants(ctx, request.Repository.Name)
+		grants, loadErr := jobs.secretAccess.ActiveSecretGrants(ctx, request.Repository.ID)
 		if loadErr != nil {
 			return fmt.Errorf("app: load approved secrets for %s: %w", request.Repository.Name, loadErr)
 		}
@@ -286,7 +288,7 @@ func (jobs *ArgoJobs) create(ctx context.Context, request service.JobRequest, tr
 	}
 	submission := argojob.Request{
 		RunID: request.Run.ID, Name: request.JobName,
-		Repo: request.Repository.Name, UpstreamOrg: request.UpstreamOrg,
+		Repo: request.Repository.Name, UpstreamName: request.UpstreamName, UpstreamOrg: request.UpstreamOrg,
 		Ref: request.Run.Ref, SHA: testedSHA, Trigger: trigger, Source: source,
 		SourceDir: request.SourceDir, ApprovedSecrets: approvedSecrets,
 		Fragments: fragments, Files: files,

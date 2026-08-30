@@ -62,13 +62,27 @@ implementation detail disagree.
   commit proven reachable from the freshly fetched upstream default branch.
 - Secret-store-sourced release secrets (OpenBao) never become Kubernetes
   Secrets. Pipelines that declare approved secret-store paths bind to the
-  trigger's own credentialed identity: release runs to the credentialed
-  ServiceAccount — the only identity whose OpenBao role's policy carries
-  approval-table release grants — and CI runs to the separate ci-secrets
+  trigger's own credentialed identity: release runs to the repository's own
+  per-repo ServiceAccount when one is provisioned (its OpenBao role's policy
+  carries that repository's own org/repo upstream namespace, the upstream
+  namespace of the org it belongs to, and its own approval-table grants),
+  falling back to the shared credentialed ServiceAccount otherwise; these are
+  the only identities whose policies carry approval-table release grants.
+  The org-level rule is a deliberate divergence from upstream on this fork: a
+  path under the repository's own org is authorized structurally at admission
+  without an approval-table row, and the declared form may be org-scoped
+  (oberth/upstream/<org>/<secret>) as well as repo-scoped, so the identity has
+  to be able to read what admission admits. Without it a release run for a
+  repository holding any grant would pass admission on an org-scoped
+  declaration and then fail the Vault read with a 403. Cross-org reach is
+  unchanged: the wildcard stops at the repository's own org, so no identity
+  reads another org's subtree. CI runs bind the separate ci-secrets
   ServiceAccount, whose role's policy covers the upstream subtree only and
-  never receives grants. The release role binds its exact ServiceAccount
-  name, so release credentials are unreachable from a branch push at the
-  Vault layer, not only at admission. Two credential chains are supported:
+  never receives grants; per-repo identities are release-tier only, so a
+  branch run never binds one. Each release-capable role binds its exact
+  ServiceAccount name, so release credentials are unreachable from a branch
+  push at the Vault layer, not only at admission. Two credential chains are
+  supported:
   - **Native (preferred):** `oberth secretstore exec` authenticates to
     OpenBao in-Pod using the ServiceAccount's projected token, fetches the
     declared paths, validates the `--dir` mount is tmpfs, writes files at
@@ -109,10 +123,11 @@ implementation detail disagree.
   a pipeline that declares no approved secret-store paths binds to the
   pipeline ServiceAccount with no Vault/OpenBao access and
   `automountServiceAccountToken: false`; a release pipeline with approved
-  paths binds to the credentialed ServiceAccount, and a CI pipeline with
+  paths binds to its repository's per-repo ServiceAccount when provisioned
+  (the shared credentialed ServiceAccount otherwise), and a CI pipeline with
   approved paths binds to the ci-secrets ServiceAccount — each carrying a
-  projected token that only its own tier's OpenBao role accepts, with the
-  trigger's role injected as `OBERTH_VAULT_ROLE`. The CI system-path
+  projected token that only its own identity's OpenBao role accepts, with the
+  selected role injected as `OBERTH_VAULT_ROLE`. The CI system-path
   prohibition (branch pipelines may not declare system-namespace paths) and
   the approval-table grant check are enforced as defense in depth on top of
   the identity switch. Secret paths a repository-authored envconsul
@@ -186,7 +201,18 @@ implementation detail disagree.
     registration fails closed when a new upstream's `<org>` (or an empty one)
     collides with an already-registered upstream's `<org>`, naming the
     conflict — two upstreams may not share an org, since that would alias this
-    subtree across trust domains.
+    subtree across trust domains. Registration additionally validates the
+    upstream NAME itself: it must match the repository segment charset, must
+    not end in `.git`, and must not be one of the reserved names `release`,
+    `data`, `upstream`, `sys`, `metadata`, `receive-outbox`
+    (case-insensitive) — an upstream named `release` would make the release
+    credential namespace structurally addressable from repository-controlled
+    path spellings. Name and org namespaces are kept disjoint in both
+    directions: a new upstream's name may not equal an existing upstream's
+    org, and a new upstream's org may not equal an existing upstream's name
+    (an upstream whose own name equals its own org remains legal), so a
+    2-segment `<first>/<repo>` spelling can never be ambiguous between the
+    two.
   - **System** — any other KV API path (for example
     `oberth/data/release/cosign-secret`), requiring an exact administrator
     `secretstore.allowedPaths` entry; used by Oberth's own release
@@ -268,6 +294,37 @@ implementation detail disagree.
 - Only `git-upload-pack` and `git-receive-pack` are accepted. Receive-pack may
   update only `refs/heads/*` and `refs/tags/*`; shell, PTY, forwarding, helper
   protocols, replacement refs, and other namespaces are rejected.
+- Three repository path spellings are accepted and validated segment-wise:
+  `<repo>[.git]`, `<org>/<repo>[.git]`, and
+  `<upstream-name>/<org>/<repo>[.git]`. All spellings of one repository
+  resolve to the same identity — so one repository has exactly one cache
+  directory (flat `<root>/<repo>.git`; a qualified on-disk layout requires
+  its own explicit migration design), one lock, and one durable receive
+  reservation regardless of spelling. For a registered repository, a
+  supplied upstream name must equal the registered upstream's name and a
+  supplied org must equal that upstream's org identity; mismatches fail
+  closed. Nested paths beyond three segments are rejected.
+- Canonical persistence (#245 G3, schema v11/v12): `repositories` enforces
+  compound `UNIQUE(upstream_id, name)`, so the same bare name may exist
+  under different upstreams. Store lookups by name accept all three
+  spellings; a bare name matching repositories under multiple upstreams
+  returns an ambiguity error naming the candidates — nothing silently picks
+  one. Cross-repo persisted state keys on the qualified
+  `<upstream>/<org>/<repo>` form: `schedule_fires` rows (runtime reads and
+  writes resolve the qualified key first and skip the tick when resolution
+  fails — never a bare-key fallback write) and `secret_access` rows
+  (admission loads grants by repository ID through the qualified key ONLY;
+  a bare-keyed row is inert, never aliased onto same-name repositories).
+  The access reconciler canonicalizes ConfigMap entry spellings at the
+  converge boundary: resolvable entries key the diff by their qualified
+  form, an ambiguous bare entry is skipped fail-closed with a loud log,
+  and an entry for an unregistered repository stays verbatim and inert.
+  Migration discipline: shipped migration bodies are append-only — v10 was
+  released as a ledger-only no-op and is recorded on live databases, so
+  the canonical-persistence rebuild lives at v11 (FK-safe rebuild +
+  schedule-fire qualification) and v12 (grant qualification); replacing a
+  recorded version's body silently never runs on the databases that need
+  it (`TestMigrationLiveLineageAppliesRebuildAfterRecordedV10`).
 - Feature branches may be force-updated. Tags are creation-only: deletion,
   movement, upstream conflict, and commits outside the fresh upstream default
   branch are rejected before the public cache ref changes. The same branch/tag
@@ -498,13 +555,19 @@ implementation detail disagree.
   namespace, so the server's own workspace volume is never the pipeline's. The
   claim is owned by its Workflow and collected with it; unowned claims past a
   grace window are swept.
-- Every secret-store fetch is recorded in the audit chain as an actor-bound
-  intent and outcome (`release.secretstore.fetch.*`) attributed to the uplink
-  that pushed the tag, before and after OpenBao is contacted. No audit chain,
-  no attributable actor, or a failed intent write means no fetch. Fetched
-  values are redacted in-Pod by the oberth credential chain (`oberth
-  secretstore exec` or `materialize`), which wraps each credentialed step's
-  stdout and stderr with redact.NewWriter.
+- Secret-store fetch auditing spans two layers. Fetch INTENT is recorded
+  server-side in the audit chain as a `<trigger>.argo.submit.binding` action
+  attributed to the uplink that pushed the ref, with the declared secret paths
+  included in the binding details; no audit chain, no attributable actor, or a
+  failed intent write means no submission. Fetch OUTCOME is observed through
+  three signals: the step exit code (`oberth secretstore exec` exits non-zero
+  on any store error), a structured `oberth-secret-fetch` JSON marker emitted
+  by `secretstore exec` to stderr (captured in the step log), and — when
+  enabled — the OpenBao file audit device (`setup-secretstore.sh` enables it
+  at `/openbao/data/audit.log`, on the store's persistent volume so the trail
+  survives pod recreation). Fetched values are redacted in-Pod by the oberth
+  credential chain (`oberth secretstore exec` or `materialize`), which wraps
+  each credentialed step's stdout and stderr with redact.NewWriter.
 - Every push, sync, promotion, and issue mutation is attributed to the acting
   uplink in the same durable transaction as the state change where applicable.
 - In-pod upstream/uplink administration has no bootstrap exception: schema,
@@ -604,6 +667,16 @@ implementation detail disagree.
   `oberth-secret-access`; unnamed ConfigMap update, patch, or delete stay
   forbidden so audit-anchor continuity ConfigMaps remain unwritable by the
   server's own identity.
+- Grant revocation is immediately effective for Oberth admission (the sqlite
+  approval table is updated atomically with ConfigMap reconciliation), but the
+  Vault credentialed policy retains the exact-path read entry until a policy
+  re-sync. The server's own identity has no Vault policy-write capability, so
+  `access_revoke` includes an advisory in its response. To complete the
+  revocation at the Vault layer, re-run the installer with the current approval
+  table: `oberth install --install-secretstore --upgrade` (or the equivalent
+  `setup-secretstore.sh` with `--force`). Until re-synced, an already-running
+  credentialed step whose token was obtained before the revocation can still
+  read the path; new runs are blocked by Oberth's own admission gate.
 - Kubernetes access is namespace-scoped, with one documented exception: when
   `secretstore.enabled` is set, the chart may create a `system:auth-delegator`
   ClusterRoleBinding for the Oberth ServiceAccount so OpenBao validates login
@@ -656,6 +729,7 @@ implementation detail disagree.
 | Bind an OpenBao role to a wildcard ServiceAccount name or namespace, or grant the CI tier a ServiceAccount token | Forbidden |
 | Change the RunnerImage declaration shape or widen the default prefix allowlist | Breaking security change |
 | Change token-to-uplink cardinality or accepted Git ref namespaces | Breaking security change |
+| Change the accepted repository path grammar, its resolution to the registered identity, or the upstream-name reserved list / disjointness guards | Breaking security change |
 | Mount any Secret in a branch Job or share/nest CI and release cache roots | Forbidden |
 | Execute or evaluate repository code in the server process | Forbidden |
 | Force-push a promotion target | Forbidden |

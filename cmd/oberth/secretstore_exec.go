@@ -2,12 +2,14 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"syscall"
 
@@ -38,11 +40,6 @@ const (
 	// declare, matching the secretstore client's own limit.
 	maxExecPaths = 32
 
-	// minRedactLength is the minimum byte length a fetched value must reach
-	// before it is registered as a redaction pattern. Shorter values risk
-	// false-positive masking of ordinary build output.
-	minRedactLength = 8
-
 	// tmpfsMagic is the Linux filesystem magic number for tmpfs.
 	// See statfs(2). Used to refuse writing secrets to non-tmpfs mounts.
 	tmpfsMagic = 0x01021994
@@ -51,6 +48,10 @@ const (
 // secretExecStatfs is the function used to check filesystem type. Tests
 // replace it to avoid requiring an actual tmpfs mount.
 var secretExecStatfs = defaultStatfs
+
+// swapCheckPath is the path to check for active swap devices. Tests replace
+// it to avoid depending on the host's swap configuration.
+var swapCheckPath = "/proc/swaps"
 
 func defaultStatfs(path string) (int64, error) {
 	var stat syscall.Statfs_t
@@ -91,6 +92,16 @@ func runSecretStoreExec(ctx context.Context, arguments []string, standardOut, er
 	if fsType != tmpfsMagic {
 		return fmt.Errorf("secret directory %s is not a tmpfs mount (type 0x%x); "+
 			"refusing to write credentials to a non-memory-backed filesystem", directory, fsType)
+	}
+
+	// Warn if swap is active -- tmpfs pages can be swapped to disk, breaking
+	// the memory-only guarantee. Swapless nodes are a prerequisite for the
+	// memory-only secret delivery contract; this warning surfaces the gap
+	// without refusing (which would break too many existing setups).
+	if checkSwapActive(swapCheckPath) {
+		_, _ = fmt.Fprintf(errorOut, "WARNING: swap is active on this node; "+
+			"secrets on tmpfs may be paged to disk, breaking the memory-only guarantee. "+
+			"Disable swap (swapoff -a) for full memory-only assurance.\n")
 	}
 
 	// Coordinates come from server-injected env, never from the repository.
@@ -161,11 +172,15 @@ func runSecretStoreExec(ctx context.Context, arguments []string, standardOut, er
 			return fmt.Errorf("path %q returned no keys", kvPath)
 		}
 		for _, value := range values {
-			if len(value) >= minRedactLength {
-				secrets = append(secrets, value)
-			}
+			secrets = append(secrets, value)
 		}
 	}
+
+	// Emit a structured oberth-secret-fetch marker to stderr so the server's
+	// step log captures the fetch outcome with the paths and field names but
+	// without any secret values. The marker is written before the child starts,
+	// so a step that crashes after a successful fetch still has the record.
+	emitSecretFetchMarker(errorOut, paths, fetched)
 
 	// Write files: <dir>/<last-path-segment>/<key>
 	// #nosec G703 -- the directory is an operator-set flag on the pipeline step,
@@ -398,9 +413,7 @@ func runSecretStoreMaterialize(_ context.Context, arguments []string, standardOu
 		if err := writeMaterializeSecret(directory, entry.relative, value); err != nil {
 			return err
 		}
-		if len(value) >= minRedactLength {
-			secrets = append(secrets, []byte(value))
-		}
+		secrets = append(secrets, []byte(value))
 	}
 
 	return executeMaterialize(directory, mappings, command, secrets, standardOut, errorOut)
@@ -548,6 +561,54 @@ func isMaterializeStoreCredential(name string) bool {
 	return strings.HasPrefix(name, "VAULT_") ||
 		strings.HasPrefix(name, "BAO_") ||
 		strings.HasPrefix(name, "CONSUL_")
+}
+
+// emitSecretFetchMarker writes one JSON marker line to stderr so the server's
+// retained step log captures the fetch outcome. Only paths and field names are
+// included; values are never part of the marker. The marker is best-effort:
+// a write failure does not block the credential chain.
+func emitSecretFetchMarker(w io.Writer, paths []string, fetched map[string]map[string][]byte) {
+	keys := make(map[string][]string, len(fetched))
+	for path, fields := range fetched {
+		names := make([]string, 0, len(fields))
+		for name := range fields {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		keys[path] = names
+	}
+	marker := struct {
+		Paths []string            `json:"paths"`
+		Keys  map[string][]string `json:"keys"`
+		OK    bool                `json:"ok"`
+	}{Paths: paths, Keys: keys, OK: true}
+	payload, err := json.Marshal(marker)
+	if err != nil {
+		return // best-effort
+	}
+	_, _ = fmt.Fprintf(w, "[oberth-secret-fetch] %s\n", payload)
+}
+
+// checkSwapActive reads the swap status file and returns true if any swap
+// devices are active. Returns false on read error (the file may not exist
+// on non-Linux systems). Swapless nodes are a prerequisite for the memory-only
+// secret delivery contract: tmpfs pages can be paged to disk when swap is
+// active, which breaks the guarantee that secrets never touch persistent
+// storage.
+func checkSwapActive(path string) bool {
+	data, err := os.ReadFile(path) //nolint:gosec // G304: path is a package-level default (/proc/swaps), not user input
+	if err != nil {
+		return false
+	}
+	// /proc/swaps has a header line; any subsequent non-empty line means
+	// a swap device is active.
+	lines := strings.Split(string(data), "\n")
+	for _, line := range lines[1:] {
+		if strings.TrimSpace(line) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // kvMountName resolves the KV mount holding Oberth's secrets.

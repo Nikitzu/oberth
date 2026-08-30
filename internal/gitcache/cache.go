@@ -352,6 +352,14 @@ func (c *Cache) ensureLockedMayRecover(ctx context.Context, input, repo, path st
 
 		branch, refreshErr := c.refresh(ctx, input, path)
 		if refreshErr != nil {
+			// A refused upstream resolution (org or upstream-name mismatch)
+			// must fail closed immediately. The cache belongs to the correct
+			// upstream; the request is for a different identity and must
+			// never see its contents — serving stale data here would let a
+			// mismatched push path read refs it has no claim to.
+			if errors.Is(refreshErr, ErrUpstreamRefused) {
+				return Repository{}, refreshErr
+			}
 			// Check whether the upstream identity changed during the
 			// failed refresh. If it did, the stale cache belongs to a
 			// different upstream and must not be served — doing so would
@@ -892,16 +900,31 @@ func (c *Cache) isBare(ctx context.Context, path string) bool {
 }
 
 func (c *Cache) path(input string) (string, string, error) {
-	_, repo, err := ParseRepoPath(input)
+	upstream, org, repo, err := ParseRepoPath(input)
 	if err != nil {
 		return "", "", err
 	}
-	path := filepath.Join(c.root, repo+".git")
-	relative, err := filepath.Rel(c.root, path)
+	cachePath := c.qualifiedCachePath(upstream, org, repo)
+	relative, err := filepath.Rel(c.root, cachePath)
 	if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
 		return "", "", fmt.Errorf("repository path escapes cache root")
 	}
-	return repo, path, nil
+	return repo, cachePath, nil
+}
+
+// qualifiedCachePath resolves the on-disk path for a repository's bare cache.
+//
+// Currently the cache uses a flat layout (<root>/<repo>.git) regardless of
+// input form. The upstream and org from a 3-segment push are validated by
+// ParseRepoPath but do not influence the on-disk path. This ensures that
+// "codeberg/oberthci/oberth" and "oberth" resolve to the same cache
+// directory, preserving the "one repo, one cache" invariant without
+// requiring a startup migration or a RepoQualifier callback.
+//
+// A future qualified layout (<root>/<upstream>/<org>/<repo>.git) may be
+// introduced with an explicit migration step.
+func (c *Cache) qualifiedCachePath(_, _, repo string) string {
+	return filepath.Join(c.root, repo+".git")
 }
 
 func (c *Cache) repoLock(repo string) *sync.Mutex {

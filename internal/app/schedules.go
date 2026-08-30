@@ -41,12 +41,20 @@ type ScheduleState interface {
 	RecordScheduleFire(ctx context.Context, repo, entry string, at time.Time, outcome string) error
 }
 
+// ScheduleUpstreamResolver provides upstream identity for schedule-fire
+// key construction. The qualified repo name is the key in schedule_fires
+// so same-name repos under different upstreams have independent schedules.
+type ScheduleUpstreamResolver interface {
+	Upstream(context.Context, int64) (model.Upstream, error)
+}
+
 type SchedulesConfig struct {
 	Repositories func(context.Context) ([]model.Repository, error)
 	Git          ScheduleGit
 	Runs         ScheduleRuns
 	Enqueuer     ScheduleEnqueuer
 	State        ScheduleState
+	Upstreams    ScheduleUpstreamResolver
 	MinInterval  time.Duration
 	MaxEntries   int
 }
@@ -58,6 +66,29 @@ type Schedules struct {
 
 func NewSchedules(config SchedulesConfig) *Schedules {
 	return &Schedules{config: config, observed: time.Now().UTC()}
+}
+
+// qualifiedRepoName constructs the "upstream/org/repo" key for schedule_fires.
+//
+// A resolver failure returns an error and the caller skips the whole tick
+// rather than falling back to the bare name: a bare-keyed record is invisible
+// to every later qualified read, so the entry's "already fired" dedup would
+// miss and the schedule would fire again. Skipping a tick only delays; a
+// mixed-key write corrupts the dedup state. A nil resolver (fixtures without
+// upstream wiring) keeps the bare name, which is then also the read key.
+func (schedules *Schedules) qualifiedRepoName(ctx context.Context, repository model.Repository) (string, error) {
+	if schedules.config.Upstreams == nil {
+		return repository.Name, nil
+	}
+	upstream, err := schedules.config.Upstreams.Upstream(ctx, repository.UpstreamID)
+	if err != nil {
+		return "", err
+	}
+	org := upstream.Org()
+	if org == "" {
+		org = upstream.Name
+	}
+	return upstream.Name + "/" + org + "/" + repository.Name, nil
 }
 
 func (schedules *Schedules) Run(ctx context.Context) error {
@@ -94,6 +125,12 @@ func (schedules *Schedules) tickRepository(ctx context.Context, repository model
 	if branch == "" {
 		return
 	}
+	qualifiedName, err := schedules.qualifiedRepoName(ctx, repository)
+	if err != nil {
+		// Skip the tick: recording under a fallback key would corrupt the
+		// fire dedup state (see qualifiedRepoName). The next tick retries.
+		return
+	}
 	sha, err := schedules.config.Git.RefSHA(ctx, repository.Name, branch)
 	if err != nil {
 		return
@@ -106,16 +143,16 @@ func (schedules *Schedules) tickRepository(ctx context.Context, repository model
 		MinInterval: schedules.config.MinInterval, MaxEntries: schedules.config.MaxEntries,
 	}, schedules.observed)
 	if err != nil {
-		schedules.record(ctx, repository.Name, "", now, "refused")
+		schedules.record(ctx, qualifiedName, "", now, "refused")
 		return
 	}
 	for _, refusal := range file.Refused {
-		schedules.record(ctx, repository.Name, refusal.Name, now, "refused")
+		schedules.record(ctx, qualifiedName, refusal.Name, now, "refused")
 	}
 
 	last := map[string]time.Time{}
 	if schedules.config.State != nil {
-		if stored, stateErr := schedules.config.State.ScheduleFires(ctx, repository.Name); stateErr == nil {
+		if stored, stateErr := schedules.config.State.ScheduleFires(ctx, qualifiedName); stateErr == nil {
 			last = stored
 		}
 	}
@@ -125,17 +162,17 @@ func (schedules *Schedules) tickRepository(ctx context.Context, repository model
 	}
 	if schedules.busy(ctx, repository.ID) {
 		for _, entry := range due {
-			schedules.record(ctx, repository.Name, entry.Name, now, "skipped")
+			schedules.record(ctx, qualifiedName, entry.Name, now, "skipped")
 		}
 		return
 	}
 	for _, entry := range due {
-		schedules.fire(ctx, repository, entry, sha, branch, now)
+		schedules.fire(ctx, repository, qualifiedName, entry, sha, branch, now)
 	}
 }
 
 func (schedules *Schedules) fire(
-	ctx context.Context, repository model.Repository, entry schedule.Entry, sha, defaultBranch string, now time.Time,
+	ctx context.Context, repository model.Repository, qualifiedName string, entry schedule.Entry, sha, defaultBranch string, now time.Time,
 ) {
 	branch := entry.Branch
 	if branch == "" {
@@ -145,7 +182,7 @@ func (schedules *Schedules) fire(
 	if branch != defaultBranch {
 		resolved, err := schedules.config.Git.RefSHA(ctx, repository.Name, branch)
 		if err != nil {
-			schedules.record(ctx, repository.Name, entry.Name, now, "failed")
+			schedules.record(ctx, qualifiedName, entry.Name, now, "failed")
 			return
 		}
 		target = resolved
@@ -159,10 +196,10 @@ func (schedules *Schedules) fire(
 		Trigger:    "schedule",
 	})
 	if err != nil {
-		schedules.record(ctx, repository.Name, entry.Name, now, "failed")
+		schedules.record(ctx, qualifiedName, entry.Name, now, "failed")
 		return
 	}
-	schedules.record(ctx, repository.Name, entry.Name, now, "fired")
+	schedules.record(ctx, qualifiedName, entry.Name, now, "fired")
 }
 
 func (schedules *Schedules) busy(ctx context.Context, repoID int64) bool {

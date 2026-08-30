@@ -400,6 +400,16 @@ func runRepos(ctx context.Context, arguments []string, output io.Writer) error {
 	return nil
 }
 
+type remoteHealthStatus struct {
+	Database     string `json:"database"`
+	Upstreams    int    `json:"upstreams"`
+	Repositories int    `json:"repositories"`
+	VCS          string `json:"vcs"`
+	Cluster      string `json:"cluster"`
+	Audit        string `json:"audit"`
+	Version      string `json:"version,omitempty"`
+}
+
 func runRemoteStatus(ctx context.Context, arguments []string, output io.Writer) error {
 	flags, asJSON, err := remoteFlags("status", arguments, output)
 	if err != nil || flags == nil {
@@ -410,21 +420,45 @@ func runRemoteStatus(ctx context.Context, arguments []string, output io.Writer) 
 		return err
 	}
 	reportMode("server")
-	_ = asJSON
-	raw, err := api.GetRaw(ctx, "/api/status", nil)
-	if err != nil {
+	if *asJSON {
+		return emitJSON(ctx, api, "/api/status", nil, output)
+	}
+	var status remoteHealthStatus
+	if err := api.Get(ctx, "/api/status", nil, &status); err != nil {
 		return err
 	}
-	if err := writeIndentedJSON(raw, output); err != nil {
-		return err
+	for _, row := range []struct{ label, value string }{
+		{"database:", status.Database},
+		{"vcs:", status.VCS},
+		{"cluster:", status.Cluster},
+		{"audit:", status.Audit},
+		{"version:", status.Version},
+		{"upstreams:", fmt.Sprint(status.Upstreams)},
+		{"repositories:", fmt.Sprint(status.Repositories)},
+	} {
+		if _, err := fmt.Fprintf(output, "%-14s %s\n", row.label, row.value); err != nil {
+			return err
+		}
 	}
 	// Status is where the two versions are already both in hand, and it is
 	// the command someone runs when something is behaving oddly. An older CLI
 	// against a newer server is a real cause of that, and it was invisible:
 	// the server version was in the payload and the CLI's own was not
 	// anywhere near it.
-	warnVersionDrift(output, version, serverVersionFrom(raw))
+	warnVersionDrift(output, version, status.Version)
 	return nil
+}
+
+type remoteIssueSummary struct {
+	ID    int64
+	State string
+	Kind  string
+	Title string
+}
+
+type remoteIssuePage struct {
+	Issues     []remoteIssueSummary
+	NextBefore int64
 }
 
 func runIssues(ctx context.Context, arguments []string, output io.Writer) error {
@@ -437,8 +471,27 @@ func runIssues(ctx context.Context, arguments []string, output io.Writer) error 
 		return err
 	}
 	reportMode("server")
-	_ = asJSON
-	return emitJSON(ctx, api, "/api/issues", nil, output)
+	if *asJSON {
+		return emitJSON(ctx, api, "/api/issues", nil, output)
+	}
+	var page remoteIssuePage
+	if err := api.Get(ctx, "/api/issues", nil, &page); err != nil {
+		return err
+	}
+	if len(page.Issues) == 0 {
+		_, err := fmt.Fprintln(output, "no issues")
+		return err
+	}
+	if _, err := fmt.Fprintf(output, "%-6s %-8s %-8s %s\n", "ID", "STATE", "KIND", "TITLE"); err != nil {
+		return err
+	}
+	for _, issue := range page.Issues {
+		if _, err := fmt.Fprintf(output, "%-6d %-8s %-8s %s\n",
+			issue.ID, issue.State, issue.Kind, issue.Title); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func shortSHA(sha string) string {

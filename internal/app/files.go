@@ -54,7 +54,7 @@ func (loader *GitFileLoader) Load(ctx context.Context, ref argoworkflow.FileRef)
 	if loader.allowlist != nil && !loader.allowlist[ref.Repo] {
 		return argoworkflow.SeededFile{}, fmt.Errorf("app: file dependency %s is not in the fragment allowlist", ref)
 	}
-	_, name, err := gitcache.ParseRepoPath(ref.Repo)
+	_, _, name, err := gitcache.ParseRepoPath(ref.Repo)
 	if err != nil {
 		return argoworkflow.SeededFile{}, fmt.Errorf("app: file dependency %s: %w", ref, err)
 	}

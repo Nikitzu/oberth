@@ -1,13 +1,14 @@
 package store
 
 type migration struct {
-	version int
-	sql     string
-	apply   migrationFunc
+	version  int
+	sql      string
+	apply    migrationFunc
+	rawApply connectionLevelMigration // runs outside the normal migration transaction
 }
 
 const (
-	latestMigrationVersion = 9
+	latestMigrationVersion = 12
 	// oberthSchemaIdentity is a compatibility-frozen opaque literal: every
 	// deployed database carries this exact identity row and a CHECK constraint
 	// on it. Renaming it is a breaking schema migration, not a string cleanup.
@@ -682,5 +683,29 @@ CREATE UNIQUE INDEX secret_access_active
     outcome TEXT NOT NULL,
     PRIMARY KEY (repo, entry)
 ) WITHOUT ROWID;`,
+	},
+	{
+		// v10 shipped in v0.13.25/v0.13.26 as a ledger-only no-op and is
+		// RECORDED on live databases. Its body must never be replaced: the
+		// migration runner skips any version <= the recorded database
+		// version, so a rewritten body silently never runs on exactly the
+		// databases that need it (reproduced against the live lineage in
+		// TestMigrationLiveLineageAppliesRebuildAfterRecordedV10). New
+		// schema work appends new versions; it never edits shipped ones.
+		version: 10,
+		sql: `-- Phase 1 of org-qualified identity (#245): reserved-name guards and
+-- upstream namespace disjointness enforced in code. Compound unique on
+-- (upstream_id, name) deferred to canonical persistence (G3); grants,
+-- schedule_fires, and cache paths must key on the qualified form before
+-- same-name repos across upstreams can be admitted.
+SELECT 1`,
+	},
+	{
+		version:  11,
+		rawApply: migrateV11CanonicalPersistence,
+	},
+	{
+		version:  12,
+		rawApply: migrateV12SecretAccessQualifiedNames,
 	},
 }

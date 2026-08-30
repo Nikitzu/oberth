@@ -23,6 +23,14 @@ import (
 
 const promotionCompensationTimeout = 30 * time.Second
 
+// revokePolicySyncAdvisory is the warning returned by access_revoke to inform
+// the caller that the Vault credentialed policy still has the exact-path grant.
+// The server's own identity has no Vault policy-write capability, so the resync
+// must be triggered externally.
+const revokePolicySyncAdvisory = "Revocation is effective for new Oberth admissions immediately. " +
+	"The Vault credentialed policy still has this path until re-synced: " +
+	"run `oberth install --install-secretstore --upgrade` to remove it from the Vault policy."
+
 type APIConfig struct {
 	// Publisher force-syncs a green run to the upstream on request. Supplied by
 	// the scheduler, which owns the durable outbox; the API only forwards the
@@ -1495,9 +1503,45 @@ func (service *API) waitDuration(seconds int) (time.Duration, error) {
 	return requested, nil
 }
 
+// canonicalAccessRepo resolves any accepted repository spelling (bare,
+// org/repo, upstream/org/repo) onto the qualified persisted grant key the
+// v12 migration and the reconciler converge on. An ambiguous bare spelling
+// is refused — it names neither same-name repository. An unregistered or
+// syntactically unresolvable spelling is returned verbatim: grants for
+// unregistered repositories are stored and listed as spelled, and stay
+// inert until the repository registers (#245 BLOCKER B, #256).
+func (service *API) canonicalAccessRepo(ctx context.Context, repo string) (string, error) {
+	if service.repositories == nil {
+		return repo, nil
+	}
+	resolved, err := service.repositories.RepositoryByName(ctx, repo)
+	if err != nil {
+		if errors.Is(err, store.ErrAmbiguous) {
+			return "", fmt.Errorf("%w: %w", ErrInvalidInput, err)
+		}
+		// Unregistered or unparseable spellings keep their verbatim form.
+		return repo, nil
+	}
+	qualified, err := service.secretAccess.QualifiedRepoName(ctx, resolved.ID)
+	if err != nil {
+		return repo, nil
+	}
+	return qualified, nil
+}
+
 func (service *API) accessList(ctx context.Context, repo string, includeRevoked bool) (api.AccessListResponse, error) {
 	if service.secretAccess == nil {
 		return api.AccessListResponse{}, fmt.Errorf("%w: secret access", ErrUnavailable)
+	}
+	// A non-empty filter accepts every repository spelling; persisted rows
+	// key on the qualified form, so a bare filter passed through verbatim
+	// would string-match nothing and misreport an empty grant set (#256).
+	if strings.TrimSpace(repo) != "" {
+		canonical, err := service.canonicalAccessRepo(ctx, repo)
+		if err != nil {
+			return api.AccessListResponse{}, err
+		}
+		repo = canonical
 	}
 	grants, err := service.secretAccess.SecretAccessList(ctx, repo, includeRevoked)
 	if err != nil {
@@ -1520,6 +1564,13 @@ func (service *API) accessAllow(ctx context.Context, actor api.Actor, repo, step
 	if strings.TrimSpace(repo) == "" || strings.TrimSpace(step) == "" || strings.TrimSpace(secret) == "" {
 		return api.AccessGrantResponse{}, fmt.Errorf("%w: repo, step, and secret are required", ErrInvalidInput)
 	}
+	// Resolve the repo name to its qualified form so same-name repos under
+	// different upstreams cannot alias each other's grants (#245 BLOCKER B).
+	canonical, err := service.canonicalAccessRepo(ctx, repo)
+	if err != nil {
+		return api.AccessGrantResponse{}, err
+	}
+	repo = canonical
 	// Validate the entry before touching the ConfigMap. Without this check a
 	// malformed entry (glob characters in repo/secret, or a non-wildcard step)
 	// would be written to the ConfigMap, and the next reconciliation would
@@ -1561,6 +1612,13 @@ func (service *API) accessRevoke(ctx context.Context, actor api.Actor, repo, ste
 	if strings.TrimSpace(repo) == "" || strings.TrimSpace(step) == "" || strings.TrimSpace(secret) == "" {
 		return api.AccessGrantResponse{}, fmt.Errorf("%w: repo, step, and secret are required", ErrInvalidInput)
 	}
+	// Resolve the repo name to its qualified form for identity-safe
+	// lookup (#245 BLOCKER B).
+	canonical, err := service.canonicalAccessRepo(ctx, repo)
+	if err != nil {
+		return api.AccessGrantResponse{}, err
+	}
+	repo = canonical
 	if service.secretAccessReconciler != nil {
 		// Read the grant before removal so we can return it.
 		grants, err := service.secretAccess.SecretAccessList(ctx, repo, false)
@@ -1587,20 +1645,26 @@ func (service *API) accessRevoke(ctx context.Context, actor api.Actor, repo, ste
 		}
 		for _, grant := range revoked {
 			if grant.ID == target.ID && grant.RevokedAt != nil {
-				return wireAccessGrant(grant), nil
+				response := wireAccessGrant(grant)
+				response.Warning = revokePolicySyncAdvisory
+				return response, nil
 			}
 		}
 		// Return the last known state with a synthetic revocation indicator.
 		target.RevokedBy = "configmap"
 		now := time.Now().UTC()
 		target.RevokedAt = &now
-		return wireAccessGrant(*target), nil
+		response := wireAccessGrant(*target)
+		response.Warning = revokePolicySyncAdvisory
+		return response, nil
 	}
 	grant, err := service.secretAccess.Revoke(ctx, repo, step, secret, actor.Identity)
 	if err != nil {
 		return api.AccessGrantResponse{}, err
 	}
-	return wireAccessGrant(grant), nil
+	response := wireAccessGrant(grant)
+	response.Warning = revokePolicySyncAdvisory
+	return response, nil
 }
 
 func (service *API) repoRemove(ctx context.Context, actor api.Actor, repo string) (any, error) {

@@ -125,7 +125,7 @@ func runFragmentsShow(ctx context.Context, arguments []string, output io.Writer)
 		return err
 	}
 	defer func() { _ = database.Close() }()
-	_, name, err := gitcache.ParseRepoPath(key.Repo)
+	_, _, name, err := gitcache.ParseRepoPath(key.Repo)
 	if err != nil {
 		return err
 	}

@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -24,8 +25,8 @@ func (e sqliteResultError) Code() int { return int(e) }
 func TestSchemaMigrationsAreContiguous(t *testing.T) {
 	t.Parallel()
 
-	if latestMigrationVersion != 9 {
-		t.Fatalf("latest migration version = %d, want 9", latestMigrationVersion)
+	if latestMigrationVersion != 12 {
+		t.Fatalf("latest migration version = %d, want 12", latestMigrationVersion)
 	}
 	if len(migrations) != latestMigrationVersion {
 		t.Fatalf("migration count = %d, want %d", len(migrations), latestMigrationVersion)
@@ -34,8 +35,18 @@ func TestSchemaMigrationsAreContiguous(t *testing.T) {
 		if item.version != index+1 {
 			t.Fatalf("migration %d version = %d, want %d", index, item.version, index+1)
 		}
-		if (item.sql == "") == (item.apply == nil) {
-			t.Fatalf("migration %d must define exactly one application method", item.version)
+		methods := 0
+		if item.sql != "" {
+			methods++
+		}
+		if item.apply != nil {
+			methods++
+		}
+		if item.rawApply != nil {
+			methods++
+		}
+		if methods != 1 {
+			t.Fatalf("migration %d must define exactly one application method (has %d)", item.version, methods)
 		}
 	}
 
@@ -567,7 +578,7 @@ CREATE UNIQUE INDEX uplinks_token_credential_idx ON uplinks(token_credential_id)
 ALTER TABLE upstreams DROP COLUMN key_name;
 ALTER TABLE runs DROP COLUMN credentialed;
 DROP TABLE schedule_fires;
-DELETE FROM schema_migrations WHERE version IN (2, 3, 4, 5, 6, 7, 8, 9);`); err != nil {
+DELETE FROM schema_migrations WHERE version IN (2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12);`); err != nil {
 		_ = raw.Close()
 		t.Fatal(err)
 	}
@@ -1195,7 +1206,7 @@ func TestOpenRejectsLegacyAndFutureSchemaVersions(t *testing.T) {
 		name    string
 		version int
 	}{
-		{name: "legacy migration chain", version: 10},
+		{name: "legacy migration chain", version: 13},
 		{name: "future schema", version: 99},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -1219,7 +1230,7 @@ INSERT INTO schema_migrations(version, applied_at) VALUES(?, 0);`, test.version)
 			if opened != nil {
 				_ = opened.Close()
 			}
-			if !errors.Is(err, ErrSchemaTooNew) || !strings.Contains(err.Error(), "binary=9") {
+			if !errors.Is(err, ErrSchemaTooNew) || !strings.Contains(err.Error(), "binary=12") {
 				t.Fatalf("OpenAdminClient version %d error = %v, want clear ErrSchemaTooNew", test.version, err)
 			}
 		})
@@ -1465,4 +1476,180 @@ SELECT sql FROM sqlite_schema WHERE type = ? AND name = ?`, objectType, name).Sc
 			t.Errorf("%s %s does not contain %q: %s", objectType, name, fragment, definition)
 		}
 	}
+}
+
+func createVersionNineDatabase(t *testing.T, path string) {
+	t.Helper()
+	database, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.Exec(`PRAGMA journal_mode = WAL;` + createMigrationLedger + `;` + migrations[0].sql); err != nil {
+		_ = database.Close()
+		t.Fatal(err)
+	}
+	tx, err := database.BeginTx(context.Background(), nil)
+	if err != nil {
+		_ = database.Close()
+		t.Fatal(err)
+	}
+	if err := migrations[1].apply(context.Background(), tx, nil); err != nil {
+		_ = tx.Rollback()
+		_ = database.Close()
+		t.Fatal(err)
+	}
+	for _, v := range []int{2, 3, 4, 5, 6, 7, 8} {
+		if _, err := tx.Exec(migrations[v].sql); err != nil {
+			_ = tx.Rollback()
+			_ = database.Close()
+			t.Fatalf("apply v%d SQL: %v", v+1, err)
+		}
+	}
+	insertVersions := `INSERT INTO schema_migrations(version, applied_at) VALUES`
+	for i := 1; i <= 9; i++ {
+		if i > 1 {
+			insertVersions += ","
+		}
+		insertVersions += fmt.Sprintf("(%d, 1)", i)
+	}
+	if _, err := tx.Exec(insertVersions); err != nil {
+		_ = tx.Rollback()
+		_ = database.Close()
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		_ = database.Close()
+		t.Fatal(err)
+	}
+	if err := database.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestMigrationRebuildPreservesPopulatedDatabase seeds a repository with child
+// run rows at schema v9, applies the v11 rebuild (via the full chain), and
+// verifies both the repository and its runs survive. Regression for P0-A (#245): a naive
+// DROP TABLE repositories would fail with FOREIGN KEY constraint 787 because
+// 9 tables FK-reference repositories(id) and every live DB has child rows.
+func TestMigrationRebuildPreservesPopulatedDatabase(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "oberth-v9-populated.sqlite")
+	createVersionNineDatabase(t, path)
+
+	// Seed child rows: upstream -> repository -> run + step_result.
+	database, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.Exec(`
+INSERT INTO upstreams(id, name, kind, base_url, created_at, updated_at)
+VALUES(1, 'codeberg', 'ssh', 'ssh://git@codeberg.org/cloudtaser', 1, 1);
+INSERT INTO repositories(id, name, upstream_id, default_branch, created_at, updated_at)
+VALUES(1, 'oberth', 1, 'main', 1, 1);
+INSERT INTO runs(id, repo_id, ref_kind, ref, sha, actor, trigger, status, queued_at, created_at, updated_at)
+VALUES('run-1', 1, 'branch', 'main', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'agent@host', 'push', 'passed', 1, 1, 1);
+INSERT INTO step_results(run_id, burn, step, ordinal, status, exit_code, log_start, log_end, recorded_at)
+VALUES('run-1', 'test', 'lint', 0, 'passed', 0, 0, 100, 1);
+INSERT INTO receive_events(id, actor, repo_id, ref_kind, ref, outcome, created_at)
+VALUES('recv-1', 'agent@host', 1, 'branch', 'main', 'accepted', 1);
+INSERT INTO schedule_fires(repo, entry, fired_at, outcome)
+VALUES('oberth', 'nightly', 1, 'fired');`); err != nil {
+		_ = database.Close()
+		t.Fatal(err)
+	}
+	if err := database.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Open applies pending migrations (v9 -> v10).
+	opened, err := Open(context.Background(), path, Options{})
+	if err != nil {
+		t.Fatalf("open populated v9 database: %v", err)
+	}
+	defer func() { _ = opened.Close() }()
+
+	// Verify the schema version reached v10.
+	var version int
+	if err := opened.db.QueryRow(`SELECT MAX(version) FROM schema_migrations`).Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if version != latestMigrationVersion {
+		t.Fatalf("schema version after v9 migration = %d, want %d", version, latestMigrationVersion)
+	}
+
+	// Verify the repository survived.
+	var repoName string
+	if err := opened.db.QueryRow(`SELECT name FROM repositories WHERE id = 1`).Scan(&repoName); err != nil {
+		t.Fatalf("repository lost during migration: %v", err)
+	}
+	if repoName != "oberth" {
+		t.Fatalf("repository name = %q, want oberth", repoName)
+	}
+
+	// Verify the child run survived.
+	var runID string
+	if err := opened.db.QueryRow(`SELECT id FROM runs WHERE repo_id = 1`).Scan(&runID); err != nil {
+		t.Fatalf("run lost during migration: %v", err)
+	}
+	if runID != "run-1" {
+		t.Fatalf("run id = %q, want run-1", runID)
+	}
+
+	// Verify step results survived (FK to runs).
+	var stepCount int
+	if err := opened.db.QueryRow(`SELECT count(*) FROM step_results WHERE run_id = 'run-1'`).Scan(&stepCount); err != nil {
+		t.Fatal(err)
+	}
+	if stepCount != 1 {
+		t.Fatalf("step results after migration = %d, want 1", stepCount)
+	}
+
+	// Verify receive events survived (FK to repositories).
+	var recvCount int
+	if err := opened.db.QueryRow(`SELECT count(*) FROM receive_events WHERE repo_id = 1`).Scan(&recvCount); err != nil {
+		t.Fatal(err)
+	}
+	if recvCount != 1 {
+		t.Fatalf("receive events after migration = %d, want 1", recvCount)
+	}
+
+	// Verify schedule_fires survived with qualified repo names.
+	var fireCount int
+	if err := opened.db.QueryRow(`SELECT count(*) FROM schedule_fires WHERE repo = 'codeberg/cloudtaser/oberth'`).Scan(&fireCount); err != nil {
+		t.Fatal(err)
+	}
+	if fireCount != 1 {
+		t.Fatalf("schedule fires after migration = %d, want 1", fireCount)
+	}
+
+	// Verify UNIQUE(upstream_id, name) is enforced.
+	_, err = opened.db.Exec(`
+INSERT INTO repositories(name, upstream_id, default_branch, created_at, updated_at)
+VALUES('oberth', 1, 'main', 2, 2)`)
+	if err == nil {
+		t.Fatal("UNIQUE(upstream_id, name) must reject duplicate (same name, same upstream)")
+	}
+
+	// Same name under a DIFFERENT upstream should now succeed.
+	if _, err := opened.db.Exec(`
+INSERT INTO upstreams(id, name, kind, base_url, created_at, updated_at)
+VALUES(2, 'github', 'ssh', 'ssh://git@github.com/oberthci', 1, 1)`); err != nil {
+		t.Fatalf("create second upstream: %v", err)
+	}
+	if _, err := opened.db.Exec(`
+INSERT INTO repositories(name, upstream_id, default_branch, created_at, updated_at)
+VALUES('oberth', 2, 'main', 2, 2)`); err != nil {
+		t.Fatalf("same name under different upstream should succeed after G3: %v", err)
+	}
+
+	// FK integrity check.
+	fkRows, err := opened.db.Query(`PRAGMA foreign_key_check`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fkRows.Next() {
+		_ = fkRows.Close()
+		t.Fatal("foreign key integrity check failed after migration")
+	}
+	_ = fkRows.Close()
 }

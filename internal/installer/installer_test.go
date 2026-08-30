@@ -4830,6 +4830,35 @@ func TestCredentialedPolicyPathsRefusesNonCanonicalInput(t *testing.T) {
 	}
 }
 
+// TestCredentialedPolicyPathsAcceptsUpstreamPrefix proves that upstream-scoped
+// grants (oberth/upstream/...) are accepted and normalized to the policy form
+// (upstream/...) so the consumer writes path "oberth/data/upstream/..." in the
+// Vault policy. This is the fix for the grant-bomb blocker.
+func TestCredentialedPolicyPathsAcceptsUpstreamPrefix(t *testing.T) {
+	t.Parallel()
+	paths, err := credentialedPolicyPaths("oberth", []string{
+		"oberth/upstream/cloudtaser/terraform/credentials",
+		"oberth/upstream/skipops/terraform/plan/gcp-sa",
+		"oberth/data/release/cosign-secret",
+	})
+	if err != nil {
+		t.Fatalf("credentialedPolicyPaths rejected upstream paths: %v", err)
+	}
+	want := []string{
+		"upstream/cloudtaser/terraform/credentials",
+		"upstream/skipops/terraform/plan/gcp-sa",
+		"release/cosign-secret",
+	}
+	if len(paths) != len(want) {
+		t.Fatalf("paths = %v, want %v", paths, want)
+	}
+	for i := range want {
+		if paths[i] != want[i] {
+			t.Fatalf("paths[%d] = %q, want %q", i, paths[i], want[i])
+		}
+	}
+}
+
 // TestCredentialedPolicyWithGrantsDeduplicates proves that duplicate paths
 // in the grant list produce only one policy entry.
 func TestCredentialedPolicyWithGrantsDeduplicates(t *testing.T) {

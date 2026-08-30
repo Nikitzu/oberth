@@ -2,11 +2,19 @@ package gitcache
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log"
 	"time"
 )
+
+// ErrUpstreamRefused indicates that upstream resolution was explicitly
+// refused (for example, an org or upstream-name mismatch on a registered
+// repository). The error is structurally different from a transient
+// fetch failure: a refused resolution must never fall back to a stale
+// cache, because the cache belongs to a different identity.
+var ErrUpstreamRefused = errors.New("upstream resolution refused")
 
 // Service is one of the two Git smart-protocol programs exposed by Oberth.
 type Service string
@@ -131,6 +139,13 @@ func (discardLogger) Printf(string, ...any) {}
 // Config constructs a cache rooted at Root. Upstream resolves a validated
 // repository name to a Git remote. Env is an operator-owned allowlist of
 // variables required by Git (for example, a fixed GIT_SSH_COMMAND).
+// RepoQualification carries the upstream and org identity for a repository,
+// used to determine the org-qualified cache directory path.
+type RepoQualification struct {
+	UpstreamName string
+	Org          string
+}
+
 type Config struct {
 	Root           string
 	Upstream       func(repo string) (string, error)
@@ -145,6 +160,11 @@ type Config struct {
 	// upstream that is only ever read.
 	UpstreamToken func() string
 	Logger        Logger
+	// RepoQualifier resolves a bare repository name to its upstream name and
+	// org identity. It is used to determine the org-qualified cache directory
+	// path (<root>/<upstream>/<org>/<repo>.git). When nil, the cache falls
+	// back to the flat layout (<root>/<repo>.git).
+	RepoQualifier func(bareName string) (RepoQualification, bool)
 	// PreFinalizeGate is an optional server-owned check invoked after
 	// receive-pack applies ref updates and BEFORE finalization records
 	// the delta in the durable outbox. When it returns an error,

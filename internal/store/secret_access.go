@@ -188,15 +188,26 @@ WHERE repo = ? AND step = ? AND secret = ? AND revoked_at IS NULL`,
 }
 
 // ActiveSecretGrants returns all active grants for a repository, keyed by
-// (step, secret). This is used at admission time to check all templates in one
-// pass.
-func (s *Store) ActiveSecretGrants(ctx context.Context, repo string) (map[string]map[string]bool, error) {
-	if strings.TrimSpace(repo) == "" {
-		return nil, fmt.Errorf("%w: repo is required", ErrInvalid)
+// (step, secret). The repository is identified by its durable ID so that
+// same-name repos under different upstreams cannot alias each other's
+// grants (#245 BLOCKER B).
+func (s *Store) ActiveSecretGrants(ctx context.Context, repoID int64) (map[string]map[string]bool, error) {
+	qualifiedName, err := s.QualifiedRepoName(ctx, repoID)
+	if err != nil {
+		return nil, fmt.Errorf("resolve qualified repo name for grants: %w", err)
 	}
+	// Query with the qualified name ONLY. A bare-name fallback here would
+	// match every same-name repository across upstreams — the exact grant
+	// aliasing this ID-keyed lookup exists to prevent. There is no
+	// transition window that needs one: the v12 migration qualifies every
+	// persisted row that maps to a registered repository, and the access
+	// reconciler canonicalizes ConfigMap entries before writing. A stray
+	// bare row (only possible for a repo that was unregistered at both of
+	// those boundaries) is deliberately inert until its grant is re-issued
+	// against the registered identity.
 	rows, err := s.db.QueryContext(ctx, `
 SELECT step, secret FROM secret_access
-WHERE repo = ? AND revoked_at IS NULL`, repo)
+WHERE repo = ? AND revoked_at IS NULL`, qualifiedName)
 	if err != nil {
 		return nil, fmt.Errorf("list active secret grants: %w", err)
 	}

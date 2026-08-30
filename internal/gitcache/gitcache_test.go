@@ -16,37 +16,49 @@ import (
 func TestParseRepoPathAcceptsOrgQualifiedAndBare(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
-		input    string
-		wantOrg  string
-		wantRepo string
+		input        string
+		wantUpstream string
+		wantOrg      string
+		wantRepo     string
 	}{
-		{"example", "", "example"},
-		{"/example.git", "", "example"},
-		{"acme/example", "acme", "example"},
-		{"/acme/example.git", "acme", "example"},
-		{"oberthci/oberth", "oberthci", "oberth"},
-		{"cloud-taser/my_repo.git", "cloud-taser", "my_repo"},
+		// 1-segment: bare repo name.
+		{"example", "", "", "example"},
+		{"/example.git", "", "", "example"},
+		// 2-segment: org/repo shorthand.
+		{"acme/example", "", "acme", "example"},
+		{"/acme/example.git", "", "acme", "example"},
+		{"oberthci/oberth", "", "oberthci", "oberth"},
+		{"cloud-taser/my_repo.git", "", "cloud-taser", "my_repo"},
+		// 3-segment: upstream/org/repo canonical form.
+		{"codeberg/cloudtaser/terraform", "codeberg", "cloudtaser", "terraform"},
+		{"/codeberg/cloudtaser/terraform.git", "codeberg", "cloudtaser", "terraform"},
+		{"github/oberthci/oberth", "github", "oberthci", "oberth"},
 	}
 	for _, test := range tests {
-		org, repo, err := ParseRepoPath(test.input)
+		upstream, org, repo, err := ParseRepoPath(test.input)
 		if err != nil {
 			t.Fatalf("ParseRepoPath(%q): %v", test.input, err)
 		}
-		if org != test.wantOrg || repo != test.wantRepo {
-			t.Fatalf("ParseRepoPath(%q) = (%q, %q), want (%q, %q)", test.input, org, repo, test.wantOrg, test.wantRepo)
+		if upstream != test.wantUpstream || org != test.wantOrg || repo != test.wantRepo {
+			t.Fatalf("ParseRepoPath(%q) = (%q, %q, %q), want (%q, %q, %q)",
+				test.input, upstream, org, repo, test.wantUpstream, test.wantOrg, test.wantRepo)
 		}
 	}
 	for _, value := range []string{
 		"../secret",
-		"a/b/c",
 		"owner/../../secret",
 		"org/repo\nother",
 		"-bad/repo",
 		"org/-bad",
 		".git",
 		"",
+		"a/b/c/d",            // 4 segments — too many
+		"-upstream/org/repo", // invalid upstream segment
+		"up/../../secret",    // traversal in 3-segment
+		"up/-bad/repo",       // invalid org segment
+		"up/org/-bad",        // invalid repo segment
 	} {
-		if _, _, err := ParseRepoPath(value); err == nil {
+		if _, _, _, err := ParseRepoPath(value); err == nil {
 			t.Fatalf("ParseRepoPath(%q) unexpectedly succeeded", value)
 		}
 	}
@@ -1162,4 +1174,89 @@ func runGit(t *testing.T, dir string, args ...string) string {
 		t.Fatalf("git %q failed: %v\n%s", args, err, output)
 	}
 	return strings.TrimSpace(string(output))
+}
+
+// TestEnsureRefusedUpstreamDoesNotServeStaleCache verifies that an upstream
+// resolution refusal (org or upstream-name mismatch) fails closed instead of
+// serving a stale cache — the fix for issue #257.
+//
+// Scenario: a repository was cached successfully. A second Ensure arrives
+// with a different org (or upstream name) that the upstream resolver rejects.
+// The old behavior served the stale cache from the first Ensure; the correct
+// behavior is to fail the second Ensure.
+func TestEnsureRefusedUpstreamDoesNotServeStaleCache(t *testing.T) {
+	t.Parallel()
+	repository := newTestRepository(t)
+
+	// Build a cache whose upstream resolver accepts "example" and
+	// refuses "wrong-org/example" with ErrUpstreamRefused.
+	cache, err := New(Config{
+		Root:           filepath.Join(t.TempDir(), "cache"),
+		CommandTimeout: 10 * time.Second,
+		Upstream: func(input string) (string, error) {
+			if input == "example" {
+				return repository.upstream, nil
+			}
+			return "", fmt.Errorf("wrong org: %w", ErrUpstreamRefused)
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// First Ensure succeeds and populates the cache.
+	first, err := cache.Ensure(context.Background(), "example")
+	if err != nil || first.Stale {
+		t.Fatalf("initial Ensure = %+v, %v", first, err)
+	}
+
+	// Second Ensure with a wrong org must fail — not serve stale.
+	_, err = cache.Ensure(context.Background(), "wrong-org/example")
+	if err == nil {
+		t.Fatal("Ensure with refused upstream must fail, but succeeded (served stale cache)")
+	}
+	if !strings.Contains(err.Error(), "wrong org") {
+		t.Fatalf("error does not mention the refusal: %v", err)
+	}
+}
+
+// TestEnsureUnreachableUpstreamStillServesStaleCache is the companion to
+// TestEnsureRefusedUpstreamDoesNotServeStaleCache: it verifies that a
+// transient upstream failure (unreachable, not refused) still produces
+// a stale-cache fallback — the sentinel check must not accidentally block
+// legitimate stale fallbacks.
+func TestEnsureUnreachableUpstreamStillServesStaleCache(t *testing.T) {
+	t.Parallel()
+	repository := newTestRepository(t)
+	reachable := true
+
+	cache, err := New(Config{
+		Root:           filepath.Join(t.TempDir(), "cache"),
+		CommandTimeout: 10 * time.Second,
+		Upstream: func(input string) (string, error) {
+			if !reachable {
+				// Non-ErrUpstreamRefused error: a transient failure.
+				return "", fmt.Errorf("upstream temporarily unreachable")
+			}
+			return repository.upstream, nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	first, err := cache.Ensure(context.Background(), "example")
+	if err != nil || first.Stale {
+		t.Fatalf("initial Ensure = %+v, %v", first, err)
+	}
+
+	// Make the upstream "unreachable" (not refused) and verify stale fallback.
+	reachable = false
+	second, err := cache.Ensure(context.Background(), "example")
+	if err != nil {
+		t.Fatalf("stale Ensure should succeed: %v", err)
+	}
+	if !second.Stale {
+		t.Fatal("stale Ensure should return Stale=true")
+	}
 }

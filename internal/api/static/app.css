@@ -254,9 +254,12 @@ option{background:var(--panel);color:var(--fg)}
 .card.warn{border-color:var(--run);background:var(--run-bg)}
 
 .strip{display:flex;gap:2px;align-items:flex-end;height:16px;margin-top:9px}
-.strip i{width:5px;border-radius:1px;background:var(--idle);opacity:.75}
-.strip i.pass{background:var(--pass)}.strip i.fail{background:var(--fail)}
-.strip i.run{background:var(--run)}
+.strip i,.strip .hist{width:5px;border-radius:1px;background:var(--idle);opacity:.75;border:0;padding:0}
+.strip .hist{cursor:pointer}
+.strip .hist:hover{opacity:1}
+.strip i.pass,.strip .hist.pass{background:var(--pass)}
+.strip i.fail,.strip .hist.fail{background:var(--fail)}
+.strip i.run,.strip .hist.run{background:var(--run)}
 
 .panel{border:1px solid var(--line);border-radius:var(--r);background:var(--panel);
   margin-bottom:12px;overflow:hidden;box-shadow:var(--shadow)}

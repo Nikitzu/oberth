@@ -704,10 +704,32 @@ FROM schema_migrations`).Scan(&migrationCount, &minimumVersion, &databaseVersion
 		if item.version <= databaseVersion || item.version > targetVersion {
 			continue
 		}
+		if item.rawApply != nil {
+			// Connection-level migration: commit the current transaction,
+			// run the migration with direct db access (for PRAGMA changes
+			// that cannot take effect inside a transaction), record the
+			// version, then start a new transaction for remaining work.
+			if err := tx.Commit(); err != nil {
+				return fmt.Errorf("commit before connection-level migration %d: %w", item.version, err)
+			}
+			if err := item.rawApply(ctx, s.db, s.now); err != nil {
+				return fmt.Errorf("apply connection-level migration %d: %w", item.version, err)
+			}
+			if _, err := s.db.ExecContext(ctx, `INSERT INTO schema_migrations(version, applied_at) VALUES(?, ?)`,
+				item.version, unixNano(s.now())); err != nil {
+				return fmt.Errorf("record connection-level migration %d: %w", item.version, err)
+			}
+			databaseVersion = item.version
+			tx, err = s.db.BeginTx(ctx, nil)
+			if err != nil {
+				return fmt.Errorf("resume after connection-level migration %d: %w", item.version, err)
+			}
+			continue
+		}
 		switch {
-		case item.sql != "" && item.apply == nil:
+		case item.sql != "" && item.apply == nil && item.rawApply == nil:
 			_, err = tx.ExecContext(ctx, item.sql)
-		case item.sql == "" && item.apply != nil:
+		case item.sql == "" && item.apply != nil && item.rawApply == nil:
 			err = item.apply(ctx, tx, expectedLegacyHead)
 		default:
 			err = errors.New("migration must define exactly one application method")
@@ -1004,21 +1026,155 @@ func (s *Store) Repository(ctx context.Context, id int64) (model.Repository, err
 SELECT id, name, upstream_id, default_branch, created_at, updated_at FROM repositories WHERE id = ?`, id))
 }
 
+// RepositoryByName resolves a repository by name in any of three forms:
+//   - bare name ("repo")          — unambiguous when only one repo has this name
+//   - org-qualified ("org/repo")  — resolved via upstream org identity
+//   - fully qualified ("upstream/org/repo") — resolved via upstream name + org
+//
+// When a bare name matches multiple repositories under different upstreams,
+// ErrAmbiguous is returned naming the conflicting upstreams.
 func (s *Store) RepositoryByName(ctx context.Context, name string) (model.Repository, error) {
-	return scanRepository(s.db.QueryRowContext(ctx, `
-SELECT id, name, upstream_id, default_branch, created_at, updated_at FROM repositories WHERE name = ?`, name))
+	upstream, org, bare, err := parseRepoSelector(name)
+	if err != nil {
+		return model.Repository{}, fmt.Errorf("%w: %w", ErrInvalid, err)
+	}
+	switch {
+	case upstream != "" && org != "":
+		// Fully qualified: upstream/org/repo.
+		return s.repositoryByUpstreamOrgName(ctx, upstream, org, bare)
+	case org != "":
+		// Org-qualified: org/repo.
+		return s.repositoryByOrgName(ctx, org, bare)
+	default:
+		// Bare name: look up by name, detect ambiguity.
+		return s.repositoryByBareName(ctx, bare)
+	}
 }
 
+func (s *Store) repositoryByBareName(ctx context.Context, name string) (model.Repository, error) {
+	rows, err := s.db.QueryContext(ctx, `
+SELECT r.id, r.name, r.upstream_id, r.default_branch, r.created_at, r.updated_at,
+       u.name
+FROM repositories r
+JOIN upstreams u ON u.id = r.upstream_id
+WHERE r.name = ?`, name)
+	if err != nil {
+		return model.Repository{}, fmt.Errorf("look up repository %q: %w", name, err)
+	}
+	defer func() { _ = rows.Close() }()
+	var matched []model.Repository
+	var upstreamNames []string
+	for rows.Next() {
+		var repo model.Repository
+		var created, updated int64
+		var upstreamName string
+		if err := rows.Scan(&repo.ID, &repo.Name, &repo.UpstreamID, &repo.DefaultBranch, &created, &updated, &upstreamName); err != nil {
+			return model.Repository{}, fmt.Errorf("scan repository %q: %w", name, err)
+		}
+		repo.CreatedAt, repo.UpdatedAt = fromUnixNano(created), fromUnixNano(updated)
+		matched = append(matched, repo)
+		upstreamNames = append(upstreamNames, upstreamName)
+	}
+	if err := rows.Err(); err != nil {
+		return model.Repository{}, fmt.Errorf("look up repository %q: %w", name, err)
+	}
+	switch len(matched) {
+	case 0:
+		return model.Repository{}, fmt.Errorf("%w: repository %q", ErrNotFound, name)
+	case 1:
+		return matched[0], nil
+	default:
+		return model.Repository{}, fmt.Errorf(
+			"%w: repository %q exists under upstreams %s; qualify as org/repo or upstream/org/repo",
+			ErrAmbiguous, name, strings.Join(upstreamNames, ", "))
+	}
+}
+
+func (s *Store) repositoryByOrgName(ctx context.Context, org, name string) (model.Repository, error) {
+	// Find upstreams whose org matches.
+	upstreams, err := s.ListUpstreams(ctx)
+	if err != nil {
+		return model.Repository{}, fmt.Errorf("list upstreams for org lookup: %w", err)
+	}
+	var matchingUpstreamIDs []int64
+	for _, upstream := range upstreams {
+		if upstream.Org() == org {
+			matchingUpstreamIDs = append(matchingUpstreamIDs, upstream.ID)
+		}
+	}
+	if len(matchingUpstreamIDs) == 0 {
+		return model.Repository{}, fmt.Errorf("%w: no upstream with org %q", ErrNotFound, org)
+	}
+	// Query with each matching upstream.
+	for _, upstreamID := range matchingUpstreamIDs {
+		repo, err := scanRepository(s.db.QueryRowContext(ctx, `
+SELECT id, name, upstream_id, default_branch, created_at, updated_at
+FROM repositories WHERE name = ? AND upstream_id = ?`, name, upstreamID))
+		if err == nil {
+			return repo, nil
+		}
+		if !errors.Is(err, ErrNotFound) {
+			return model.Repository{}, err
+		}
+	}
+	return model.Repository{}, fmt.Errorf("%w: repository %q under org %q", ErrNotFound, name, org)
+}
+
+func (s *Store) repositoryByUpstreamOrgName(ctx context.Context, upstreamName, org, name string) (model.Repository, error) {
+	upstream, err := s.UpstreamByName(ctx, upstreamName)
+	if err != nil {
+		return model.Repository{}, fmt.Errorf("look up upstream %q: %w", upstreamName, err)
+	}
+	if upstream.Org() != org {
+		return model.Repository{}, fmt.Errorf(
+			"%w: upstream %q has org %q, not %q", ErrInvalid, upstreamName, upstream.Org(), org)
+	}
+	return scanRepository(s.db.QueryRowContext(ctx, `
+SELECT id, name, upstream_id, default_branch, created_at, updated_at
+FROM repositories WHERE name = ? AND upstream_id = ?`, name, upstream.ID))
+}
+
+// parseRepoSelector splits a repository selector into its components without
+// performing the full ParseRepoPath validation that the SSH server applies.
+// This is intentionally lenient on segment content (accepting whatever the
+// database holds) while respecting the segment count grammar.
+func parseRepoSelector(name string) (upstream, org, repo string, err error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return "", "", "", fmt.Errorf("repository name is empty")
+	}
+	name = strings.TrimPrefix(name, "/")
+	name = strings.TrimSuffix(name, ".git")
+	parts := strings.SplitN(name, "/", 4)
+	switch len(parts) {
+	case 1:
+		return "", "", parts[0], nil
+	case 2:
+		return "", parts[0], parts[1], nil
+	case 3:
+		return parts[0], parts[1], parts[2], nil
+	default:
+		return "", "", "", fmt.Errorf("repository selector %q has too many segments", name)
+	}
+}
+
+// RepositoryRegistered checks whether a repository is registered, accepting
+// bare, org-qualified, or fully-qualified name forms. Ambiguity on a bare
+// name is treated as registered (the caller should use RepositoryByName for
+// the full resolution).
 func (s *Store) RepositoryRegistered(ctx context.Context, name string) (bool, error) {
-	var id int64
-	err := s.db.QueryRowContext(ctx, `SELECT id FROM repositories WHERE name = ?`, name).Scan(&id)
-	if errors.Is(err, sql.ErrNoRows) {
+	_, err := s.RepositoryByName(ctx, name)
+	if err == nil {
+		return true, nil
+	}
+	if errors.Is(err, ErrNotFound) {
 		return false, nil
 	}
-	if err != nil {
-		return false, fmt.Errorf("look up repository %q: %w", name, err)
+	// ErrAmbiguous means the name exists under multiple upstreams -- still registered.
+	if errors.Is(err, ErrAmbiguous) {
+		return true, nil
 	}
-	return true, nil
+	return false, err
 }
 
 func (s *Store) SetRepositoryDefaultBranch(ctx context.Context, id int64, branch string) (model.Repository, error) {
@@ -1068,6 +1224,41 @@ func scanRepository(row *sql.Row) (model.Repository, error) {
 	}
 	value.CreatedAt, value.UpdatedAt = fromUnixNano(created), fromUnixNano(updated)
 	return value, nil
+}
+
+// QualifiedRepoName returns the canonical "upstream/org/repo" form for
+// a repository identified by its durable ID. This is the key used in
+// secret_access and schedule_fires for identity isolation — two repos with
+// the same bare name under different upstreams have different qualified
+// names and therefore cannot alias each other's grants or schedule state.
+func (s *Store) QualifiedRepoName(ctx context.Context, repoID int64) (string, error) {
+	var repoName, upstreamName, baseURL string
+	if err := s.db.QueryRowContext(ctx, `
+SELECT r.name, u.name, u.base_url
+FROM repositories r JOIN upstreams u ON u.id = r.upstream_id
+WHERE r.id = ?`, repoID).Scan(&repoName, &upstreamName, &baseURL); err != nil {
+		return "", translateNotFound("repository", err)
+	}
+	org := orgFromBaseURL(baseURL)
+	if org == "" {
+		org = upstreamName
+	}
+	return upstreamName + "/" + org + "/" + repoName, nil
+}
+
+// orgFromBaseURL extracts the trailing path component from a base URL.
+// This is the same derivation as model.Upstream.Org() but operates on a
+// raw string to avoid constructing a model object.
+func orgFromBaseURL(baseURL string) string {
+	base := strings.TrimSuffix(strings.TrimSpace(baseURL), "/")
+	if base == "" {
+		return ""
+	}
+	if filepath.IsAbs(base) {
+		return filepath.Base(base)
+	}
+	parts := strings.Split(base, "/")
+	return parts[len(parts)-1]
 }
 
 func (s *Store) AppendPromotion(ctx context.Context, spec model.PromotionSpec) (model.Promotion, error) {

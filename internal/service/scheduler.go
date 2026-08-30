@@ -486,6 +486,7 @@ func (scheduler *Scheduler) execute(ctx context.Context, run model.Run, require 
 			_ = logFile.Close()
 			return scheduler.finishInfrastructureFailure(ctx, run, repository, fmt.Errorf("load repository upstream: %w", upstreamErr))
 		}
+		jobRequest.UpstreamName = upstream.Name
 		jobRequest.UpstreamOrg = upstream.Org()
 	}
 	switch {

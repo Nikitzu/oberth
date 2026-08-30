@@ -57,7 +57,7 @@ func (loader *GitFragmentLoader) Load(ctx context.Context, key argoworkflow.Frag
 	if loader.allowlist != nil && !loader.allowlist[key.Repo] {
 		return argoworkflow.Fragment{}, fmt.Errorf("app: fragment %s is not in the fragment allowlist", key)
 	}
-	_, name, err := gitcache.ParseRepoPath(key.Repo)
+	_, _, name, err := gitcache.ParseRepoPath(key.Repo)
 	if err != nil {
 		return argoworkflow.Fragment{}, fmt.Errorf("app: fragment %s: %w", key, err)
 	}

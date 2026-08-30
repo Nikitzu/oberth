@@ -582,9 +582,16 @@ func serve(ctx context.Context, options serveOptions, logger *log.Logger) (resul
 	if err != nil {
 		return err
 	}
+	perRepoIdentities, err := buildPerRepoIdentities(ctx, database)
+	if err != nil {
+		return fmt.Errorf("build per-repo identities: %w", err)
+	}
+	if len(perRepoIdentities) > 0 {
+		logger.Printf("per-repo identities: %d repositories with secret grants", len(perRepoIdentities))
+	}
 	argoJobs, err := buildArgoEngine(options, restConfig, kube, database, database, fragmentLoader, fileLoader,
 		artifactStoreAdapter{store: artifactStore, scanPatterns: artifacts.DefaultScanPatterns},
-		options.artifactsLimitBytes, options.artifactsBudgetBytes)
+		options.artifactsLimitBytes, options.artifactsBudgetBytes, perRepoIdentities)
 	if err != nil {
 		return err
 	}
@@ -833,6 +840,7 @@ func serve(ctx context.Context, options serveOptions, logger *log.Logger) (resul
 		Runs:         database,
 		Enqueuer:     scheduler,
 		State:        database,
+		Upstreams:    database,
 		MinInterval:  options.scheduleMinInterval,
 		MaxEntries:   options.scheduleMaxEntries,
 	})

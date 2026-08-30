@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/oberthci/oberth/internal/gitcache"
 	"github.com/oberthci/oberth/internal/model"
 	"github.com/oberthci/oberth/internal/store"
 )
@@ -212,5 +213,38 @@ func TestValidateUpstreamBaseRejectsRepositoryAndCredentials(t *testing.T) {
 	kind, err := UpstreamKind("ssh://git@codeberg.org/acme")
 	if err != nil || kind != "ssh" {
 		t.Fatalf("kind = %q, %v", kind, err)
+	}
+}
+
+func TestMismatchErrorsWrapErrUpstreamRefused(t *testing.T) {
+	t.Parallel()
+	catalog := fakeUpstreamCatalog{
+		repositories: map[string]model.Repository{"oberth": {Name: "oberth", UpstreamID: 1}},
+		upstreams: []model.Upstream{
+			{ID: 1, Name: "github", BaseURL: "ssh://git@github.com/oberthci"},
+			{ID: 2, Name: "codeberg", BaseURL: "ssh://git@codeberg.org/cloudtaser"},
+		},
+	}
+	resolver := Upstreams{Catalog: catalog}
+
+	for _, test := range []struct {
+		name  string
+		input string
+	}{
+		{"wrong org on mapped repo", "cloudtaser/oberth"},
+		{"wrong upstream name on mapped repo", "codeberg/oberthci/oberth"},
+		{"unknown upstream name", "nonexistent/oberthci/oberth"},
+		{"unknown org", "unknown-org/new-repo"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			_, err := resolver.Remote(test.input)
+			if err == nil {
+				t.Fatal("expected error")
+			}
+			if !errors.Is(err, gitcache.ErrUpstreamRefused) {
+				t.Fatalf("error %q does not wrap ErrUpstreamRefused", err)
+			}
+		})
 	}
 }

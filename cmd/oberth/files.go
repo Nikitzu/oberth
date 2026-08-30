@@ -45,7 +45,7 @@ func runFilesShow(ctx context.Context, arguments []string, output io.Writer) err
 		return err
 	}
 	defer func() { _ = database.Close() }()
-	_, name, err := gitcache.ParseRepoPath(ref.Repo)
+	_, _, name, err := gitcache.ParseRepoPath(ref.Repo)
 	if err != nil {
 		return err
 	}

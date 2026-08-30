@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"io"
 	"os"
 	"path/filepath"
@@ -485,5 +486,236 @@ func TestMaterializeNonSecretOutputPassesThrough(t *testing.T) {
 	}
 	if got := strings.TrimSpace(stderr.String()); got != "nothing secret here" {
 		t.Errorf("stderr = %q, want %q", got, "nothing secret here")
+	}
+}
+
+// --- #248: structured fetch marker tests ---
+
+func TestEmitSecretFetchMarkerOmitsValues(t *testing.T) {
+	var out bytes.Buffer
+	fetched := map[string]map[string][]byte{
+		"oberth/data/release/cosign-secret": {
+			"COSIGN_KEY":      []byte("SUPER-SECRET-PEM-BYTES"),
+			"COSIGN_PASSWORD": []byte("hunter2"),
+		},
+		"oberth/data/release/r2-upload-token": {
+			"R2_UPLOAD_TOKEN": []byte("tok_value_9"),
+		},
+	}
+	paths := []string{
+		"oberth/data/release/cosign-secret",
+		"oberth/data/release/r2-upload-token",
+	}
+
+	emitSecretFetchMarker(&out, paths, fetched)
+
+	line := out.String()
+	if !strings.HasPrefix(line, "[oberth-secret-fetch] ") {
+		t.Fatalf("marker prefix missing, got: %q", line)
+	}
+	for _, secret := range []string{"SUPER-SECRET-PEM-BYTES", "hunter2", "tok_value_9"} {
+		if strings.Contains(line, secret) {
+			t.Fatalf("marker leaked a secret value %q: %q", secret, line)
+		}
+	}
+
+	var marker struct {
+		Paths []string            `json:"paths"`
+		Keys  map[string][]string `json:"keys"`
+		OK    bool                `json:"ok"`
+	}
+	payload := strings.TrimPrefix(strings.TrimSpace(line), "[oberth-secret-fetch] ")
+	if err := json.Unmarshal([]byte(payload), &marker); err != nil {
+		t.Fatalf("marker is not valid JSON: %v (%q)", err, payload)
+	}
+	if !marker.OK {
+		t.Fatal("marker ok = false, want true")
+	}
+	if len(marker.Paths) != 2 {
+		t.Fatalf("marker paths = %v, want both declared paths", marker.Paths)
+	}
+	wantKeys := map[string][]string{
+		"oberth/data/release/cosign-secret":   {"COSIGN_KEY", "COSIGN_PASSWORD"},
+		"oberth/data/release/r2-upload-token": {"R2_UPLOAD_TOKEN"},
+	}
+	for path, want := range wantKeys {
+		got := marker.Keys[path]
+		if len(got) != len(want) {
+			t.Fatalf("marker keys[%s] = %v, want %v", path, got, want)
+		}
+		for i := range want {
+			if got[i] != want[i] {
+				t.Fatalf("marker keys[%s] = %v, want sorted %v", path, got, want)
+			}
+		}
+	}
+}
+
+func TestEmitSecretFetchMarkerEmptyFetch(t *testing.T) {
+	var out bytes.Buffer
+	emitSecretFetchMarker(&out, nil, nil)
+	line := strings.TrimSpace(out.String())
+	payload := strings.TrimPrefix(line, "[oberth-secret-fetch] ")
+	var marker map[string]any
+	if err := json.Unmarshal([]byte(payload), &marker); err != nil {
+		t.Fatalf("empty-fetch marker is not valid JSON: %v (%q)", err, line)
+	}
+}
+
+// --- #249: short secret redaction tests ---
+
+func TestExecChildRedactsShortSecret(t *testing.T) {
+	dir := t.TempDir()
+	secret := []byte("abc12") // 5 bytes, well below the old 8-byte threshold
+
+	script := filepath.Join(t.TempDir(), "echo-short.sh")
+	if err := os.WriteFile(script, []byte(
+		"#!/bin/sh\necho \"token=abc12\"\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout bytes.Buffer
+	err := execChild(dir, []string{script}, [][]byte{secret}, &stdout, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	output := stdout.String()
+	if strings.Contains(output, "abc12") {
+		t.Fatalf("short secret leaked to stdout: %q", output)
+	}
+	if !strings.Contains(output, "***") {
+		t.Fatalf("expected redaction marker in stdout, got: %q", output)
+	}
+}
+
+func TestMaterializeRedactsShortSecret(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "secrets")
+	t.Setenv("SHORT_TOKEN", "abc12") // 5 bytes
+
+	script := filepath.Join(t.TempDir(), "echo-short.sh")
+	if err := os.WriteFile(script, []byte(
+		"#!/bin/sh\necho \"token=abc12\"\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout bytes.Buffer
+	if err := runSecretStoreMaterialize(t.Context(), []string{
+		"-dir", dir,
+		"SHORT_TOKEN=short-token/value",
+		"--", script,
+	}, &stdout, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+
+	output := stdout.String()
+	if strings.Contains(output, "abc12") {
+		t.Fatalf("short secret value leaked to stdout: %q", output)
+	}
+	if !strings.Contains(output, "***") {
+		t.Fatalf("expected redaction marker in stdout, got: %q", output)
+	}
+}
+
+// --- #251: swap check tests ---
+
+func TestCheckSwapActiveWithDevices(t *testing.T) {
+	swapFile := filepath.Join(t.TempDir(), "swaps")
+	if err := os.WriteFile(swapFile, []byte(
+		"Filename\t\t\t\tType\t\tSize\t\tUsed\t\tPriority\n"+
+			"/dev/sda2                               partition\t8388604\t\t0\t\t-2\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if !checkSwapActive(swapFile) {
+		t.Fatal("expected swap to be detected as active")
+	}
+}
+
+func TestCheckSwapActiveHeaderOnly(t *testing.T) {
+	swapFile := filepath.Join(t.TempDir(), "swaps")
+	if err := os.WriteFile(swapFile, []byte(
+		"Filename\t\t\t\tType\t\tSize\t\tUsed\t\tPriority\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if checkSwapActive(swapFile) {
+		t.Fatal("expected no swap detected with header-only file")
+	}
+}
+
+func TestCheckSwapActiveMissingFile(t *testing.T) {
+	if checkSwapActive(filepath.Join(t.TempDir(), "nonexistent")) {
+		t.Fatal("expected false for missing file")
+	}
+}
+
+func TestExecWarnsOnActiveSwap(t *testing.T) {
+	// Fake /proc/swaps with an active swap device.
+	swapFile := filepath.Join(t.TempDir(), "swaps")
+	if err := os.WriteFile(swapFile, []byte(
+		"Filename\t\t\t\tType\t\tSize\t\tUsed\t\tPriority\n"+
+			"/dev/sda2                               partition\t8388604\t\t0\t\t-2\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	origSwap := swapCheckPath
+	swapCheckPath = swapFile
+	defer func() { swapCheckPath = origSwap }()
+
+	// Mock statfs to report tmpfs so the check passes.
+	origStatfs := secretExecStatfs
+	secretExecStatfs = func(_ string) (int64, error) {
+		return tmpfsMagic, nil
+	}
+	defer func() { secretExecStatfs = origStatfs }()
+
+	dir := t.TempDir()
+	t.Setenv("VAULT_ADDR", "https://vault.example:8200")
+	t.Setenv("OBERTH_VAULT_ROLE", "test-role")
+
+	var stderr bytes.Buffer
+	// The call will fail at Vault login (no real store), but the swap
+	// warning is emitted before the store connection attempt.
+	_ = runSecretStoreExec(t.Context(), []string{
+		"--dir=" + dir,
+		"--path=oberth/data/release/test",
+		"--", "true",
+	}, io.Discard, &stderr)
+
+	if !strings.Contains(stderr.String(), "swap is active") {
+		t.Fatalf("expected swap warning in stderr, got: %q", stderr.String())
+	}
+}
+
+func TestExecNoSwapWarningWhenInactive(t *testing.T) {
+	// Fake /proc/swaps with only the header (no swap devices).
+	swapFile := filepath.Join(t.TempDir(), "swaps")
+	if err := os.WriteFile(swapFile, []byte(
+		"Filename\t\t\t\tType\t\tSize\t\tUsed\t\tPriority\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	origSwap := swapCheckPath
+	swapCheckPath = swapFile
+	defer func() { swapCheckPath = origSwap }()
+
+	origStatfs := secretExecStatfs
+	secretExecStatfs = func(_ string) (int64, error) {
+		return tmpfsMagic, nil
+	}
+	defer func() { secretExecStatfs = origStatfs }()
+
+	dir := t.TempDir()
+	t.Setenv("VAULT_ADDR", "https://vault.example:8200")
+	t.Setenv("OBERTH_VAULT_ROLE", "test-role")
+
+	var stderr bytes.Buffer
+	_ = runSecretStoreExec(t.Context(), []string{
+		"--dir=" + dir,
+		"--path=oberth/data/release/test",
+		"--", "true",
+	}, io.Discard, &stderr)
+
+	if strings.Contains(stderr.String(), "swap") {
+		t.Fatalf("unexpected swap warning when swap is inactive: %q", stderr.String())
 	}
 }

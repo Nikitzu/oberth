@@ -264,3 +264,193 @@ func containsSubstring(s, sub string) bool {
 	}
 	return false
 }
+
+func TestRegisterUpstreamRejectsReservedNames(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 25, 2, 0, 0, 0, time.UTC)
+	database := testStore(t, &now)
+	ctx := context.Background()
+
+	// Guard 1: reserved names that would alias security boundaries.
+	for _, name := range []string{"release", "data", "upstream", "sys", "metadata", "receive-outbox"} {
+		_, err := database.RegisterUpstream(ctx, "admin@localhost", model.UpstreamSpec{
+			Name: name, Kind: "ssh", BaseURL: "ssh://git@example.com/" + name,
+		})
+		if !errors.Is(err, ErrInvalid) {
+			t.Fatalf("reserved upstream name %q: error = %v, want ErrInvalid", name, err)
+		}
+		if !strings.Contains(err.Error(), "reserved") {
+			t.Fatalf("reserved upstream name %q: error must say 'reserved': %v", name, err)
+		}
+	}
+
+	// A non-reserved name registers fine.
+	if _, err := database.RegisterUpstream(ctx, "admin@localhost", model.UpstreamSpec{
+		Name: "codeberg", Kind: "ssh", BaseURL: "ssh://git@codeberg.org/cloudtaser",
+	}); err != nil {
+		t.Fatalf("register non-reserved name: %v", err)
+	}
+}
+
+func TestRegisterUpstreamRejectsNameOrgDisjointness(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 25, 2, 0, 0, 0, time.UTC)
+	database := testStore(t, &now)
+	ctx := context.Background()
+
+	// Register upstream "codeberg" with org "cloudtaser" (from base URL).
+	if _, err := database.RegisterUpstream(ctx, "admin@localhost", model.UpstreamSpec{
+		Name: "codeberg", Kind: "ssh", BaseURL: "ssh://git@codeberg.org/cloudtaser",
+	}); err != nil {
+		t.Fatalf("register first upstream: %v", err)
+	}
+
+	// Guard 2: namespace disjointness — a second upstream whose NAME matches
+	// the first upstream's ORG must be rejected.
+	_, err := database.RegisterUpstream(ctx, "admin@localhost", model.UpstreamSpec{
+		Name: "cloudtaser", Kind: "ssh", BaseURL: "ssh://git@github.com/different-org",
+	})
+	if !errors.Is(err, ErrInvalid) {
+		t.Fatalf("name-org disjointness: error = %v, want ErrInvalid", err)
+	}
+	if !strings.Contains(err.Error(), "collides") {
+		t.Fatalf("name-org disjointness: error must say 'collides': %v", err)
+	}
+
+	// Verify no leaked upstream was created.
+	all, err := database.ListUpstreams(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 1 {
+		t.Fatalf("upstream count = %d, want 1", len(all))
+	}
+}
+
+// TestSameNameDifferentUpstreamAllowedAfterG3 verifies that the compound
+// UNIQUE(upstream_id, name) constraint (G3 canonical persistence) allows
+// same-name repositories under different upstreams while still rejecting
+// duplicates under the same upstream.
+func TestSameNameDifferentUpstreamAllowedAfterG3(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 25, 3, 0, 0, 0, time.UTC)
+	database := testStore(t, &now)
+	ctx := context.Background()
+
+	upstream1, err := database.RegisterUpstream(ctx, "admin@localhost", model.UpstreamSpec{
+		Name: "codeberg", Kind: "ssh", BaseURL: "ssh://git@codeberg.org/cloudtaser",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	upstream2, err := database.RegisterUpstream(ctx, "admin@localhost", model.UpstreamSpec{
+		Name: "github", Kind: "ssh", BaseURL: "ssh://git@github.com/oberthci",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Register terraform under codeberg.
+	if _, err := database.RegisterRepository(ctx, "admin@localhost", model.RepositorySpec{
+		Name: "terraform", UpstreamID: upstream1.ID, DefaultBranch: "main",
+	}); err != nil {
+		t.Fatalf("register terraform under codeberg: %v", err)
+	}
+
+	// G3: same name under a different upstream is now allowed.
+	repo2, err := database.RegisterRepository(ctx, "admin@localhost", model.RepositorySpec{
+		Name: "terraform", UpstreamID: upstream2.ID, DefaultBranch: "main",
+	})
+	if err != nil {
+		t.Fatalf("same-name repo under different upstream should succeed after G3: %v", err)
+	}
+	if repo2.UpstreamID != upstream2.ID {
+		t.Fatalf("second terraform repo upstream = %d, want %d", repo2.UpstreamID, upstream2.ID)
+	}
+
+	// Same name under the same upstream must still fail.
+	_, err = database.RegisterRepository(ctx, "admin@localhost", model.RepositorySpec{
+		Name: "terraform", UpstreamID: upstream1.ID, DefaultBranch: "main",
+	})
+	if err == nil {
+		t.Fatal("duplicate name under same upstream should fail")
+	}
+
+	// Bare-name lookup should be ambiguous now.
+	_, err = database.RepositoryByName(ctx, "terraform")
+	if !errors.Is(err, ErrAmbiguous) {
+		t.Fatalf("bare-name lookup for ambiguous repo = %v, want ErrAmbiguous", err)
+	}
+
+	// Org-qualified lookup should resolve correctly.
+	found, err := database.RepositoryByName(ctx, "oberthci/terraform")
+	if err != nil {
+		t.Fatalf("org-qualified lookup: %v", err)
+	}
+	if found.ID != repo2.ID {
+		t.Fatalf("org-qualified lookup returned repo %d, want %d", found.ID, repo2.ID)
+	}
+
+	// Fully-qualified lookup should resolve correctly.
+	found, err = database.RepositoryByName(ctx, "codeberg/cloudtaser/terraform")
+	if err != nil {
+		t.Fatalf("fully-qualified lookup: %v", err)
+	}
+	if found.UpstreamID != upstream1.ID {
+		t.Fatalf("fully-qualified lookup upstream = %d, want %d", found.UpstreamID, upstream1.ID)
+	}
+}
+
+func TestRegisterUpstreamRejectsOrgCollidingWithExistingName(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 25, 4, 0, 0, 0, time.UTC)
+	database := testStore(t, &now)
+	ctx := context.Background()
+
+	// Register upstream named "codeberg".
+	if _, err := database.RegisterUpstream(ctx, "admin@localhost", model.UpstreamSpec{
+		Name: "codeberg", Kind: "ssh", BaseURL: "ssh://git@codeberg.org/cloudtaser",
+	}); err != nil {
+		t.Fatalf("register first upstream: %v", err)
+	}
+
+	// G2 reverse: adding a second upstream whose org (from base URL) is
+	// "codeberg" must be rejected because it collides with the existing
+	// upstream NAME "codeberg". A 2-segment path "codeberg/repo" would
+	// be ambiguous: upstream name or org identity?
+	_, err := database.RegisterUpstream(ctx, "admin@localhost", model.UpstreamSpec{
+		Name: "github-mirror", Kind: "ssh", BaseURL: "ssh://git@github.com/codeberg",
+	})
+	if !errors.Is(err, ErrInvalid) {
+		t.Fatalf("G2 reverse: error = %v, want ErrInvalid", err)
+	}
+	if !strings.Contains(err.Error(), "collides") && !strings.Contains(err.Error(), "codeberg") {
+		t.Fatalf("G2 reverse: error must name the collision: %v", err)
+	}
+
+	// Verify no leaked upstream was created.
+	all, err := database.ListUpstreams(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 1 {
+		t.Fatalf("upstream count = %d, want 1", len(all))
+	}
+}
+
+func TestRegisterUpstreamRejectsInvalidCharset(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 25, 2, 0, 0, 0, time.UTC)
+	database := testStore(t, &now)
+	ctx := context.Background()
+
+	// Guard 1 (charset): upstream names must match repoPattern.
+	for _, name := range []string{"-bad", "..", "a/b", "bad name"} {
+		_, err := database.RegisterUpstream(ctx, "admin@localhost", model.UpstreamSpec{
+			Name: name, Kind: "ssh", BaseURL: "ssh://git@example.com/org",
+		})
+		if !errors.Is(err, ErrInvalid) {
+			t.Fatalf("invalid charset upstream name %q: error = %v, want ErrInvalid", name, err)
+		}
+	}
+}

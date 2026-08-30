@@ -192,6 +192,14 @@ type Config struct {
 	// could write up to 512 * 32 MiB = 16 GiB to the shared server PVC.
 	// Default: 64 MiB.
 	MaxRunLogBytes int64
+
+	// PerRepoIdentities maps canonical "upstream/org/repo" identity strings
+	// to their per-repo Vault identities. When a credentialed run's repo
+	// has an entry here (keyed by its canonical form), the per-repo SA is
+	// used instead of the shared CredentialedServiceAccount or
+	// CISecretsServiceAccount. The per-repo SA name doubles as the Vault
+	// role name. Nil or empty means all repos use the shared identities.
+	PerRepoIdentities map[string]PerRepoIdentityConfig
 }
 
 func (config *Config) applyDefaults() {
@@ -414,12 +422,13 @@ type Request struct {
 	// Name is the durable, deterministic object name the scheduler already
 	// persisted for this run. Both engines use it, so recovery can find the
 	// object without knowing which engine created it.
-	Name        string
-	Repo        string
-	UpstreamOrg string
-	Ref         string
-	SHA         string
-	Trigger     periapsis.Trigger
+	Name         string
+	Repo         string
+	UpstreamName string
+	UpstreamOrg  string
+	Ref          string
+	SHA          string
+	Trigger      periapsis.Trigger
 	// Source is the exact bytes of the repository's pipeline document for
 	// this trigger, read from the immutable run workspace.
 	Source []byte
@@ -526,7 +535,7 @@ func Build(config Config, request Request) (*wfv1.Workflow, error) {
 			request.Trigger, request.Repo, config.VaultAddress)
 	}
 
-	identity, err := config.identityFor(request.Trigger, len(declaredPaths) > 0)
+	identity, err := config.identityForWithRepo(request.Trigger, len(declaredPaths) > 0, request.UpstreamName, request.UpstreamOrg, request.Repo)
 	if err != nil {
 		return nil, err
 	}
@@ -558,7 +567,7 @@ func Build(config Config, request Request) (*wfv1.Workflow, error) {
 		if strings.TrimSpace(config.VaultAddress) == "" {
 			return nil, errors.New("argojob: credentialed pipeline requires a Vault address (argo.vault.address / --argo-vault-address)")
 		}
-		if config.vaultRoleFor(request.Trigger) == "" {
+		if config.vaultRoleForWithRepo(request.Trigger, request.UpstreamName, request.UpstreamOrg, request.Repo) == "" {
 			switch request.Trigger {
 			case periapsis.TriggerCI:
 				return nil, fmt.Errorf("argojob: refusing the CI run for %q: it declares secret-store paths but no "+
@@ -1180,16 +1189,27 @@ func (config Config) cacheRootFor(trigger periapsis.Trigger) string {
 // repoCacheSegment derives the single directory name a repository's cache lives
 // under, inside its tier's root.
 //
-// The repository name arrives from a push, so it is never used verbatim in a
-// node path. Only lowercase alphanumerics, '-' and '_' survive; '.' is
+// The digest key is the org-qualified identity (org/repo), so same-name repos
+// under different upstreams land in different cache directories. Upstream org
+// uniqueness is enforced at registration time, making org/repo sufficient for
+// isolation.
+//
+// The readable prefix and digest are both taken over the qualified form.
+// Only lowercase alphanumerics, '-' and '_' survive; '.' and '/' are
 // deliberately not in that set, which makes "." and ".." structurally
-// unreachable rather than filtered for. The trailing digest is taken over the
-// original name, so two repositories that sanitise or truncate to the same
-// readable prefix still land in different directories.
-func repoCacheSegment(repo string) string {
-	digest := sha256.Sum256([]byte(repo))
+// unreachable rather than filtered for.
+//
+// NOTE: This changed in v0.14 from bare-name to org-qualified digesting.
+// Existing build caches start cold after this change; old cache directories
+// are orphaned but harmless.
+func repoCacheSegment(repo, upstreamOrg string) string {
+	qualified := repo
+	if upstreamOrg != "" {
+		qualified = upstreamOrg + "/" + repo
+	}
+	digest := sha256.Sum256([]byte(qualified))
 	var safe strings.Builder
-	for _, character := range strings.ToLower(repo) {
+	for _, character := range strings.ToLower(qualified) {
 		switch {
 		case character >= 'a' && character <= 'z',
 			character >= '0' && character <= '9',
@@ -1225,7 +1245,7 @@ func cacheVolumeAndMount(config Config, request Request) (corev1.Volume, corev1.
 		Name: CacheVolumeName,
 		VolumeSource: corev1.VolumeSource{
 			HostPath: &corev1.HostPathVolumeSource{
-				Path: path.Join(root, repoCacheSegment(request.Repo)),
+				Path: path.Join(root, repoCacheSegment(request.Repo, request.UpstreamOrg)),
 				Type: &hostPathType,
 			},
 		},
@@ -1809,7 +1829,7 @@ func injectRunEnvironment(workflow *wfv1.Workflow, config Config, request Reques
 		// the wrong tier.
 		environment = append(environment,
 			corev1.EnvVar{Name: "VAULT_ADDR", Value: config.VaultAddress},
-			corev1.EnvVar{Name: "OBERTH_VAULT_ROLE", Value: config.vaultRoleFor(request.Trigger)},
+			corev1.EnvVar{Name: "OBERTH_VAULT_ROLE", Value: config.vaultRoleForWithRepo(request.Trigger, request.UpstreamName, request.UpstreamOrg, request.Repo)},
 		)
 		if request.vaultCADelivered() {
 			// The path, never the bytes. envconsul's Vault client reads
