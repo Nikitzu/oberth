@@ -13,7 +13,6 @@ import (
 
 	"github.com/oberthci/oberth/internal/client"
 	"github.com/oberthci/oberth/internal/dockerjob"
-	"github.com/oberthci/oberth/internal/pipelinegen"
 	"github.com/oberthci/oberth/pkg/argoworkflow"
 	"github.com/oberthci/oberth/pkg/periapsis"
 )
@@ -307,8 +306,8 @@ func serverHeldPipeline(ctx context.Context, root, triggerFile string) (remotePi
 	if !client.FromEnv().Configured() {
 		return remotePipeline{}, false
 	}
-	local := strings.TrimSpace(pipelinegen.DetectProject(root).Repo)
-	if local == "" {
+	candidates := checkoutNameCandidates(root)
+	if len(candidates) == 0 {
 		return remotePipeline{}, false
 	}
 	api, err := remoteClient(ctx)
@@ -322,13 +321,13 @@ func serverHeldPipeline(ctx context.Context, root, triggerFile string) (remotePi
 	matched := ""
 	for _, repository := range repositories {
 		segments := strings.Split(repository.Name, "/")
-		if !strings.EqualFold(segments[len(segments)-1], local) {
+		bare := segments[len(segments)-1]
+		if !candidates[strings.ToLower(bare)] {
 			continue
 		}
-		if matched != "" {
-			// Two repositories share this bare name under different
-			// upstreams. Guessing which one the checkout is would be worse
-			// than saying nothing.
+		if matched != "" && matched != repository.Name {
+			// Two catalogued repositories answer to this checkout's names.
+			// Guessing which one it is would be worse than saying nothing.
 			return remotePipeline{}, false
 		}
 		matched = repository.Name
@@ -349,4 +348,38 @@ func serverHeldPipeline(ctx context.Context, root, triggerFile string) (remotePi
 		return remotePipeline{}, false
 	}
 	return held, true
+}
+
+// checkoutNameCandidates guesses what Oberth might catalog this checkout as.
+//
+// Every remote's trailing path segment counts, not just origin's: the remote
+// that points at Oberth is usually named something else, and its path IS the
+// catalog name. The directory name is the last resort. All of them are only
+// candidates; the caller matches them against the server's own list and gives
+// up on an ambiguity rather than picking one.
+func checkoutNameCandidates(root string) map[string]bool {
+	candidates := map[string]bool{}
+	if base := strings.TrimSpace(filepath.Base(root)); base != "" && base != "." && base != string(filepath.Separator) {
+		candidates[strings.ToLower(base)] = true
+	}
+	raw, err := os.ReadFile(filepath.Join(root, ".git", "config")) // #nosec G304 -- the checkout being validated.
+	if err != nil {
+		return candidates
+	}
+	for _, line := range strings.Split(string(raw), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if !strings.HasPrefix(trimmed, "url") {
+			continue
+		}
+		_, value, found := strings.Cut(trimmed, "=")
+		if !found {
+			continue
+		}
+		url := strings.TrimSuffix(strings.TrimSpace(value), ".git")
+		url = strings.TrimSuffix(url, "/")
+		if index := strings.LastIndexAny(url, "/:"); index >= 0 && index+1 < len(url) {
+			candidates[strings.ToLower(url[index+1:])] = true
+		}
+	}
+	return candidates
 }

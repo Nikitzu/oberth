@@ -273,3 +273,30 @@ func TestStatusWarnsAboutADriftedRepository(t *testing.T) {
 		}
 	}
 }
+
+func TestCheckoutNameCandidatesReadEveryRemoteNotJustOrigin(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "local-directory-name")
+	if err := os.MkdirAll(filepath.Join(root, ".git"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	config := "[remote \"origin\"]\n\turl = git@github.com:acme/upstream-name.git\n" +
+		"[remote \"oberth\"]\n\turl = ssh://oberth@127.0.0.1:40022/catalog-name\n"
+	if err := os.WriteFile(filepath.Join(root, ".git", "config"), []byte(config), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	candidates := checkoutNameCandidates(root)
+	for _, want := range []string{"local-directory-name", "upstream-name", "catalog-name"} {
+		if !candidates[want] {
+			t.Fatalf("candidates %v missing %q", candidates, want)
+		}
+	}
+}
+
+func TestServerHeldPipelineSaysNothingWithoutAServer(t *testing.T) {
+	t.Setenv("OBERTH_BASE_URL", "")
+	t.Setenv("OBERTH_TOKEN", "")
+	t.Setenv("OBERTH_TOKEN_COMMAND", "")
+	if _, ok := serverHeldPipeline(context.Background(), t.TempDir(), ".oberth/build.yaml"); ok {
+		t.Fatal("an unconfigured client must not claim the server holds anything")
+	}
+}
