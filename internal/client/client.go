@@ -1,6 +1,7 @@
 package client
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
@@ -167,6 +168,11 @@ func newTransport(caCert string) (http.RoundTripper, error) {
 // shares it so the Authorization header can never diverge between the JSON
 // and the raw-download reads.
 func (client *Client) newGetRequest(ctx context.Context, path string, query map[string]string) (*http.Request, error) {
+	return client.newRequest(ctx, http.MethodGet, path, query, nil)
+}
+
+func (client *Client) newRequest(ctx context.Context, method, path string,
+	query map[string]string, body io.Reader) (*http.Request, error) {
 	target := *client.base
 	target.Path = strings.TrimRight(target.Path, "/") + path
 	if len(query) > 0 {
@@ -178,12 +184,55 @@ func (client *Client) newGetRequest(ctx context.Context, path string, query map[
 		}
 		target.RawQuery = values.Encode()
 	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, target.String(), nil)
+	request, err := http.NewRequestWithContext(ctx, method, target.String(), body)
 	if err != nil {
 		return nil, fmt.Errorf("client: build request for %s: %w", path, err)
 	}
 	request.Header.Set("Authorization", "Bearer "+client.token)
 	return request, nil
+}
+
+// Send performs an authenticated request that may change server state. It is
+// the same transport, the same bearer token, and the same status handling as
+// Get; only the method and the optional JSON body differ, so a mutating
+// command cannot accidentally get a laxer client than a reading one.
+func (client *Client) Send(ctx context.Context, method, path string,
+	query map[string]string, body any, into any) error {
+	var reader io.Reader
+	if body != nil {
+		encoded, err := json.Marshal(body)
+		if err != nil {
+			return fmt.Errorf("client: encode the %s body: %w", path, err)
+		}
+		reader = bytes.NewReader(encoded)
+	}
+	request, err := client.newRequest(ctx, method, path, query, reader)
+	if err != nil {
+		return err
+	}
+	request.Header.Set("Accept", "application/json")
+	if body != nil {
+		request.Header.Set("Content-Type", "application/json")
+	}
+	response, err := client.http.Do(request)
+	if err != nil {
+		return classifyTransport(path, err)
+	}
+	defer func() { _ = response.Body.Close() }()
+	if response.StatusCode != http.StatusOK {
+		return statusError(path, response)
+	}
+	if into == nil {
+		return nil
+	}
+	raw, err := io.ReadAll(io.LimitReader(response.Body, maxResponseSize))
+	if err != nil {
+		return fmt.Errorf("client: read %s: %w", path, err)
+	}
+	if err := json.Unmarshal(raw, into); err != nil {
+		return fmt.Errorf("client: %s returned a body that is not the expected JSON", path)
+	}
+	return nil
 }
 
 func (client *Client) Get(ctx context.Context, path string, query map[string]string, into any) error {

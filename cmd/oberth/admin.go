@@ -1087,7 +1087,7 @@ func runRepo(ctx context.Context, arguments []string, output io.Writer) error {
 // runRepoWithDependencies dispatches repository administration subcommands.
 func runRepoWithDependencies(ctx context.Context, arguments []string, output io.Writer, dependencies repoDependencies) error {
 	if len(arguments) == 0 {
-		return fmt.Errorf("%w: repo add|remove|verify", errUsage)
+		return fmt.Errorf("%w: repo add|remove|verify|pipeline", errUsage)
 	}
 	switch arguments[0] {
 	case "add":
@@ -1096,8 +1096,13 @@ func runRepoWithDependencies(ctx context.Context, arguments []string, output io.
 		return runRepoRemove(ctx, arguments[1:], output, dependencies)
 	case "verify":
 		return runRepoVerify(ctx, arguments[1:], output)
+	case "pipeline":
+		// Unlike add/remove/verify this one talks to the running server over
+		// the API with a bearer token, because the document it stores has to
+		// meet the server's own admission policy, which the server holds.
+		return runRepoPipeline(ctx, arguments[1:], output)
 	default:
-		return fmt.Errorf("%w: repo add|remove|verify", errUsage)
+		return fmt.Errorf("%w: repo add|remove|verify|pipeline", errUsage)
 	}
 }
 
