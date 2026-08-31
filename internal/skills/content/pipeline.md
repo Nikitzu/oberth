@@ -48,3 +48,22 @@ failure at 42 seconds is worth more than a complete verdict at seven minutes.
 
 `oberth validate` decodes the document, runs the same admission the server
 runs, and prints the step inventory a push would produce.
+
+## When the document does not live in the repository
+
+A repository can keep its pipeline on the server instead of committing it, so
+`.oberth/build.yaml` never appears in a pull request. The stored bytes meet the
+same decode and the same admission; nothing about a run changes.
+
+- `oberth repo pipeline show <repo>` prints what the server holds
+- `oberth repo pipeline set <repo> <file>` stores a new version, refusing on
+  the same admission message a push would produce
+- `oberth repo pipeline unset <repo>` withdraws it; earlier versions stay
+  readable and pushes must carry the file again
+
+A commit that carries the file always wins over the stored document. Alongside
+the document the server keeps a fingerprint of the files `oberth init` reads,
+and a run whose repository has since changed one of them is flagged as drifted.
+The run still ran. `oberth repo pipeline check <repo>` regenerates the pipeline
+from a commit, prints the diff against the stored one, and exits non-zero when
+they differ.
