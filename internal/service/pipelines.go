@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -246,7 +247,7 @@ func (service *API) pipelineCheck(ctx context.Context, actor, repoName, trigger,
 	if err != nil {
 		return PipelineCheckResponse{}, err
 	}
-	defer func() { _ = os.RemoveAll(workspace) }()
+	defer func() { _ = os.RemoveAll(filepath.Dir(workspace)) }()
 
 	regenerated, err := service.regenerate(ctx, repository, workspace)
 	if err != nil {
@@ -312,7 +313,7 @@ func (service *API) fingerprintAt(ctx context.Context, repository model.Reposito
 	if err != nil {
 		return nil, "", err
 	}
-	defer func() { _ = os.RemoveAll(workspace) }()
+	defer func() { _ = os.RemoveAll(filepath.Dir(workspace)) }()
 	return pipelinegen.FingerprintInputs(workspace), resolved, nil
 }
 
@@ -333,15 +334,22 @@ func (service *API) checkoutForPipeline(ctx context.Context, repository model.Re
 		}
 		resolved = sha
 	}
+	if err := os.MkdirAll(service.promotionWorkspaceRoot, 0o700); err != nil {
+		return "", "", fmt.Errorf("create the workspace root: %w", err)
+	}
 	workspace, err := os.MkdirTemp(service.promotionWorkspaceRoot, "pipeline-")
 	if err != nil {
 		return "", "", fmt.Errorf("create pipeline workspace: %w", err)
 	}
-	if err := service.pipelineGit.Checkout(ctx, repository.Name, resolved, workspace); err != nil {
+	// The checkout goes into a path that does NOT yet exist: git refuses to
+	// materialize a revision into an occupied directory, and MkdirTemp's whole
+	// job is to have created one.
+	source := filepath.Join(workspace, "src")
+	if err := service.pipelineGit.Checkout(ctx, repository.Name, resolved, source); err != nil {
 		_ = os.RemoveAll(workspace)
 		return "", "", fmt.Errorf("check out %s of %s: %w", shortRef(resolved), repository.Name, err)
 	}
-	return workspace, resolved, nil
+	return source, resolved, nil
 }
 
 // regenerate runs the init generator over a checkout, with the org resolved

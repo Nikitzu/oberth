@@ -34,6 +34,15 @@ func (git *fakePipelineGit) Checkout(_ context.Context, _, sha, destination stri
 	if !ok {
 		return errors.New("unknown commit " + sha)
 	}
+	// The real git cache refuses to materialize a revision into a directory
+	// that already exists. Refusing here too is what keeps this fake from
+	// passing a call the server would have failed.
+	if _, err := os.Stat(destination); err == nil {
+		return errors.New("destination already exists: " + destination)
+	}
+	if err := os.MkdirAll(destination, 0o750); err != nil {
+		return err
+	}
 	for relative, body := range tree {
 		path := filepath.Join(destination, filepath.FromSlash(relative))
 		if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
@@ -111,7 +120,7 @@ func newPipelineFixture(t *testing.T) *pipelineFixture {
 // commit, which is exactly what `check` regenerates.
 func generatedDocument(t *testing.T, fixture *pipelineFixture, commit string) string {
 	t.Helper()
-	root := t.TempDir()
+	root := filepath.Join(t.TempDir(), "src")
 	if err := fixture.git.Checkout(context.Background(), "oberth", commit, root); err != nil {
 		t.Fatal(err)
 	}
