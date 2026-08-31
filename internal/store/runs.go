@@ -18,7 +18,8 @@ type rowScanner interface {
 const runColumns = `
 queue_sequence, id, repo_id, ref_kind, ref, sha, actor, release, credentialed, trigger,
 phase, job_name, tested_sha, base_sha, failed_burn, failed_step, error,
-status, reason, superseded_by, queued_at, started_at, finished_at, created_at, updated_at`
+status, reason, superseded_by, pipeline_source, pipeline_sha256, pipeline_version, pipeline_drift,
+queued_at, started_at, finished_at, created_at, updated_at`
 
 // EnqueueRun creates a standalone run without a durable receive event
 // association. Production callers go through EnqueueReceiveEvent which binds
@@ -679,15 +680,19 @@ func scanRun(row rowScanner) (model.Run, error) {
 	var release, credentialed int64
 	var queued, created, updated int64
 	var started, finished sql.NullInt64
+	var drift string
 	if err := row.Scan(
 		&value.QueueSequence, &value.ID, &value.RepoID, &value.RefKind, &value.Ref,
 		&value.SHA, &value.Actor, &release, &credentialed, &value.Trigger, &value.Phase, &value.JobName,
 		&value.TestedSHA, &value.BaseSHA, &value.FailedBurn, &value.FailedStep, &value.Error,
-		&value.Status, &value.Reason, &value.SupersededBy, &queued, &started, &finished,
+		&value.Status, &value.Reason, &value.SupersededBy,
+		&value.PipelineSource, &value.PipelineSHA256, &value.PipelineVersion, &drift,
+		&queued, &started, &finished,
 		&created, &updated,
 	); err != nil {
 		return model.Run{}, err
 	}
+	value.PipelineDrift = decodeDriftPaths(drift)
 	value.Release = release != 0
 	value.Credentialed = credentialed != 0
 	value.QueuedAt = fromUnixNano(queued)

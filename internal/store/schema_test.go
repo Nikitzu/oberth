@@ -25,8 +25,8 @@ func (e sqliteResultError) Code() int { return int(e) }
 func TestSchemaMigrationsAreContiguous(t *testing.T) {
 	t.Parallel()
 
-	if latestMigrationVersion != 12 {
-		t.Fatalf("latest migration version = %d, want 12", latestMigrationVersion)
+	if latestMigrationVersion != 13 {
+		t.Fatalf("latest migration version = %d, want 13", latestMigrationVersion)
 	}
 	if len(migrations) != latestMigrationVersion {
 		t.Fatalf("migration count = %d, want %d", len(migrations), latestMigrationVersion)
@@ -577,8 +577,13 @@ ALTER TABLE uplinks_v1 RENAME TO uplinks;
 CREATE UNIQUE INDEX uplinks_token_credential_idx ON uplinks(token_credential_id);
 ALTER TABLE upstreams DROP COLUMN key_name;
 ALTER TABLE runs DROP COLUMN credentialed;
+ALTER TABLE runs DROP COLUMN pipeline_source;
+ALTER TABLE runs DROP COLUMN pipeline_sha256;
+ALTER TABLE runs DROP COLUMN pipeline_version;
+ALTER TABLE runs DROP COLUMN pipeline_drift;
+DROP TABLE repo_pipelines;
 DROP TABLE schedule_fires;
-DELETE FROM schema_migrations WHERE version IN (2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12);`); err != nil {
+DELETE FROM schema_migrations WHERE version IN (2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13);`); err != nil {
 		_ = raw.Close()
 		t.Fatal(err)
 	}
@@ -913,6 +918,7 @@ func TestFreshSchemaIsCompleteAndIdempotent(t *testing.T) {
 		"promotions",
 		"publications",
 		"receive_events",
+		"repo_pipelines",
 		"repositories",
 		"run_cancellations",
 		"runs",
@@ -945,6 +951,7 @@ func TestFreshSchemaIsCompleteAndIdempotent(t *testing.T) {
 		"publications_run_idx",
 		"receive_events_repo_idx",
 		"receive_events_run_idx",
+		"repo_pipelines_latest_idx", "repo_pipelines_version_idx",
 		"run_cancellations_pending_idx",
 		"runs_fifo_idx",
 		"runs_ref_idx",
@@ -971,6 +978,7 @@ func TestFreshSchemaIsCompleteAndIdempotent(t *testing.T) {
 		"promotions_no_delete",
 		"publications_guard_update",
 		"publications_no_delete",
+		"repo_pipelines_no_delete", "repo_pipelines_no_update",
 		"schema_identity_no_delete",
 		"schema_identity_no_insert",
 		"schema_identity_no_update",
@@ -985,7 +993,7 @@ func TestFreshSchemaIsCompleteAndIdempotent(t *testing.T) {
 		"schema_migrations":         {"version", "applied_at"},
 		"upstreams":                 {"id", "name", "kind", "base_url", "created_at", "updated_at", "key_name"},
 		"repositories":              {"id", "name", "upstream_id", "default_branch", "created_at", "updated_at"},
-		"runs":                      {"queue_sequence", "id", "repo_id", "ref_kind", "ref", "sha", "actor", "release", "trigger", "phase", "job_name", "tested_sha", "base_sha", "failed_burn", "failed_step", "error", "status", "reason", "superseded_by", "queued_at", "started_at", "finished_at", "created_at", "updated_at", "credentialed"},
+		"runs":                      {"queue_sequence", "id", "repo_id", "ref_kind", "ref", "sha", "actor", "release", "trigger", "phase", "job_name", "tested_sha", "base_sha", "failed_burn", "failed_step", "error", "status", "reason", "superseded_by", "queued_at", "started_at", "finished_at", "created_at", "updated_at", "credentialed", "pipeline_source", "pipeline_sha256", "pipeline_version", "pipeline_drift"},
 		"step_results":              {"run_id", "burn", "step", "ordinal", "status", "exit_code", "log_start", "log_end", "started_at", "finished_at", "recorded_at", "declared_size", "max_rss_bytes", "user_cpu_ns", "system_cpu_ns"},
 		"promotions":                {"sequence", "id", "repo_id", "source_branch", "source_sha", "target_ref", "previous_sha", "result_sha", "actor", "status", "run_id", "error", "created_at", "updated_at"},
 		"issues":                    {"id", "repo_id", "kind", "branch", "title", "body", "state", "occurrences", "created_at", "updated_at", "closed_at", "ci_origin", "ci_work_sequence", "ci_work_id"},
@@ -1206,7 +1214,7 @@ func TestOpenRejectsLegacyAndFutureSchemaVersions(t *testing.T) {
 		name    string
 		version int
 	}{
-		{name: "legacy migration chain", version: 13},
+		{name: "legacy migration chain", version: 14},
 		{name: "future schema", version: 99},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -1230,7 +1238,7 @@ INSERT INTO schema_migrations(version, applied_at) VALUES(?, 0);`, test.version)
 			if opened != nil {
 				_ = opened.Close()
 			}
-			if !errors.Is(err, ErrSchemaTooNew) || !strings.Contains(err.Error(), "binary=12") {
+			if !errors.Is(err, ErrSchemaTooNew) || !strings.Contains(err.Error(), "binary=13") {
 				t.Fatalf("OpenAdminClient version %d error = %v, want clear ErrSchemaTooNew", test.version, err)
 			}
 		})

@@ -87,6 +87,11 @@ DELETE FROM schedule_fires;
 INSERT INTO schedule_fires(repo, entry, fired_at, outcome) VALUES('terraform', 'nightly', 1000, 'fired');
 DELETE FROM secret_access;
 INSERT INTO secret_access(repo, step, secret, approved_by, approved_at) VALUES('terraform', '*', 'oberth/data/release/cosign-secret', 'admin@test', 1000);
+DROP TABLE repo_pipelines;
+ALTER TABLE runs DROP COLUMN pipeline_source;
+ALTER TABLE runs DROP COLUMN pipeline_sha256;
+ALTER TABLE runs DROP COLUMN pipeline_version;
+ALTER TABLE runs DROP COLUMN pipeline_drift;
 DELETE FROM schema_migrations WHERE version > 10;
 PRAGMA foreign_keys = ON;`); err != nil {
 		t.Fatal(err)

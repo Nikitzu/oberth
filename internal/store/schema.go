@@ -8,7 +8,7 @@ type migration struct {
 }
 
 const (
-	latestMigrationVersion = 12
+	latestMigrationVersion = 13
 	// oberthSchemaIdentity is a compatibility-frozen opaque literal: every
 	// deployed database carries this exact identity row and a CHECK constraint
 	// on it. Renaming it is a breaking schema migration, not a string cleanup.
@@ -707,5 +707,51 @@ SELECT 1`,
 	{
 		version:  12,
 		rawApply: migrateV12SecretAccessQualifiedNames,
+	},
+	{
+		// Server-held pipelines: a repository can keep its pipeline document
+		// on the server instead of in the repository, and a run records which
+		// of the two it ran.
+		//
+		// repo_pipelines is append-only. A new version never rewrites the row
+		// it supersedes, and unsetting appends a tombstone rather than
+		// deleting, so the table answers what the server would have run at any
+		// point in the past.
+		version: 13,
+		sql: `
+CREATE TABLE repo_pipelines (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    repo_id INTEGER NOT NULL REFERENCES repositories(id),
+    trigger_file TEXT NOT NULL,
+    version INTEGER NOT NULL CHECK (version > 0),
+    document BLOB NOT NULL,
+    sha256 TEXT NOT NULL,
+    tombstone INTEGER NOT NULL DEFAULT 0 CHECK (tombstone IN (0, 1)),
+    fingerprint TEXT NOT NULL DEFAULT '',
+    fingerprint_ref TEXT NOT NULL DEFAULT '',
+    stored_by TEXT NOT NULL,
+    stored_at INTEGER NOT NULL
+);
+CREATE UNIQUE INDEX repo_pipelines_version_idx
+    ON repo_pipelines(repo_id, trigger_file, version);
+CREATE INDEX repo_pipelines_latest_idx
+    ON repo_pipelines(repo_id, trigger_file, version DESC);
+CREATE TRIGGER repo_pipelines_no_update
+BEFORE UPDATE ON repo_pipelines
+BEGIN
+    SELECT RAISE(ABORT, 'server-held pipeline versions are immutable');
+END;
+CREATE TRIGGER repo_pipelines_no_delete
+BEFORE DELETE ON repo_pipelines
+BEGIN
+    SELECT RAISE(ABORT, 'server-held pipeline versions are append-only');
+END;
+
+ALTER TABLE runs ADD COLUMN pipeline_source TEXT NOT NULL DEFAULT ''
+    CHECK (pipeline_source IN ('', 'commit', 'server'));
+ALTER TABLE runs ADD COLUMN pipeline_sha256 TEXT NOT NULL DEFAULT '';
+ALTER TABLE runs ADD COLUMN pipeline_version INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE runs ADD COLUMN pipeline_drift TEXT NOT NULL DEFAULT '';
+`,
 	},
 }

@@ -116,6 +116,20 @@ type Run struct {
 	Status        RunStatus
 	Reason        string
 	SupersededBy  string
+	// PipelineSource records where the document that ran came from:
+	// PipelineSourceCommit when the pushed revision carried the trigger file,
+	// PipelineSourceServer when the server held it for this repository. Empty
+	// on runs recorded before the field existed.
+	PipelineSource string
+	// PipelineSHA256 is the sha256 of the exact document bytes that ran, and
+	// PipelineVersion the server-held version number, zero for a commit
+	// document which has no version counter.
+	PipelineSHA256  string
+	PipelineVersion int64
+	// PipelineDrift lists the generator input paths that differ between the
+	// commit that was pushed and the commit the server-held document was
+	// stored from. Advisory only: a drifted run still runs.
+	PipelineDrift []string
 	QueuedAt      time.Time
 	StartedAt     *time.Time
 	FinishedAt    *time.Time
@@ -147,6 +161,56 @@ type RunResult struct {
 	// FailureTail is transient issue-projection input. Store implementations must
 	// not persist it in the run record or expose it through run status.
 	FailureTail string
+}
+
+// Pipeline document sources, as recorded on a run.
+const (
+	PipelineSourceCommit = "commit"
+	PipelineSourceServer = "server"
+)
+
+// RepoPipeline is one immutable version of a server-held pipeline document for
+// one repository and one trigger file. Storing a new version appends a row; no
+// row is ever updated or deleted, so the history says what the server would
+// have run at any point.
+type RepoPipeline struct {
+	ID          int64
+	RepoID      int64
+	TriggerFile string
+	Version     int64
+	Document    []byte
+	SHA256      string
+	// Tombstone marks a version that withdraws the server-held document. A
+	// repository whose latest version is a tombstone falls back to commit-only
+	// resolution, and the withdrawn bytes stay readable in the earlier rows.
+	Tombstone bool
+	// Fingerprint maps each generator input path to its content hash, as read
+	// from FingerprintRef. Drift detection compares a run's recomputed
+	// fingerprint against this one.
+	Fingerprint    map[string]string
+	FingerprintRef string
+	StoredBy       string
+	StoredAt       time.Time
+}
+
+// RepoPipelineSpec is one storage request. Version, SHA256 and StoredAt are
+// assigned by the store.
+type RepoPipelineSpec struct {
+	RepoID         int64
+	TriggerFile    string
+	Document       []byte
+	Tombstone      bool
+	Fingerprint    map[string]string
+	FingerprintRef string
+	StoredBy       string
+}
+
+// RunPipelineRecord is what a run records about the document it ran.
+type RunPipelineRecord struct {
+	Source  string
+	SHA256  string
+	Version int64
+	Drift   []string
 }
 
 type RunListFilter struct {
