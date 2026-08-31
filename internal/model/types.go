@@ -205,6 +205,17 @@ type RepoPipelineSpec struct {
 	StoredBy       string
 }
 
+// PipelineDriftRun is one repository's most recent server-held run whose
+// generator inputs no longer match the ones its stored document was built
+// from. It is advisory: the run itself passed or failed on its own merits.
+type PipelineDriftRun struct {
+	Repository string
+	RunID      string
+	Ref        string
+	Inputs     []string
+	QueuedAt   time.Time
+}
+
 // RunPipelineRecord is what a run records about the document it ran.
 type RunPipelineRecord struct {
 	Source  string

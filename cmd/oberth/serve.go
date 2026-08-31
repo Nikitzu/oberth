@@ -728,88 +728,89 @@ func serve(ctx context.Context, options serveOptions, logger *log.Logger) (resul
 	if err != nil {
 		return err
 	}
-	health := app.Health{Store: database, Audit: anchors.Ready, VCSCache: &app.VCSSnapshot{}, Configured: func(ctx context.Context) error {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		// The Git transport is configured when at least one complete SSH
-		// identity validates: the shared fallback key, or any per-upstream
-		// key projected from the Secret volume. A fresh install whose first
-		// `upstream add` provisioned only a dedicated key has no shared key
-		// and must still become ready; a broken individual upstream surfaces
-		// through the per-upstream VCS probe instead.
-		_, globalErr := app.GitSSHCommand(options.upstreamKey, options.knownHosts)
-		if globalErr == nil {
-			return nil
-		}
-		registered, listErr := database.ListUpstreams(ctx)
-		if listErr != nil {
-			return globalErr
-		}
-		keyDirectory := filepath.Dir(options.upstreamKey)
-		for _, upstream := range registered {
-			if upstream.Kind != "ssh" || upstream.KeyName == "" || !app.ValidUpstreamKeyName(upstream.KeyName) {
-				continue
-			}
-			if _, err := app.GitSSHCommand(filepath.Join(keyDirectory, upstream.KeyName), options.knownHosts); err == nil {
-				return nil
-			}
-		}
-		// File-based checks exhausted. Fall back to the Kubernetes API:
-		// after `upstream add` stores an SSH key in the Secret, the kubelet
-		// may take up to ~60s to project the update into the volume mount.
-		// Reading the Secrets directly confirms configuration without
-		// waiting for file projection.
-		if kube != nil &&
-			checkUpstreamSecretConfigured(ctx, kube, options.namespace, options.upstreamKey, options.knownHosts, registered) == nil {
-			return nil
-		}
-		return globalErr
-	}, VCS: func(ctx context.Context, upstream model.Upstream) error {
-		if upstream.Kind == "local" {
-			info, err := os.Stat(upstream.BaseURL)
-			if err != nil {
+	health := app.Health{Store: database, Audit: anchors.Ready, VCSCache: &app.VCSSnapshot{},
+		PipelineDrift: database.DriftedPipelineRuns, Configured: func(ctx context.Context) error {
+			if err := ctx.Err(); err != nil {
 				return err
 			}
-			if !info.IsDir() {
-				return errors.New("local upstream is not a directory")
+			// The Git transport is configured when at least one complete SSH
+			// identity validates: the shared fallback key, or any per-upstream
+			// key projected from the Secret volume. A fresh install whose first
+			// `upstream add` provisioned only a dedicated key has no shared key
+			// and must still become ready; a broken individual upstream surfaces
+			// through the per-upstream VCS probe instead.
+			_, globalErr := app.GitSSHCommand(options.upstreamKey, options.knownHosts)
+			if globalErr == nil {
+				return nil
 			}
-			return nil
-		}
-		if upstream.Kind == "https" {
-			// An https upstream authenticates with a token belonging to a
-			// person, so there is no identity on this server to read. Reading
-			// one anyway reported every such upstream as unavailable with a
-			// missing-key error, which reads like a broken deployment rather
-			// than like a deployment that was never given a key.
-			//
-			// Reachability is what the probe is for, so that is what it
-			// checks: DNS, TLS and a response. No credential is sent -- the
-			// token belongs to a push, not to a health check, and a forge that
-			// answers 401 or 404 to an anonymous request has still answered.
-			return probeHTTPSUpstream(ctx, upstream.BaseURL)
-		}
-		// Per-upstream key: the Secret volume mount projects each dedicated
-		// key as a file beside the shared one. Fall back to the shared key
-		// while the kubelet has not yet projected a freshly added data key.
-		keyPath := options.upstreamKey
-		if upstream.KeyName != "" && app.ValidUpstreamKeyName(upstream.KeyName) {
-			perUpstreamKey := filepath.Join(filepath.Dir(options.upstreamKey), upstream.KeyName)
-			if _, statErr := os.Stat(perUpstreamKey); statErr == nil {
-				keyPath = perUpstreamKey
+			registered, listErr := database.ListUpstreams(ctx)
+			if listErr != nil {
+				return globalErr
 			}
-		}
-		privateKey, err := readBoundedFile(keyPath, 1<<20)
-		if err != nil {
-			return fmt.Errorf("read upstream identity: %w", err)
-		}
-		knownHostsData, err := readBoundedFile(options.knownHosts, 1<<20)
-		if err != nil {
-			return fmt.Errorf("read upstream host pins: %w", err)
-		}
-		// Asserts endpoint reachability + pinned host key + accepted identity.
-		return app.ProbeSSHAuthentication(ctx, upstream.BaseURL, privateKey, knownHostsData)
-	}}
+			keyDirectory := filepath.Dir(options.upstreamKey)
+			for _, upstream := range registered {
+				if upstream.Kind != "ssh" || upstream.KeyName == "" || !app.ValidUpstreamKeyName(upstream.KeyName) {
+					continue
+				}
+				if _, err := app.GitSSHCommand(filepath.Join(keyDirectory, upstream.KeyName), options.knownHosts); err == nil {
+					return nil
+				}
+			}
+			// File-based checks exhausted. Fall back to the Kubernetes API:
+			// after `upstream add` stores an SSH key in the Secret, the kubelet
+			// may take up to ~60s to project the update into the volume mount.
+			// Reading the Secrets directly confirms configuration without
+			// waiting for file projection.
+			if kube != nil &&
+				checkUpstreamSecretConfigured(ctx, kube, options.namespace, options.upstreamKey, options.knownHosts, registered) == nil {
+				return nil
+			}
+			return globalErr
+		}, VCS: func(ctx context.Context, upstream model.Upstream) error {
+			if upstream.Kind == "local" {
+				info, err := os.Stat(upstream.BaseURL)
+				if err != nil {
+					return err
+				}
+				if !info.IsDir() {
+					return errors.New("local upstream is not a directory")
+				}
+				return nil
+			}
+			if upstream.Kind == "https" {
+				// An https upstream authenticates with a token belonging to a
+				// person, so there is no identity on this server to read. Reading
+				// one anyway reported every such upstream as unavailable with a
+				// missing-key error, which reads like a broken deployment rather
+				// than like a deployment that was never given a key.
+				//
+				// Reachability is what the probe is for, so that is what it
+				// checks: DNS, TLS and a response. No credential is sent -- the
+				// token belongs to a push, not to a health check, and a forge that
+				// answers 401 or 404 to an anonymous request has still answered.
+				return probeHTTPSUpstream(ctx, upstream.BaseURL)
+			}
+			// Per-upstream key: the Secret volume mount projects each dedicated
+			// key as a file beside the shared one. Fall back to the shared key
+			// while the kubelet has not yet projected a freshly added data key.
+			keyPath := options.upstreamKey
+			if upstream.KeyName != "" && app.ValidUpstreamKeyName(upstream.KeyName) {
+				perUpstreamKey := filepath.Join(filepath.Dir(options.upstreamKey), upstream.KeyName)
+				if _, statErr := os.Stat(perUpstreamKey); statErr == nil {
+					keyPath = perUpstreamKey
+				}
+			}
+			privateKey, err := readBoundedFile(keyPath, 1<<20)
+			if err != nil {
+				return fmt.Errorf("read upstream identity: %w", err)
+			}
+			knownHostsData, err := readBoundedFile(options.knownHosts, 1<<20)
+			if err != nil {
+				return fmt.Errorf("read upstream host pins: %w", err)
+			}
+			// Asserts endpoint reachability + pinned host key + accepted identity.
+			return app.ProbeSSHAuthentication(ctx, upstream.BaseURL, privateKey, knownHostsData)
+		}}
 	if kube != nil {
 		health.Cluster = func(ctx context.Context) error {
 			if err := ctx.Err(); err != nil {

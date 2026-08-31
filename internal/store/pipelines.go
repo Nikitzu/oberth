@@ -237,3 +237,40 @@ func decodeDriftPaths(encoded string) []string {
 	}
 	return paths
 }
+
+// DriftedPipelineRuns lists, per repository, the most recent run that used a
+// server-held document, but only where that run recorded drift.
+//
+// The "most recent" filter is what keeps the warning honest: a repository that
+// drifted last week and was re-stored since is not still drifting, and listing
+// every historical drifted run would say it was.
+func (s *Store) DriftedPipelineRuns(ctx context.Context) ([]model.PipelineDriftRun, error) {
+	rows, err := s.db.QueryContext(ctx, `
+SELECT repositories.name, runs.id, runs.ref, runs.pipeline_drift, runs.queued_at
+FROM runs
+JOIN repositories ON repositories.id = runs.repo_id
+WHERE runs.queue_sequence IN (
+    SELECT MAX(queue_sequence) FROM runs WHERE pipeline_source = 'server' GROUP BY repo_id
+) AND runs.pipeline_drift != ''
+ORDER BY repositories.name`)
+	if err != nil {
+		return nil, fmt.Errorf("list drifted pipeline runs: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var drifted []model.PipelineDriftRun
+	for rows.Next() {
+		var value model.PipelineDriftRun
+		var encoded string
+		var queuedAt int64
+		if err := rows.Scan(&value.Repository, &value.RunID, &value.Ref, &encoded, &queuedAt); err != nil {
+			return nil, fmt.Errorf("scan drifted pipeline run: %w", err)
+		}
+		value.Inputs = decodeDriftPaths(encoded)
+		value.QueuedAt = fromUnixNano(queuedAt)
+		drifted = append(drifted, value)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list drifted pipeline runs: %w", err)
+	}
+	return drifted, nil
+}

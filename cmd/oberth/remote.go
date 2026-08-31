@@ -30,9 +30,16 @@ type remoteRun struct {
 	Error      string
 	FailedBurn string
 	FailedStep string
-	QueuedAt   time.Time
-	StartedAt  *time.Time
-	FinishedAt *time.Time
+	// PipelineSource says whether the document that ran came from the pushed
+	// commit or from the server. PipelineDrift lists the generator inputs
+	// that had moved since a server-held document was stored.
+	PipelineSource  string
+	PipelineSHA256  string
+	PipelineVersion int64
+	PipelineDrift   []string
+	QueuedAt        time.Time
+	StartedAt       *time.Time
+	FinishedAt      *time.Time
 }
 
 type remoteStep struct {
@@ -180,16 +187,33 @@ func runRuns(ctx context.Context, arguments []string, output io.Writer) error {
 		_, err := fmt.Fprintln(output, "no runs")
 		return err
 	}
-	if _, err := fmt.Fprintf(output, "%-34s %-9s %-9s %-8s %s\n", "RUN", "STATUS", "TRIGGER", "SHA", "REF"); err != nil {
+	if _, err := fmt.Fprintf(output, "%-34s %-9s %-9s %-8s %-8s %s\n",
+		"RUN", "STATUS", "TRIGGER", "SHA", "PIPELINE", "REF"); err != nil {
 		return err
 	}
 	for _, run := range runs {
-		if _, err := fmt.Fprintf(output, "%-34s %-9s %-9s %-8s %s\n",
-			run.ID, run.Status, run.Trigger, shortSHA(run.SHA), run.Ref); err != nil {
+		if _, err := fmt.Fprintf(output, "%-34s %-9s %-9s %-8s %-8s %s\n",
+			run.ID, run.Status, run.Trigger, shortSHA(run.SHA), runPipelineColumn(run), run.Ref); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// runPipelineColumn is the one-word answer to "where did this run's pipeline
+// come from", with a marker when its inputs had drifted.
+func runPipelineColumn(run remoteRun) string {
+	switch run.PipelineSource {
+	case "":
+		return "-"
+	case "server":
+		if len(run.PipelineDrift) > 0 {
+			return "server!"
+		}
+		return "server"
+	default:
+		return "commit"
+	}
 }
 
 // resolveRemoteRunID expands the abbreviation the push banner prints into the
@@ -261,6 +285,9 @@ func runRunDetail(ctx context.Context, arguments []string, output io.Writer) err
 			return err
 		}
 	}
+	if err := printRunPipeline(output, detail.Run); err != nil {
+		return err
+	}
 	for _, step := range detail.Steps {
 		marker := " "
 		if step.Burn == detail.Run.FailedBurn && step.Step == detail.Run.FailedStep {
@@ -272,6 +299,32 @@ func runRunDetail(ctx context.Context, arguments []string, output io.Writer) err
 		}
 	}
 	return nil
+}
+
+// printRunPipeline says which document ran. A run that predates server-held
+// pipelines recorded nothing and prints nothing, rather than claiming the
+// commit carried a document nobody checked.
+func printRunPipeline(output io.Writer, run remoteRun) error {
+	switch run.PipelineSource {
+	case "":
+		return nil
+	case "server":
+		if _, err := fmt.Fprintf(output, "pipeline: server-held version %d (sha256 %s)\n",
+			run.PipelineVersion, shortSHA(run.PipelineSHA256)); err != nil {
+			return err
+		}
+	default:
+		if _, err := fmt.Fprintf(output, "pipeline: from the commit (sha256 %s)\n",
+			shortSHA(run.PipelineSHA256)); err != nil {
+			return err
+		}
+	}
+	if len(run.PipelineDrift) == 0 {
+		return nil
+	}
+	_, err := fmt.Fprintf(output, "drifted: %s changed since the document was stored\n",
+		strings.Join(run.PipelineDrift, ", "))
+	return err
 }
 
 type remoteLog struct {
@@ -408,6 +461,16 @@ type remoteHealthStatus struct {
 	Cluster      string `json:"cluster"`
 	Audit        string `json:"audit"`
 	Version      string `json:"version,omitempty"`
+	// PipelineDrift names repositories whose last server-held run saw the
+	// generator inputs move. Advisory: those runs still ran.
+	PipelineDrift []remotePipelineDrift `json:"pipeline_drift,omitempty"`
+}
+
+type remotePipelineDrift struct {
+	Repository string   `json:"repository"`
+	RunID      string   `json:"run_id"`
+	Ref        string   `json:"ref"`
+	Inputs     []string `json:"inputs"`
 }
 
 func runRemoteStatus(ctx context.Context, arguments []string, output io.Writer) error {
@@ -446,7 +509,23 @@ func runRemoteStatus(ctx context.Context, arguments []string, output io.Writer) 
 	// the server version was in the payload and the CLI's own was not
 	// anywhere near it.
 	warnVersionDrift(output, version, status.Version)
+	for _, drift := range status.PipelineDrift {
+		if _, err := fmt.Fprintf(output,
+			"warning: %s runs a server-held pipeline and %s changed since it was stored (run %s); oberth repo pipeline check %s\n",
+			drift.Repository, strings.Join(drift.Inputs, ", "), shortRunID(drift.RunID), drift.Repository); err != nil {
+			return err
+		}
+	}
 	return nil
+}
+
+// shortRunID trims a run identifier to the twelve characters the push banner
+// prints, which every other command already accepts.
+func shortRunID(id string) string {
+	if len(id) > 12 {
+		return id[:12]
+	}
+	return id
 }
 
 type remoteIssueSummary struct {

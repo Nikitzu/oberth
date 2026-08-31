@@ -57,6 +57,9 @@ type Health struct {
 	// AuditChain optionally reports the local hash-chain head and the latest
 	// externally anchored checkpoint.
 	AuditChain func(context.Context) (AuditChainStatus, error)
+	// PipelineDrift optionally reports repositories whose latest server-held
+	// run found the generator inputs had moved since the document was stored.
+	PipelineDrift func(context.Context) ([]model.PipelineDriftRun, error)
 }
 
 // UpstreamStatus reports one configured upstream and its live probe result.
@@ -113,6 +116,18 @@ type HealthStatus struct {
 	SSHIdentity    string             `json:"ssh_identity,omitempty"`
 	SecretStore    *SecretStoreStatus `json:"secret_store,omitempty"`
 	AuditChain     *AuditChainStatus  `json:"audit_chain,omitempty"`
+	// PipelineDrift is advisory. A repository appears here when its last run
+	// on a server-held pipeline saw generator inputs that no longer match the
+	// stored document's; the run still ran.
+	PipelineDrift []PipelineDriftStatus `json:"pipeline_drift,omitempty"`
+}
+
+// PipelineDriftStatus is one repository's advisory drift warning.
+type PipelineDriftStatus struct {
+	Repository string   `json:"repository"`
+	RunID      string   `json:"run_id"`
+	Ref        string   `json:"ref"`
+	Inputs     []string `json:"inputs"`
 }
 
 // Ready gates the readiness probe. Like a vault before initialization, a
@@ -214,6 +229,15 @@ func (health Health) Status(ctx context.Context) (any, error) {
 				chain.Detail = boundedDetail(auditErr.Error())
 			}
 			status.AuditChain = &chain
+		}
+	}
+	if health.PipelineDrift != nil {
+		if drifted, err := health.PipelineDrift(ctx); err == nil {
+			for _, run := range drifted {
+				status.PipelineDrift = append(status.PipelineDrift, PipelineDriftStatus{
+					Repository: run.Repository, RunID: run.RunID, Ref: run.Ref, Inputs: run.Inputs,
+				})
+			}
 		}
 	}
 	if health.SecretStoreProbe != nil && health.SecretStore != nil && health.SecretStore.Configured {
