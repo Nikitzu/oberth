@@ -904,6 +904,10 @@ func serve(ctx context.Context, options serveOptions, logger *log.Logger) (resul
 		SecretAccessReconciler: accessReconciler,
 		RepositoryRemover:      database,
 		RemoveGitCache:         git.RemoveRepository,
+		Pipelines:              database,
+		PipelineGit:            git,
+		Upstreams:              database,
+		PipelineImagePrefixes:  splitRunnerImagePrefixes(options.runnerImagePrefixes),
 	})
 	if err != nil {
 		return err
@@ -912,7 +916,8 @@ func serve(ctx context.Context, options serveOptions, logger *log.Logger) (resul
 	if err != nil {
 		return err
 	}
-	httpAPI, err := api.New(authenticator, controlAPI, controlAPI, version, api.WithErrorClassifier(classifyViewError))
+	httpAPI, err := api.New(authenticator, controlAPI, controlAPI, version,
+		api.WithErrorClassifier(classifyViewError), api.WithPipelines(controlAPI))
 	if err != nil {
 		return err
 	}

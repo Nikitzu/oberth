@@ -58,6 +58,13 @@ type APIConfig struct {
 	SecretAccessReconciler *AccessReconciler
 	RepositoryRemover      RepositoryRemover
 	RemoveGitCache         func(string) error
+	// Pipelines, PipelineGit, Upstreams and PipelineImagePrefixes are the
+	// server-held pipeline surface. Absent, the server resolves committed
+	// documents only and the pipeline endpoints report themselves unavailable.
+	Pipelines             PipelineStore
+	PipelineGit           PipelineGit
+	Upstreams             UpstreamReader
+	PipelineImagePrefixes []string
 }
 
 type API struct {
@@ -84,6 +91,10 @@ type API struct {
 	publisher              func(context.Context, string) error
 	repositoryRemover      RepositoryRemover
 	removeGitCache         func(string) error
+	pipelines              PipelineStore
+	pipelineGit            PipelineGit
+	upstreams              UpstreamReader
+	pipelineImagePrefixes  []string
 }
 
 func NewAPI(config APIConfig) (*API, error) {
@@ -124,6 +135,8 @@ func NewAPI(config APIConfig) (*API, error) {
 		secretAccess: config.SecretAccess, secretAccessReconciler: config.SecretAccessReconciler,
 		publisher:         config.Publisher,
 		repositoryRemover: config.RepositoryRemover, removeGitCache: config.RemoveGitCache,
+		pipelines: config.Pipelines, pipelineGit: config.PipelineGit, upstreams: config.Upstreams,
+		pipelineImagePrefixes: append([]string(nil), config.PipelineImagePrefixes...),
 	}, nil
 }
 

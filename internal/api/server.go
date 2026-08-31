@@ -74,6 +74,7 @@ type Server struct {
 	auth          Authenticator
 	tools         ToolService
 	views         ViewService
+	pipelines     PipelineService
 	version       string
 	classifyError ErrorClassifier
 	mux           *http.ServeMux
@@ -143,6 +144,12 @@ func (server *Server) routes() {
 	server.mux.Handle("GET /api/issues", server.requireAuth(http.HandlerFunc(server.handleIssues)))
 	server.mux.Handle("GET /api/status", server.requireAuth(http.HandlerFunc(server.handleStatus)))
 	server.mux.Handle("POST /api/runs/{run}/publish", server.requireAuth(http.HandlerFunc(server.handleRunPublish)))
+	if server.pipelines != nil {
+		server.mux.Handle("GET /api/repos/pipeline", server.requireAuth(http.HandlerFunc(server.handlePipelineShow)))
+		server.mux.Handle("PUT /api/repos/pipeline", server.requireAuth(http.HandlerFunc(server.handlePipelineSet)))
+		server.mux.Handle("DELETE /api/repos/pipeline", server.requireAuth(http.HandlerFunc(server.handlePipelineUnset)))
+		server.mux.Handle("POST /api/repos/pipeline/check", server.requireAuth(http.HandlerFunc(server.handlePipelineCheck)))
+	}
 	server.mux.HandleFunc("GET /assets/{asset...}", serveAsset)
 	server.mux.HandleFunc("GET /{$}", func(writer http.ResponseWriter, request *http.Request) {
 		http.Redirect(writer, request, "/runs", http.StatusTemporaryRedirect)
