@@ -58,6 +58,8 @@ type DockerJobs struct {
 	// legible surface, not a wider one.
 	secretAllowlist []string
 
+	pipelines pipelineResolver
+
 	mu               sync.Mutex
 	runs             map[string]string // job name -> run ID
 	artifactFailures map[string]string
@@ -80,6 +82,13 @@ func NewDockerJobs(controller dockerControl, auditor service.Auditor) (*DockerJo
 func (jobs *DockerJobs) SetSecretStore(configured bool, systemAllowlist []string) {
 	jobs.secretStore = configured
 	jobs.secretAllowlist = append([]string(nil), systemAllowlist...)
+}
+
+// SetPipelines wires the server-held pipeline store, mirroring
+// ArgoJobs.SetPipelines. The two engines resolve a run's document through the
+// same rule, so a repository that moves between them runs the same bytes.
+func (jobs *DockerJobs) SetPipelines(held PipelineHolder, recorder PipelineRecorder) {
+	jobs.pipelines = pipelineResolver{held: held, recorder: recorder}
 }
 
 // SetArtifacts wires artifact persistence, mirroring ArgoJobs.SetArtifacts.
@@ -123,7 +132,7 @@ func (jobs *DockerJobs) create(ctx context.Context, request service.JobRequest, 
 	if expected, err := runTrigger(request.Run); err != nil || expected != trigger {
 		return errors.New("app: durable run trigger does not match the requested job capability")
 	}
-	source, err := readArgoSource(request.SourceDir, trigger)
+	source, err := jobs.pipelines.resolveAndRecord(ctx, request, trigger)
 	if err != nil {
 		return noPipelineError(err, trigger, request.Repository.Name)
 	}
@@ -300,8 +309,8 @@ func (jobs *DockerJobs) forget(name, runID string) {
 // PipelineSize reads the run's declared scheduler weight from the checked-out
 // document, exactly as the Argo engine does. Both engines read the same field
 // of the same document, so a run weighs the same under either.
-func (jobs *DockerJobs) PipelineSize(_ context.Context, request service.JobRequest) (periapsis.Size, error) {
-	workflow, err := jobs.decodeRequest(request)
+func (jobs *DockerJobs) PipelineSize(ctx context.Context, request service.JobRequest) (periapsis.Size, error) {
+	workflow, err := jobs.decodeRequest(ctx, request)
 	if err != nil {
 		return "", err
 	}
@@ -317,8 +326,8 @@ func (jobs *DockerJobs) PipelineSize(_ context.Context, request service.JobReque
 // compiler's own step list is deliberate: the plan must describe the reviewed
 // document, not this engine's reduction of it, so a divergence between the two
 // shows up as a plan that does not match the run rather than being hidden.
-func (jobs *DockerJobs) PlannedSteps(_ context.Context, request service.JobRequest) ([]runprogress.PlannedStep, error) {
-	workflow, err := jobs.decodeRequest(request)
+func (jobs *DockerJobs) PlannedSteps(ctx context.Context, request service.JobRequest) ([]runprogress.PlannedStep, error) {
+	workflow, err := jobs.decodeRequest(ctx, request)
 	if err != nil {
 		return nil, err
 	}
@@ -335,8 +344,8 @@ func (jobs *DockerJobs) PlannedSteps(_ context.Context, request service.JobReque
 
 // PipelineCredentialed reports whether the document declares secret paths, the
 // same single signal the Argo engine keys everything off.
-func (jobs *DockerJobs) PipelineCredentialed(_ context.Context, request service.JobRequest) (bool, error) {
-	workflow, err := jobs.decodeRequest(request)
+func (jobs *DockerJobs) PipelineCredentialed(ctx context.Context, request service.JobRequest) (bool, error) {
+	workflow, err := jobs.decodeRequest(ctx, request)
 	if err != nil {
 		return false, err
 	}
@@ -357,12 +366,12 @@ func dockerRunIdentity(submission dockerjob.Request) string {
 	return "jwt:" + string(submission.Trigger)
 }
 
-func (jobs *DockerJobs) decodeRequest(request service.JobRequest) (*wfv1.Workflow, error) {
+func (jobs *DockerJobs) decodeRequest(ctx context.Context, request service.JobRequest) (*wfv1.Workflow, error) {
 	trigger, err := runTrigger(request.Run)
 	if err != nil {
 		return nil, err
 	}
-	source, err := readArgoSource(request.SourceDir, trigger)
+	source, _, err := jobs.pipelines.resolve(ctx, request, trigger)
 	if err != nil {
 		return nil, noPipelineError(err, trigger, request.Repository.Name)
 	}

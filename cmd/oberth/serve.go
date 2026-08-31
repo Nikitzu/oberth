@@ -682,6 +682,7 @@ func serve(ctx context.Context, options serveOptions, logger *log.Logger) (resul
 		if err != nil {
 			return err
 		}
+		dockerJobs.SetPipelines(database, database)
 		ciJobs, releaseJobs = dockerJobs, dockerJobs
 		if strings.TrimSpace(options.secretStoreAddress) != "" {
 			logger.Printf("docker execution engine: steps run as containers on the local daemon; "+
@@ -709,6 +710,7 @@ func serve(ctx context.Context, options serveOptions, logger *log.Logger) (resul
 		if err != nil {
 			return err
 		}
+		built.SetPipelines(database, database)
 		argoJobs, ciJobs, releaseJobs = built, built, built
 		logger.Printf("argo execution engine: namespace=%s pipeline-sa=%s credentialed-sa=%s ci-secrets-sa=%s executor-sa=%s",
 			options.argoNamespace, options.argoPipelineAccount, options.argoCredentialedAccount,

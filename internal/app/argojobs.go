@@ -62,6 +62,7 @@ type ArgoJobs struct {
 	artifactBudget    int64
 	artifactFailures  map[string]string
 	reconcilerHealthy ReconcilerHealthChecker
+	pipelines         pipelineResolver
 
 	mu      sync.Mutex
 	intents map[string]argoIntent
@@ -107,6 +108,15 @@ var ErrSuperseded = errors.New("app: Workflow superseded during creation")
 // This exists because the reconciler may be created after the engine in the
 // initialization order. Once set, credentialed admission blocks until the
 // reconciler reports at least one successful reconciliation.
+// SetPipelines wires the server-held pipeline store. Without it the engine
+// resolves committed documents only, which is what a deployment that never
+// stored a pipeline has always done.
+func (jobs *ArgoJobs) SetPipelines(held PipelineHolder, recorder PipelineRecorder) {
+	jobs.mu.Lock()
+	defer jobs.mu.Unlock()
+	jobs.pipelines = pipelineResolver{held: held, recorder: recorder}
+}
+
 func (jobs *ArgoJobs) SetReconcilerHealth(checker ReconcilerHealthChecker) {
 	jobs.mu.Lock()
 	defer jobs.mu.Unlock()
@@ -142,12 +152,12 @@ func (jobs *ArgoJobs) CreateRelease(ctx context.Context, request service.JobRequ
 
 // PipelineSize reads the run's declared scheduler weight from the checked-out
 // document without evaluating anything.
-func (jobs *ArgoJobs) PipelineSize(_ context.Context, request service.JobRequest) (periapsis.Size, error) {
+func (jobs *ArgoJobs) PipelineSize(ctx context.Context, request service.JobRequest) (periapsis.Size, error) {
 	trigger, err := runTrigger(request.Run)
 	if err != nil {
 		return "", err
 	}
-	source, err := readArgoSource(request.SourceDir, trigger)
+	source, _, err := jobs.pipelines.resolve(ctx, request, trigger)
 	if err != nil {
 		return "", noPipelineError(err, trigger, request.Repository.Name)
 	}
@@ -173,12 +183,12 @@ func (jobs *ArgoJobs) PipelineSize(_ context.Context, request service.JobRequest
 // -- so a run that has not reached a burn does not report it as pending, it
 // omits it, and an agent reading `status` on a failed run sees a plausible
 // complete pipeline that is missing exactly the work that never ran.
-func (jobs *ArgoJobs) PlannedSteps(_ context.Context, request service.JobRequest) ([]runprogress.PlannedStep, error) {
+func (jobs *ArgoJobs) PlannedSteps(ctx context.Context, request service.JobRequest) ([]runprogress.PlannedStep, error) {
 	trigger, err := runTrigger(request.Run)
 	if err != nil {
 		return nil, err
 	}
-	source, err := readArgoSource(request.SourceDir, trigger)
+	source, _, err := jobs.pipelines.resolve(ctx, request, trigger)
 	if err != nil {
 		return nil, noPipelineError(err, trigger, request.Repository.Name)
 	}
@@ -256,7 +266,7 @@ func (jobs *ArgoJobs) create(ctx context.Context, request service.JobRequest, tr
 	}
 	jobs.mu.Unlock()
 
-	source, err := readArgoSource(request.SourceDir, trigger)
+	source, err := jobs.pipelines.resolveAndRecord(ctx, request, trigger)
 	if err != nil {
 		return noPipelineError(err, trigger, request.Repository.Name)
 	}
@@ -546,12 +556,12 @@ func noPipelineError(err error, trigger periapsis.Trigger, repoName string) erro
 
 // PipelineCredentialed reports whether the checked-out pipeline declares
 // secret-store paths by decoding the same document PipelineSize reads.
-func (jobs *ArgoJobs) PipelineCredentialed(_ context.Context, request service.JobRequest) (bool, error) {
+func (jobs *ArgoJobs) PipelineCredentialed(ctx context.Context, request service.JobRequest) (bool, error) {
 	trigger, err := runTrigger(request.Run)
 	if err != nil {
 		return false, err
 	}
-	source, err := readArgoSource(request.SourceDir, trigger)
+	source, _, err := jobs.pipelines.resolve(ctx, request, trigger)
 	if err != nil {
 		return false, noPipelineError(err, trigger, request.Repository.Name)
 	}
