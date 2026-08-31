@@ -11,7 +11,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/oberthci/oberth/internal/client"
 	"github.com/oberthci/oberth/internal/dockerjob"
+	"github.com/oberthci/oberth/internal/pipelinegen"
 	"github.com/oberthci/oberth/pkg/argoworkflow"
 	"github.com/oberthci/oberth/pkg/periapsis"
 )
@@ -20,7 +22,7 @@ const (
 	validateDefaultTimeout = 5 * time.Minute
 )
 
-func runValidate(_ context.Context, arguments []string, output io.Writer) error {
+func runValidate(ctx context.Context, arguments []string, output io.Writer) error {
 	flags := flag.NewFlagSet("validate", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	_ = flags.Duration("timeout", validateDefaultTimeout, "reserved for future use")
@@ -55,7 +57,7 @@ func runValidate(_ context.Context, arguments []string, output io.Writer) error 
 	target.engine = engine
 	target.imagePrefixes = splitRunnerImagePrefixes(imagePrefixes)
 	target.allowUnresolvedFragments = *allowUnresolved
-	return executeValidate(target, output)
+	return executeValidate(ctx, target, output)
 }
 
 // validateTarget names the locations every check derives from.
@@ -110,7 +112,7 @@ func (report *validateReport) problem(format string, args ...any) {
 	report.line("  error: "+format, args...)
 }
 
-func executeValidate(target validateTarget, output io.Writer) error {
+func executeValidate(ctx context.Context, target validateTarget, output io.Writer) error {
 	report := &validateReport{out: output}
 	report.line("validate: %s", target.repoRoot)
 	report.line("")
@@ -125,6 +127,17 @@ func executeValidate(target validateTarget, output io.Writer) error {
 		raw, err := readConfinedPipelineFile(target.repoRoot, entry.file)
 		if err != nil {
 			if os.IsNotExist(err) {
+				// A repository may keep its pipeline on the server instead of
+				// in the revision. Saying "not found" to one of those reads as
+				// a broken repository when it is a configured one, so ask the
+				// server before deciding.
+				if held, ok := serverHeldPipeline(ctx, target.repoRoot, entry.file); ok {
+					report.line("  %s  not in this checkout; the server holds version %d for %s",
+						entry.file, held.Version, held.Repository)
+					report.line("      sha256 %s, stored by %s", held.SHA256, held.StoredBy)
+					report.line("      read it with: oberth repo pipeline show %s", held.Repository)
+					continue
+				}
 				if entry.trigger == periapsis.TriggerCI {
 					report.problem("%s not found: every repository needs a CI pipeline", entry.file)
 				} else {
@@ -280,4 +293,60 @@ func readConfinedPipelineFile(repoRoot, relative string) ([]byte, error) {
 		return nil, fmt.Errorf("%s exceeds the source-size limit", relative)
 	}
 	return source, nil
+}
+
+// serverHeldPipeline asks the configured server whether it holds a document
+// for the repository this checkout is.
+//
+// Everything about it is best-effort. No server configured, no network, an
+// unrecognizable checkout, or an ambiguous name all mean "cannot say", and
+// validate then reports exactly what it reported before. It never turns a
+// server it could not reach into a validation failure, because the document it
+// would be asking about is not this checkout's to be wrong about.
+func serverHeldPipeline(ctx context.Context, root, triggerFile string) (remotePipeline, bool) {
+	if !client.FromEnv().Configured() {
+		return remotePipeline{}, false
+	}
+	local := strings.TrimSpace(pipelinegen.DetectProject(root).Repo)
+	if local == "" {
+		return remotePipeline{}, false
+	}
+	api, err := remoteClient(ctx)
+	if err != nil {
+		return remotePipeline{}, false
+	}
+	var repositories []remoteRepository
+	if err := api.Get(ctx, "/api/repos", nil, &repositories); err != nil {
+		return remotePipeline{}, false
+	}
+	matched := ""
+	for _, repository := range repositories {
+		segments := strings.Split(repository.Name, "/")
+		if !strings.EqualFold(segments[len(segments)-1], local) {
+			continue
+		}
+		if matched != "" {
+			// Two repositories share this bare name under different
+			// upstreams. Guessing which one the checkout is would be worse
+			// than saying nothing.
+			return remotePipeline{}, false
+		}
+		matched = repository.Name
+	}
+	if matched == "" {
+		return remotePipeline{}, false
+	}
+	trigger := "build"
+	if triggerFile == argoworkflow.ReleaseFile {
+		trigger = "release"
+	}
+	var held remotePipeline
+	if err := api.Get(ctx, "/api/repos/pipeline",
+		map[string]string{"repo": matched, "trigger": trigger}, &held); err != nil {
+		return remotePipeline{}, false
+	}
+	if !held.Held {
+		return remotePipeline{}, false
+	}
+	return held, true
 }

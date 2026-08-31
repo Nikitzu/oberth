@@ -168,7 +168,7 @@ func TestValidateWriteErrorPropagates(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(oberthDir, "build.yaml"), []byte(buildYAMLDemo), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	err := executeValidate(validateTarget{repoRoot: root, imagePrefixes: []string{"debian:"}}, &failWriter{})
+	err := executeValidate(context.Background(), validateTarget{repoRoot: root, imagePrefixes: []string{"debian:"}}, &failWriter{})
 	if err == nil || !strings.Contains(err.Error(), "write failed") {
 		t.Fatalf("write error = %v, want write failed", err)
 	}

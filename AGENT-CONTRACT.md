@@ -152,6 +152,35 @@ implementation detail disagree.
   overridden. Only these two caches are shared; tool binaries stay on the run's
   own ephemeral volume. When no root is configured for a tier the mount is
   absent and runs simply start cold.
+- A repository may instead keep its pipeline on the server. This is a
+  fork-only opt-in, per repository and per trigger file, and it changes
+  nothing about what runs: the stored bytes travel the identical decode,
+  admission, size bound, secret-path authorization, and identity switch a
+  committed document travels.
+
+  The source rule, applied by one shared resolver both execution engines
+  call, in this order:
+
+  1. The pushed commit carries the trigger file. The commit wins, always,
+     including when the server also holds a document for that repository.
+  2. The commit does not carry it and the server holds a live document for
+     that repository and trigger. The stored bytes run.
+  3. Neither. The run is refused with the existing "no pipeline
+     configuration" error.
+
+  Storing a document appends an immutable version; withdrawing appends a
+  tombstone rather than deleting, so the history says what the server would
+  have run at any point, and a withdrawn repository returns to rule 3.
+  Every run records which of the two sources it used, the sha256 of the
+  bytes that ran, and the server-held version, and that record is visible in
+  `oberth run <id>`, `/api/runs`, and the dashboard run page.
+
+  Alongside a stored document the server keeps a fingerprint of the inputs
+  `oberth init` reads (the `.github/workflows` tree, the package.json fields
+  the generator uses, `pom.xml`, `go.mod`, the lockfile names) taken from a
+  named commit. A run on a server-held document recomputes that fingerprint
+  from the pushed commit and records the paths that differ. Drift is
+  advisory: the run still runs, and the flag names the files to look at.
 - The server reads YAML statically at submission -- it never executes
   repository code in the server process.
 - Server-owned helper operations (secret-store delivery, trusted plan

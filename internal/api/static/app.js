@@ -158,6 +158,24 @@ function runStatusCell(run) {
 }
 function releaseBadge(run) { return run.Release ? '<span class="pill">⏏ RELEASE</span>' : ""; }
 function credentialedBadge(run) { return !run.Release && run.Credentialed ? '<span class="pill" title="credentialed CI run with secret-store access">⚿ CREDENTIALED</span>' : ""; }
+
+// pipelineMeta says where the document that ran came from. A run recorded
+// before server-held pipelines existed has no source and shows nothing, rather
+// than asserting one.
+function pipelineMeta(run) {
+  if (!run.PipelineSource) return "";
+  const label = run.PipelineSource === "server" ? "server-held v" + run.PipelineVersion : "from commit";
+  return `<span>pipeline<b title="${esc(run.PipelineSHA256 || "")}">${esc(label)}</b></span>`;
+}
+
+// pipelineDriftBanner is advisory: the run ran. It names the generator inputs
+// that moved since the server-held document was stored, so the reader knows
+// which files to look at rather than being told only that something changed.
+function pipelineDriftBanner(run) {
+  const inputs = run.PipelineDrift || [];
+  if (!inputs.length) return "";
+  return `<div class="sbanner"><b>pipeline drift</b><span>the server-held pipeline was stored before ${esc(inputs.join(", "))} changed; this run used the stored document</span></div>`;
+}
 function supersededBadge(run) {
   if (!run.SupersededBy) return "";
   return `<span class="pill" title="superseded by ${esc(run.SupersededBy)}">superseded</span>`;
@@ -785,8 +803,10 @@ async function renderRunDetailView(detail, seq) {
       <span>commit<b class="copy-btn" data-copy-text="${esc(run.SHA)}" title="${esc(run.SHA)}">${esc(shortSha(run.SHA))}</b></span>
       <span>actor<b>${esc(run.Actor || "--")}</b></span>
       <span>took<b>${esc(fmtDur(seconds))}</b></span>
+      ${pipelineMeta(run)}
       <span>${esc(ago(runWhen(run)))}</span>
     </div>
+    ${pipelineDriftBanner(run)}
     ${kind === "fail" && (run.FailedStep || run.Error) ? `<div class="sbanner"><b>${esc(run.FailedStep ? (run.FailedBurn ? run.FailedBurn + " / " : "") + run.FailedStep : "run failed")}</b><span title="${esc(run.Error)}">${esc(run.Error || "")}</span></div>` : ""}
     ${run.SupersededBy ? `<div class="sbanner"><b>superseded</b><span>a newer push replaced this run</span><button class="btn" data-run-id="${esc(run.SupersededBy)}">view successor</button></div>` : ""}
     <div class="rbody">
