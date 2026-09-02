@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-// TestLsRemoteDefaultBranchReadsMasterWithoutACache is the gateway failure.
+// TestLsRemoteDefaultBranchReadsMasterWithoutACache is the observed failure.
 // Registration seeded "main" from a flag default, and a repository whose real
 // default branch is master was then registered against a ref it does not
 // have. The probe has to answer from the upstream's own advertisement, and it

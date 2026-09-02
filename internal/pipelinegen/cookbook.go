@@ -66,7 +66,8 @@ func registryAuthCommands(project Project) []string {
 	switch project.PackageManager {
 	case "pnpm":
 		// pnpm spells the flag with a space and takes the location as its own
-		// argument. This is the form proven against npm.pkg.github.com.
+		// argument. This is the form proven against a GitHub Packages style
+		// registry, and it is written with whatever host the checkout named.
 		//
 		// It goes through packageRunner for the same reason the install does:
 		// pnpm is not on the image's PATH, it is fetched by npx, so a bare
@@ -101,10 +102,12 @@ func berryRegistryUntranslatable(project Project) bool {
 // prepareNeedsGit reports that the repository's install will run a script
 // requiring a git binary.
 //
-// The failure this kills: rides runs husky from `prepare`, which shells out to
-// `git config`. The node -slim images carry no git, so the install died after
-// every package had already downloaded, with an error from husky rather than
-// from the install. The fix is NOT to install git: pipeline containers run
+// The failure this kills: a repository whose `prepare` script runs a git-hook
+// installer, which shells out to `git config`. The node -slim images carry no
+// git, so the install dies after every package has already downloaded, with an
+// error from the hook installer rather than from the install. Observed on a
+// repository using husky; the class is any prepare or postinstall step that
+// needs a git binary. The fix is NOT to install git: pipeline containers run
 // with a read-only root filesystem, so an apt-get in a step can never succeed,
 // and a generator that emits one is emitting a step that is guaranteed to
 // fail. The fix is to pick the image variant that already ships git.
@@ -151,11 +154,12 @@ var platformTools = []platformTool{
 
 // platformPackageStep builds the runtime repair for one tool.
 //
-// The failure this kills: gateway's package-lock.json carries biome's
-// @biomejs/cli-linux-x64 and nothing else, so `npm ci && npm run lint` cannot
-// work on an arm64 runner. GitHub Actions never hit it because it lints
-// through setup-biome rather than through the npm package, so the lockfile has
-// been wrong for as long as anyone has had an arm64 machine.
+// The failure this kills: a lockfile that pins one architecture's variant of a
+// tool and no other, so a plain install on any other architecture leaves the
+// tool with no binary. Observed with a linter whose lockfile carried the x64
+// Linux package only, on an arm64 runner; hosted CI had never hit it because
+// it installed that tool by another route entirely, so the lockfile had been
+// wrong for as long as anyone had had an arm64 machine.
 //
 // The probe is at runtime rather than at generation time on purpose: the
 // generator does not know the runner's architecture, and a step that asks node
@@ -205,10 +209,11 @@ func missingPlatformTools(project Project) []platformTool {
 // a five-minute test suite.
 //
 // The failure this kills: the generator recognized exactly four script names
-// (lint, typecheck, test, build) by exact match, so gateway's `lint:arch` and
-// rides' `validate:structure` and `validate:compile` were dropped in silence.
-// A pipeline that runs fewer gates than the repository believes it runs is the
-// failure mode this whole package exists to prevent, and it had it.
+// (lint, typecheck, test, build) by exact match, so every repository-specific
+// gate was dropped in silence. Observed with an architecture-rule gate named
+// `lint:arch` and with `validate:structure` and `validate:compile`. A pipeline
+// that runs fewer gates than the repository believes it runs is the failure
+// mode this whole package exists to prevent, and it had it.
 var gateFamilies = []struct {
 	name     string
 	prefixes []string

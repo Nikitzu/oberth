@@ -1,5 +1,5 @@
 {
-  "name": "rides",
+  "name": "service-ui",
   "private": true,
   "packageManager": "pnpm@11.0.0",
   "engines": { "node": ">=26" },
@@ -14,7 +14,7 @@
     "start": "node dist/server.js"
   },
   "dependencies": {
-    "@transferz/fe-sdk": "3.5.0"
+    "@acme/fe-sdk": "3.5.0"
   },
   "devDependencies": {
     "@biomejs/biome": "2.1.2",

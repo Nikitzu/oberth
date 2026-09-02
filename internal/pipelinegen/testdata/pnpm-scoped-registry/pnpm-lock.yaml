@@ -7,7 +7,7 @@ settings:
 importers:
   .:
     dependencies:
-      '@transferz/fe-sdk':
+      '@acme/fe-sdk':
         specifier: 3.5.0
         version: 3.5.0
     devDependencies:
@@ -26,5 +26,5 @@ packages:
     resolution: {integrity: sha512-placeholder}
     cpu: [arm64]
     os: [linux]
-  '@transferz/fe-sdk@3.5.0':
+  '@acme/fe-sdk@3.5.0':
     resolution: {integrity: sha512-placeholder}

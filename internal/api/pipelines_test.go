@@ -187,7 +187,7 @@ func TestRepoRegisterPassesTheActorAndTheBody(t *testing.T) {
 	server, pipelines := pipelineTestServer(t)
 	recorder := httptest.NewRecorder()
 	server.Handler().ServeHTTP(recorder,
-		authed(http.MethodPost, "/api/repos", `{"repo":"gateway","upstream":"github"}`))
+		authed(http.MethodPost, "/api/repos", `{"repo":"web-app","upstream":"forge"}`))
 
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
@@ -195,7 +195,7 @@ func TestRepoRegisterPassesTheActorAndTheBody(t *testing.T) {
 	if pipelines.verb != "register" {
 		t.Fatalf("verb = %q, want register", pipelines.verb)
 	}
-	if pipelines.repo != "gateway" || pipelines.upstream != "github" {
+	if pipelines.repo != "web-app" || pipelines.upstream != "forge" {
 		t.Fatalf("repo = %q upstream = %q", pipelines.repo, pipelines.upstream)
 	}
 	if pipelines.actor == "" {
@@ -222,7 +222,7 @@ func TestRepoRegisterRefusesAnEmptyRepo(t *testing.T) {
 func TestRepoRegisterRequiresAuthentication(t *testing.T) {
 	server, _ := pipelineTestServer(t)
 	recorder := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodPost, "/api/repos", strings.NewReader(`{"repo":"gateway"}`))
+	request := httptest.NewRequest(http.MethodPost, "/api/repos", strings.NewReader(`{"repo":"web-app"}`))
 	server.Handler().ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusUnauthorized {
 		t.Fatalf("status = %d, want 401", recorder.Code)

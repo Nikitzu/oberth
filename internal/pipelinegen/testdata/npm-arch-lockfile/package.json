@@ -1,5 +1,5 @@
 {
-  "name": "gateway",
+  "name": "web-app",
   "private": true,
   "engines": { "node": ">=22" },
   "scripts": {

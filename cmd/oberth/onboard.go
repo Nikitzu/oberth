@@ -279,30 +279,76 @@ func (board *onboarder) putPipeline(ctx context.Context, document string) error 
 	return nil
 }
 
-// checkCredential verifies that a pipeline declaring a secret can actually get
-// one, before a push spends five minutes finding out.
+// checkCredential reports whether a pipeline that declares a secret can
+// actually be satisfied, before a push spends minutes finding out.
+//
+// It verifies what a client is able to verify and says so. The server holds
+// read-only access to the secret store and exposes no read endpoint, by
+// design, so this cannot fetch the value and confirm the exact path exists.
+// What it can confirm is that a store is configured and unsealed, which is
+// what every observed failure of this kind actually was. On a miss it names
+// the exact path and the command that seeds it, then stops, rather than
+// pushing a run whose install step will fail on authentication.
 func (board *onboarder) checkCredential(ctx context.Context, result pipelinegen.Result) error {
 	if result.SecretPath == "" {
 		return nil
 	}
 	board.step("pipeline declares %s", result.SecretPath)
+
 	var status struct {
 		SecretStore *struct {
-			Sealed bool   `json:"sealed"`
-			Probe  string `json:"probe"`
+			Configured bool   `json:"configured"`
+			Probe      string `json:"probe"`
 		} `json:"secret_store"`
 	}
 	if err := board.api.Get(ctx, "/api/status", nil, &status); err != nil {
 		return sealedAdvice(err)
 	}
-	if status.SecretStore == nil {
-		board.step("warning: this deployment reports no secret store, so the install step will find no token")
-		return nil
+	if status.SecretStore == nil || !status.SecretStore.Configured {
+		return fmt.Errorf(`this pipeline needs a credential and this deployment has no secret store configured.
+
+  missing: %s
+
+Every run would fail at the install step with an authentication error. Either
+configure a secret store and seed that path, or remove the private registry
+from the repository so no credential is needed.
+
+%s`, result.SecretPath, seedingAdvice(result.SecretPath, board.org, board.repo))
 	}
-	if status.SecretStore.Sealed {
-		return errors.New("sealed, run: oberth unseal")
+	if probe := strings.TrimSpace(status.SecretStore.Probe); probe != "" {
+		if strings.Contains(strings.ToLower(probe), "sealed") {
+			return errors.New("sealed, run: oberth unseal")
+		}
+		if !strings.EqualFold(probe, "ready") && !strings.EqualFold(probe, "ok") {
+			return fmt.Errorf(`this pipeline needs a credential and the secret store is not answering: %s
+
+  needed: %s
+
+%s`, probe, result.SecretPath, seedingAdvice(result.SecretPath, board.org, board.repo))
+		}
 	}
+	board.step("secret store is configured and answering")
 	return nil
+}
+
+// seedingAdvice names the command that puts a value at a declared path.
+//
+// The two namespaces are seeded differently and confusing them wastes a cycle.
+// An org-scoped path is what `oberth install` writes for the whole
+// organization, and it is the only path this generator ever declares. A
+// repo-scoped path only appears in a hand-written document, and seeding it is
+// deliberately an operator's step: the server holds read-only access to the
+// store and widening that so a client could seed a path would hand every
+// onboarding the ability to write credentials.
+func seedingAdvice(path, org, repo string) string {
+	repoScoped := "oberth/upstream/" + org + "/" + repo + "/"
+	if strings.HasPrefix(path, repoScoped) {
+		return "That is a repository-scoped path, which nothing seeds automatically. Write it into\n" +
+			"the store as an operator, or declare the organization-scoped path instead:\n" +
+			"  oberth/upstream/" + org + "/" + strings.TrimPrefix(path, repoScoped)
+	}
+	return "That is the organization-scoped path `oberth install` seeds. Re-run the install with\n" +
+		"the forge token in $GITHUB_TOKEN to write it."
 }
 
 // ensureRemote points the checkout at the server. Idempotent: an existing

@@ -58,7 +58,12 @@ func generateFor(t *testing.T, fixture string) Result {
 	}
 	// The org is the caller's to supply, the way `oberth init` supplies the
 	// one the server has registered. Detection deliberately does not set it.
-	project.Org = "transferz"
+	//
+	// Each fixture supplies its own, from the origin remote it carries, so no
+	// organization name is hardcoded into the harness. In the real flow this
+	// value comes from the server's registered upstream and the origin is
+	// only checked against it; here they agree by construction.
+	project.Org = project.OriginOrg
 	return Generate(project)
 }
 

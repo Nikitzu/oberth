@@ -1,5 +1,5 @@
 [core]
 	repositoryformatversion = 0
 [remote "origin"]
-	url = git@github.com:transferz/rides.git
+	url = git@forge.example:acme/service-ui.git
 	fetch = +refs/heads/*:refs/remotes/origin/*

@@ -8,11 +8,11 @@ import (
 // Every test in this file names the run that made the rule necessary. A rule
 // whose failure is not written down is a rule the next person deletes.
 
-// --- gateway-like ----------------------------------------------------------
+// --- npm-arch-lockfile ----------------------------------------------------------
 
 func TestGatewayLikeIsAdmitted(t *testing.T) {
 	t.Parallel()
-	admitGenerated(t, generateFor(t, "gateway-like").YAML)
+	admitGenerated(t, generateFor(t, "npm-arch-lockfile").YAML)
 }
 
 // gateway's lockfile carries @biomejs/cli-linux-x64 and nothing else, so
@@ -20,7 +20,7 @@ func TestGatewayLikeIsAdmitted(t *testing.T) {
 // it because it lints through setup-biome rather than through the package.
 func TestGatewayLikeRepairsTheSingleArchitectureLockfile(t *testing.T) {
 	t.Parallel()
-	result := generateFor(t, "gateway-like")
+	result := generateFor(t, "npm-arch-lockfile")
 
 	if !containsStep(result.Steps, "platform-biome") {
 		t.Fatalf("no platform repair step for a lockfile pinning one architecture: %v", result.Steps)
@@ -50,7 +50,7 @@ func TestGatewayLikeRepairsTheSingleArchitectureLockfile(t *testing.T) {
 // so a repository-specific gate was dropped in silence.
 func TestGatewayLikeKeepsEveryGateAndSaysWhatItSkipped(t *testing.T) {
 	t.Parallel()
-	result := generateFor(t, "gateway-like")
+	result := generateFor(t, "npm-arch-lockfile")
 
 	for _, want := range []string{"lint", "lint-arch", "typecheck", "test", "build"} {
 		if !containsStep(result.Steps, want) {
@@ -79,11 +79,11 @@ func TestGatewayLikeKeepsEveryGateAndSaysWhatItSkipped(t *testing.T) {
 	}
 }
 
-// --- rides-like ------------------------------------------------------------
+// --- pnpm-scoped-registry ------------------------------------------------------------
 
 func TestRidesLikeIsAdmitted(t *testing.T) {
 	t.Parallel()
-	admitGenerated(t, generateFor(t, "rides-like").YAML)
+	admitGenerated(t, generateFor(t, "pnpm-scoped-registry").YAML)
 }
 
 // `pnpm run lint --if-present` forwarded the flag to biome, which refused.
@@ -92,25 +92,25 @@ func TestRidesLikeIsAdmitted(t *testing.T) {
 // flag is not needed for any manager.
 func TestNoInvocationCarriesIfPresent(t *testing.T) {
 	t.Parallel()
-	for _, fixture := range []string{"gateway-like", "rides-like", "node"} {
+	for _, fixture := range []string{"npm-arch-lockfile", "pnpm-scoped-registry", "node"} {
 		if body := generateFor(t, fixture).YAML; strings.Contains(body, "--if-present") {
 			t.Errorf("%s: an --if-present survived into the generated pipeline", fixture)
 		}
 	}
 }
 
-// rides resolves @transferz from npm.pkg.github.com. Appending an .npmrc line
+// rides resolves @acme from packages.forge.example. Appending an .npmrc line
 // with a ${NPM_TOKEN} placeholder does not work under pnpm, which merges
 // npmrc files and does not expand the placeholder reliably, so the literal
 // travelled to the registry as the token.
 func TestRidesLikeInjectsTheRegistryCredentialTheWayPnpmReadsIt(t *testing.T) {
 	t.Parallel()
-	result := generateFor(t, "rides-like")
+	result := generateFor(t, "pnpm-scoped-registry")
 
-	if result.SecretPath != "oberth/upstream/transferz/github-token" {
+	if result.SecretPath != "oberth/upstream/acme/github-token" {
 		t.Fatalf("declared secret path = %q", result.SecretPath)
 	}
-	want := `config set "//npm.pkg.github.com/:_authToken" "$GITHUB_TOKEN" --location project`
+	want := `config set "//packages.forge.example/:_authToken" "$GITHUB_TOKEN" --location project`
 	if !strings.Contains(result.YAML, want) {
 		t.Errorf("the pnpm credential form is missing:\nwant %s", want)
 	}
@@ -130,7 +130,7 @@ func TestRidesLikeInjectsTheRegistryCredentialTheWayPnpmReadsIt(t *testing.T) {
 // option; the image that already ships it is.
 func TestRidesLikeUsesAnImageThatShipsGit(t *testing.T) {
 	t.Parallel()
-	result := generateFor(t, "rides-like")
+	result := generateFor(t, "pnpm-scoped-registry")
 
 	if strings.Contains(result.YAML, "-trixie-slim@") {
 		t.Error("a repository whose prepare script needs git got a slim image")
@@ -148,7 +148,7 @@ func TestRidesLikeUsesAnImageThatShipsGit(t *testing.T) {
 // on every repository is noise in every log.
 func TestRidesLikeNeedsNoPlatformRepair(t *testing.T) {
 	t.Parallel()
-	for _, name := range generateFor(t, "rides-like").Steps {
+	for _, name := range generateFor(t, "pnpm-scoped-registry").Steps {
 		if strings.HasPrefix(name, "platform-") {
 			t.Fatalf("a platform repair fired for a lockfile that covers both architectures: %v", name)
 		}
@@ -159,7 +159,7 @@ func TestRidesLikeNeedsNoPlatformRepair(t *testing.T) {
 // match dropped, and engines.node >=26, for which there is no pinned image.
 func TestRidesLikeKeepsValidateGatesAndWarnsAboutTheNodeMajor(t *testing.T) {
 	t.Parallel()
-	result := generateFor(t, "rides-like")
+	result := generateFor(t, "pnpm-scoped-registry")
 
 	for _, want := range []string{"validate-structure", "validate-compile", "lint", "typecheck", "test", "build"} {
 		if !containsStep(result.Steps, want) {
@@ -182,7 +182,7 @@ func TestRidesLikeKeepsValidateGatesAndWarnsAboutTheNodeMajor(t *testing.T) {
 // map iteration order leaking into the output reports drift on every check.
 func TestGenerationIsByteStable(t *testing.T) {
 	t.Parallel()
-	for _, fixture := range []string{"gateway-like", "rides-like", "node", "maven"} {
+	for _, fixture := range []string{"npm-arch-lockfile", "pnpm-scoped-registry", "node", "maven"} {
 		first := generateFor(t, fixture).YAML
 		for attempt := 0; attempt < 8; attempt++ {
 			if again := generateFor(t, fixture).YAML; again != first {
@@ -199,7 +199,7 @@ func TestGenerationIsByteStable(t *testing.T) {
 // copying all of them correctly.
 func TestSharedBlocksAreWrittenOnceAndAliased(t *testing.T) {
 	t.Parallel()
-	result := generateFor(t, "gateway-like")
+	result := generateFor(t, "npm-arch-lockfile")
 
 	for _, anchor := range []string{"env: &env", "volumeMounts: &mounts", "resources: &resources"} {
 		if count := strings.Count(result.YAML, anchor); count != 1 {
@@ -225,9 +225,9 @@ func TestSharedBlocksAreWrittenOnceAndAliased(t *testing.T) {
 // docker engine rejects.
 func TestDockerEngineGetsNoMountsItWouldRefuse(t *testing.T) {
 	t.Parallel()
-	root := materialize(t, "gateway-like")
+	root := materialize(t, "npm-arch-lockfile")
 	project := DetectProject(root)
-	project.Org = "transferz"
+	project.Org = "acme"
 	project.Engine = EngineDocker
 
 	document := Generate(project).YAML
@@ -249,10 +249,62 @@ func TestDockerEngineGetsNoMountsItWouldRefuse(t *testing.T) {
 // for everyone.
 func TestArgoEngineKeepsTheClaimAndTheMounts(t *testing.T) {
 	t.Parallel()
-	document := generateFor(t, "gateway-like").YAML
+	document := generateFor(t, "npm-arch-lockfile").YAML
 	for _, want := range []string{"volumeClaimTemplates", "volumeMounts: &mounts"} {
 		if !strings.Contains(document, want) {
 			t.Errorf("an Argo pipeline is missing %s", want)
 		}
+	}
+}
+
+// The committed shape of a private scope usually carries NO token line: the
+// token is a secret, and CI is expected to supply it. Reading only the token
+// line meant such a repository was detected as needing no credential, so no
+// credential step was emitted and the install failed at resolution with an
+// authentication error.
+func TestAScopedRegistryWithNoAuthLineStillNeedsACredential(t *testing.T) {
+	t.Parallel()
+	for name, npmrc := range map[string]string{
+		"scope mapping only": "@acme:registry=https://packages.forge.example\n",
+		"scope mapping plus a token": "@acme:registry=https://packages.forge.example\n" +
+			"//packages.forge.example/:_authToken=${TOKEN}\n",
+		"token line only": "//packages.forge.example/:_authToken=${TOKEN}\n",
+	} {
+		if host := authenticatedRegistryHost(npmrc); host != "packages.forge.example" {
+			t.Errorf("%s: detected host %q, want packages.forge.example", name, host)
+		}
+	}
+}
+
+// A repository that only names the public registry, or a plain mirror, must
+// not cause a secret to be declared: a pipeline that declares a credential it
+// does not need fails admission for a path nobody meant to use.
+func TestAPublicRegistryDeclaresNoCredential(t *testing.T) {
+	t.Parallel()
+	for name, npmrc := range map[string]string{
+		"public registry":     "registry=https://registry.npmjs.org\n",
+		"public scope":        "@acme:registry=https://registry.npmjs.org\n",
+		"settings only":       "auto-install-peers=true\nsave-exact=true\n",
+		"a commented mapping": "# @acme:registry=https://packages.forge.example\n",
+		"a bare mirror":       "registry=https://mirror.internal.example\n",
+	} {
+		if host := authenticatedRegistryHost(npmrc); host != "" {
+			t.Errorf("%s: declared a credential for %q, want none", name, host)
+		}
+	}
+}
+
+// The registry host and the org both come from the repository and the server,
+// never from a constant. The fixture names neither of the organizations any
+// transcript mentioned, and the generated document must carry its values.
+func TestRegistryAndOrgAreTakenFromTheCheckoutNotFromAConstant(t *testing.T) {
+	t.Parallel()
+	result := generateFor(t, "pnpm-scoped-registry")
+
+	if result.SecretPath != "oberth/upstream/acme/github-token" {
+		t.Fatalf("secret path = %q, want it scoped to the org the checkout named", result.SecretPath)
+	}
+	if !strings.Contains(result.YAML, `"//packages.forge.example/:_authToken"`) {
+		t.Error("the credential line does not name the registry the checkout declared")
 	}
 }

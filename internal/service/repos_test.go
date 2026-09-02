@@ -39,7 +39,7 @@ func newRegisterFixture(t *testing.T, probe *fakeProbe) *registerFixture {
 	}
 	t.Cleanup(func() { _ = database.Close() })
 	upstream, err := database.CreateUpstream(ctx, model.UpstreamSpec{
-		Name: "github", Kind: "ssh", BaseURL: "ssh://github.com/transferz",
+		Name: "forge", Kind: "ssh", BaseURL: "ssh://forge.example/acme",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -54,13 +54,13 @@ func newRegisterFixture(t *testing.T, probe *fakeProbe) *registerFixture {
 	return &registerFixture{api: service, store: database, probe: probe, upstream: upstream}
 }
 
-// The gateway failure: registration seeded main from a flag default, and
-// gateway is on master.
+// The observed failure: registration seeded main from a flag default, against
+// a repository whose real default branch is master.
 func TestRegisterReadsTheDefaultBranchFromTheUpstream(t *testing.T) {
 	t.Parallel()
 	fixture := newRegisterFixture(t, &fakeProbe{branch: "master"})
 
-	registered, err := fixture.api.repoRegister(context.Background(), "SHA256:operator", "gateway", "github")
+	registered, err := fixture.api.repoRegister(context.Background(), "SHA256:operator", "web-app", "forge")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -73,7 +73,7 @@ func TestRegisterReadsTheDefaultBranchFromTheUpstream(t *testing.T) {
 	if registered.BranchSource == "" {
 		t.Fatal("the branch source must be reported, so a fallback is visible as one")
 	}
-	stored, err := fixture.store.RepositoryByName(context.Background(), "gateway")
+	stored, err := fixture.store.RepositoryByName(context.Background(), "web-app")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -89,10 +89,10 @@ func TestRegisterIsIdempotent(t *testing.T) {
 	fixture := newRegisterFixture(t, &fakeProbe{branch: "master"})
 	ctx := context.Background()
 
-	if _, err := fixture.api.repoRegister(ctx, "SHA256:operator", "gateway", "github"); err != nil {
+	if _, err := fixture.api.repoRegister(ctx, "SHA256:operator", "web-app", "forge"); err != nil {
 		t.Fatal(err)
 	}
-	again, err := fixture.api.repoRegister(ctx, "SHA256:operator", "gateway", "github")
+	again, err := fixture.api.repoRegister(ctx, "SHA256:operator", "web-app", "forge")
 	if err != nil {
 		t.Fatalf("a second registration must not fail: %v", err)
 	}
@@ -112,12 +112,12 @@ func TestRegisterCorrectsAWrongDefaultBranch(t *testing.T) {
 	fixture := newRegisterFixture(t, &fakeProbe{branch: "master"})
 	ctx := context.Background()
 	if _, err := fixture.store.CreateRepository(ctx, model.RepositorySpec{
-		Name: "gateway", UpstreamID: fixture.upstream.ID, DefaultBranch: "main",
+		Name: "web-app", UpstreamID: fixture.upstream.ID, DefaultBranch: "main",
 	}); err != nil {
 		t.Fatal(err)
 	}
 
-	registered, err := fixture.api.repoRegister(ctx, "SHA256:operator", "gateway", "github")
+	registered, err := fixture.api.repoRegister(ctx, "SHA256:operator", "web-app", "forge")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -128,7 +128,7 @@ func TestRegisterCorrectsAWrongDefaultBranch(t *testing.T) {
 		t.Fatalf("correction reported %q -> %q, want main -> master",
 			registered.PreviousBranch, registered.DefaultBranch)
 	}
-	stored, err := fixture.store.RepositoryByName(ctx, "gateway")
+	stored, err := fixture.store.RepositoryByName(ctx, "web-app")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -143,10 +143,10 @@ func TestRegisterLeavesACorrectBranchAlone(t *testing.T) {
 	t.Parallel()
 	fixture := newRegisterFixture(t, &fakeProbe{branch: "master"})
 	ctx := context.Background()
-	if _, err := fixture.api.repoRegister(ctx, "SHA256:operator", "gateway", "github"); err != nil {
+	if _, err := fixture.api.repoRegister(ctx, "SHA256:operator", "web-app", "forge"); err != nil {
 		t.Fatal(err)
 	}
-	again, err := fixture.api.repoRegister(ctx, "SHA256:operator", "gateway", "github")
+	again, err := fixture.api.repoRegister(ctx, "SHA256:operator", "web-app", "forge")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -161,7 +161,7 @@ func TestRegisterSaysWhenTheBranchIsAFallback(t *testing.T) {
 	t.Parallel()
 	fixture := newRegisterFixture(t, &fakeProbe{err: errors.New("unreachable")})
 
-	registered, err := fixture.api.repoRegister(context.Background(), "SHA256:operator", "gateway", "github")
+	registered, err := fixture.api.repoRegister(context.Background(), "SHA256:operator", "web-app", "forge")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -179,17 +179,17 @@ func TestRegisterRefusesToRemapToAnotherUpstream(t *testing.T) {
 	fixture := newRegisterFixture(t, &fakeProbe{branch: "main"})
 	ctx := context.Background()
 	other, err := fixture.store.CreateUpstream(ctx, model.UpstreamSpec{
-		Name: "codeberg", Kind: "ssh", BaseURL: "ssh://codeberg.org/other",
+		Name: "other-forge", Kind: "ssh", BaseURL: "ssh://forge.example/other",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := fixture.store.CreateRepository(ctx, model.RepositorySpec{
-		Name: "gateway", UpstreamID: other.ID, DefaultBranch: "main",
+		Name: "web-app", UpstreamID: other.ID, DefaultBranch: "main",
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := fixture.api.repoRegister(ctx, "SHA256:operator", "gateway", "github"); !errors.Is(err, ErrInvalidInput) {
+	if _, err := fixture.api.repoRegister(ctx, "SHA256:operator", "web-app", "forge"); !errors.Is(err, ErrInvalidInput) {
 		t.Fatalf("remapping = %v, want ErrInvalidInput", err)
 	}
 }
@@ -198,11 +198,11 @@ func TestRegisterRefusesToRemapToAnotherUpstream(t *testing.T) {
 func TestRegisterTakesTheOnlyUpstreamWhenNoneIsNamed(t *testing.T) {
 	t.Parallel()
 	fixture := newRegisterFixture(t, &fakeProbe{branch: "master"})
-	registered, err := fixture.api.repoRegister(context.Background(), "SHA256:operator", "gateway", "")
+	registered, err := fixture.api.repoRegister(context.Background(), "SHA256:operator", "web-app", "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if registered.Upstream != "github" {
+	if registered.Upstream != "forge" {
 		t.Fatalf("upstream = %q, want github", registered.Upstream)
 	}
 }
@@ -212,11 +212,11 @@ func TestRegisterRefusesToGuessAmongSeveralUpstreams(t *testing.T) {
 	t.Parallel()
 	fixture := newRegisterFixture(t, &fakeProbe{branch: "master"})
 	if _, err := fixture.store.CreateUpstream(context.Background(), model.UpstreamSpec{
-		Name: "codeberg", Kind: "ssh", BaseURL: "ssh://codeberg.org/other",
+		Name: "other-forge", Kind: "ssh", BaseURL: "ssh://forge.example/other",
 	}); err != nil {
 		t.Fatal(err)
 	}
-	_, err := fixture.api.repoRegister(context.Background(), "SHA256:operator", "gateway", "")
+	_, err := fixture.api.repoRegister(context.Background(), "SHA256:operator", "web-app", "")
 	if !errors.Is(err, ErrInvalidInput) {
 		t.Fatalf("ambiguous upstream = %v, want ErrInvalidInput", err)
 	}
@@ -225,7 +225,7 @@ func TestRegisterRefusesToGuessAmongSeveralUpstreams(t *testing.T) {
 func TestRegisterRefusesAnUnknownUpstream(t *testing.T) {
 	t.Parallel()
 	fixture := newRegisterFixture(t, &fakeProbe{branch: "master"})
-	_, err := fixture.api.repoRegister(context.Background(), "SHA256:operator", "gateway", "nope")
+	_, err := fixture.api.repoRegister(context.Background(), "SHA256:operator", "web-app", "nope")
 	if !errors.Is(err, ErrInvalidInput) {
 		t.Fatalf("unknown upstream = %v, want ErrInvalidInput", err)
 	}

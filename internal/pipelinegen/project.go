@@ -234,25 +234,65 @@ func majorVersion(raw string) string {
 	return match
 }
 
-// authenticatedRegistryHost finds the host an .npmrc supplies a token for.
-// An .npmrc that only sets a public registry needs no credential and must not
-// cause a secret to be declared.
+// authenticatedRegistryHost finds the host an .npmrc expects a credential for.
+//
+// Two shapes count, and only recognizing the first was a real miss:
+//
+//   - `//<host>/:_authToken=...` says outright that the host wants a token.
+//   - `@<scope>:registry=https://<host>` maps a scope somewhere other than the
+//     public registry. A private scope is private whether or not the file also
+//     carries a token line, and the common committed shape carries NO token
+//     line at all, because the token is a secret and CI is expected to supply
+//     it. Reading only the token line meant such a repository was detected as
+//     needing no credential, so no credential step was emitted and the install
+//     failed at resolution with an authentication error.
+//
+// An .npmrc that only sets the public registry needs no credential and must
+// not cause a secret to be declared.
 func authenticatedRegistryHost(npmrc string) string {
+	scoped := ""
 	for _, line := range strings.Split(npmrc, "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, ";") {
 			continue
 		}
-		index := strings.Index(line, ":_authToken")
-		if index < 0 {
+		if index := strings.Index(line, ":_authToken"); index >= 0 {
+			// A token line is the strongest statement, so it wins outright.
+			if host := registryHostOf(strings.Trim(line[:index], "/")); host != "" {
+				return host
+			}
 			continue
 		}
-		host := strings.Trim(line[:index], "/")
-		if host != "" && host != "registry.npmjs.org" {
-			return host
+		// `@scope:registry=<url>`. The leading @ is what distinguishes a scope
+		// mapping from the bare `registry=` default, which every repository
+		// may set to a mirror without that mirror being credentialed.
+		if !strings.HasPrefix(line, "@") {
+			continue
+		}
+		key, value, found := strings.Cut(line, "=")
+		if !found || !strings.HasSuffix(strings.TrimSpace(key), ":registry") {
+			continue
+		}
+		if host := registryHostOf(strings.TrimSpace(value)); host != "" && scoped == "" {
+			scoped = host
 		}
 	}
-	return ""
+	return scoped
+}
+
+// registryHostOf reduces a registry reference to a bare host, and answers
+// empty for the public registry, which needs no credential.
+func registryHostOf(value string) string {
+	host := strings.TrimSpace(value)
+	host = strings.TrimPrefix(strings.TrimPrefix(host, "https://"), "http://")
+	host = strings.Trim(host, "/")
+	if slash := strings.IndexByte(host, '/'); slash >= 0 {
+		host = host[:slash]
+	}
+	if host == "" || host == "registry.npmjs.org" {
+		return ""
+	}
+	return host
 }
 
 var (

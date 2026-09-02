@@ -1,7 +1,7 @@
 [core]
 	repositoryformatversion = 0
 [remote "origin"]
-	url = git@github.com:transferz/gateway.git
+	url = git@forge.example:acme/web-app.git
 	fetch = +refs/heads/*:refs/remotes/origin/*
 [branch "master"]
 	remote = origin
