@@ -330,7 +330,18 @@ func (service *API) checkoutForPipeline(ctx context.Context, repository model.Re
 		}
 		sha, err := service.pipelineGit.RefSHA(ctx, repository.Name, branch)
 		if err != nil {
-			return "", "", fmt.Errorf("resolve %s of %s: %w", branch, repository.Name, err)
+			// This is the branch mismatch, and it used to answer a bare 500.
+			// The repository is registered as being on a branch its upstream
+			// does not have -- almost always `main` against a repository on
+			// `master`, seeded by a registration that assumed rather than
+			// asked. The reader needs to be told which branch was tried and
+			// what corrects it, because "internal error" sent three sessions
+			// looking for a server fault that was not there.
+			return "", "", fmt.Errorf(
+				"%w: %s is registered with default branch %q, and that branch could not be resolved on its upstream (%v).\n"+
+					"Oberth reads the real default branch from the upstream's own advertisement. Either re-run\n"+
+					"`oberth onboard`, which re-reads it and corrects the registration, or name a commit directly with --ref.",
+				ErrInvalidInput, repository.Name, branch, err)
 		}
 		resolved = sha
 	}
