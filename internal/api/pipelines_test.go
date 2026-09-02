@@ -16,7 +16,13 @@ type fakePipelines struct {
 	document string
 	ref      string
 	store    bool
+	upstream string
 	verb     string
+}
+
+func (f *fakePipelines) RepoRegister(_ context.Context, actor, repo, upstream string) (any, error) {
+	f.verb, f.actor, f.repo, f.upstream = "register", actor, repo, upstream
+	return map[string]any{"repository": repo, "created": true, "default_branch": "master"}, nil
 }
 
 func (f *fakePipelines) PipelineShow(_ context.Context, repo, trigger string) (any, error) {
@@ -171,5 +177,65 @@ func TestPipelineUnsetPassesTheRepo(t *testing.T) {
 	}
 	if pipelines.verb != "unset" || pipelines.repo != "demo" {
 		t.Fatalf("unset received %q %q", pipelines.verb, pipelines.repo)
+	}
+}
+
+// Registration is what used to require a kubectl exec into the server pod.
+// Over the API it is authorized exactly like the pipeline endpoints, and the
+// repository travels in the body because its name carries slashes.
+func TestRepoRegisterPassesTheActorAndTheBody(t *testing.T) {
+	server, pipelines := pipelineTestServer(t)
+	recorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(recorder,
+		authed(http.MethodPost, "/api/repos", `{"repo":"gateway","upstream":"github"}`))
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	if pipelines.verb != "register" {
+		t.Fatalf("verb = %q, want register", pipelines.verb)
+	}
+	if pipelines.repo != "gateway" || pipelines.upstream != "github" {
+		t.Fatalf("repo = %q upstream = %q", pipelines.repo, pipelines.upstream)
+	}
+	if pipelines.actor == "" {
+		t.Fatal("the acting identity did not reach the service")
+	}
+	var body map[string]any
+	if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body["default_branch"] != "master" {
+		t.Fatalf("default_branch = %v, want the probed branch", body["default_branch"])
+	}
+}
+
+func TestRepoRegisterRefusesAnEmptyRepo(t *testing.T) {
+	server, _ := pipelineTestServer(t)
+	recorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(recorder, authed(http.MethodPost, "/api/repos", `{"repo":"  "}`))
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", recorder.Code)
+	}
+}
+
+func TestRepoRegisterRequiresAuthentication(t *testing.T) {
+	server, _ := pipelineTestServer(t)
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/repos", strings.NewReader(`{"repo":"gateway"}`))
+	server.Handler().ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", recorder.Code)
+	}
+}
+
+// GET /api/repos is the dashboard listing and must be unaffected by the new
+// POST on the same path.
+func TestRepoListingStillAnswersOnTheSamePath(t *testing.T) {
+	server, _ := pipelineTestServer(t)
+	recorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(recorder, authed(http.MethodGet, "/api/repos", ""))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
 	}
 }

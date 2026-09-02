@@ -1114,7 +1114,9 @@ func runRepoAdd(ctx context.Context, arguments []string, output io.Writer, depen
 	flags := flag.NewFlagSet("repo add", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	databasePath := flags.String("database", "/data/oberth.sqlite", "SQLite database path (in-pod; requires the live admin daemon)")
-	defaultBranch := flags.String("default-branch", "main", "repository default branch until the first push confirms it")
+	defaultBranch := flags.String("default-branch", "",
+		"repository default branch (default: read the upstream's own HEAD advertisement)")
+	gitCacheRoot := flags.String("git-cache-root", "/data/git", "root directory for bare Git caches")
 	if err := flags.Parse(arguments); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			flags.SetOutput(output)
@@ -1131,9 +1133,35 @@ func runRepoAdd(ctx context.Context, arguments []string, output io.Writer, depen
 		return err
 	}
 	upstreamName := flags.Arg(1)
+
+	// Which flags the operator actually typed, as opposed to which ones have
+	// defaults. Both decisions below turn on that difference, and comparing a
+	// value against its default cannot tell them apart.
+	typed := map[string]bool{}
+	flags.Visit(func(f *flag.Flag) { typed[f.Name] = true })
+
+	// The local path opens the server's SQLite file directly, so it only
+	// works inside the server pod. Outside it, the same operation goes over
+	// the API, which is what takes the `kubectl exec` out of onboarding.
+	//
+	// An operator who typed --database asked for the local path and gets it,
+	// including its refusals: the audit gate has to fail closed before the
+	// database is opened, and silently going remote would skip it.
+	if !typed["database"] {
+		if _, statErr := os.Stat(*databasePath); errors.Is(statErr, os.ErrNotExist) {
+			return runRepoAddRemote(ctx, name, upstreamName, output)
+		}
+	}
+
 	branch := strings.TrimSpace(*defaultBranch)
-	if branch == "" || strings.ContainsAny(branch, "\x00\r\n ") {
+	// An unset flag means "ask the upstream". A flag typed as empty is an
+	// invalid branch and is refused, because the operator said something and
+	// what they said cannot be used.
+	if typed["default-branch"] && (branch == "" || strings.ContainsAny(branch, "\x00\r\n ")) {
 		return fmt.Errorf("%w: default branch is invalid", errUsage)
+	}
+	if !typed["default-branch"] {
+		branch = ""
 	}
 	if dependencies.mutationGate == nil {
 		return errors.New("admin audit mutation gate is unavailable")
@@ -1170,6 +1198,14 @@ func runRepoAdd(ctx context.Context, arguments []string, output io.Writer, depen
 	} else if !errors.Is(lookupErr, store.ErrNotFound) {
 		return lookupErr
 	}
+	// The branch comes from the upstream's own advertisement, not from a
+	// flag whose value defaulted to main. A repository on master registered
+	// as being on main is a registration against a ref it does not have, and
+	// only a push that moved a ref ever corrected it.
+	branchSource := "--default-branch"
+	if branch == "" {
+		branch, branchSource = probeDefaultBranch(ctx, database, *gitCacheRoot, name)
+	}
 	if err := dependencies.mutationGate(ctx, "repository.register", *databasePath); err != nil {
 		return err
 	}
@@ -1179,9 +1215,26 @@ func runRepoAdd(ctx context.Context, arguments []string, output io.Writer, depen
 	if err != nil {
 		return err
 	}
-	_, err = fmt.Fprintf(output, "registered repository %s -> upstream %s (%s); the first push proves the mapping and refreshes the default branch\n",
-		value.Name, upstream.Name, upstream.BaseURL)
+	_, err = fmt.Fprintf(output, "registered repository %s -> upstream %s (%s)\n  default branch %s, from %s\n",
+		value.Name, upstream.Name, upstream.BaseURL, value.DefaultBranch, branchSource)
 	return err
+}
+
+// probeDefaultBranch asks the upstream which branch it advertises as HEAD.
+//
+// A probe that cannot run falls back to main and SAYS it fell back, which is
+// the whole difference from the behaviour this replaces.
+func probeDefaultBranch(ctx context.Context, database *store.Store, cacheRoot, name string) (string, string) {
+	resolver := app.Upstreams{Catalog: database}
+	cache, err := gitcache.New(gitcache.Config{Root: cacheRoot, Upstream: resolver.Remote})
+	if err != nil {
+		return "main", "a fallback: no git cache could be opened to probe with"
+	}
+	branch, err := cache.LsRemoteDefaultBranch(ctx, name)
+	if err != nil || strings.TrimSpace(branch) == "" {
+		return "main", "a fallback: the upstream advertised no default branch"
+	}
+	return branch, "the upstream's own HEAD advertisement"
 }
 
 // runRepoVerify probes each registered repository's upstream with

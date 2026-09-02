@@ -26,6 +26,9 @@ type PipelineService interface {
 	// PipelineCheck takes the acting identity, repository, trigger word, the
 	// commit to regenerate from, and whether to store the result.
 	PipelineCheck(context.Context, string, string, string, string, bool) (any, error)
+	// RepoRegister takes the acting identity, the repository name, and the
+	// upstream name (empty to take the only one). It is idempotent.
+	RepoRegister(context.Context, string, string, string) (any, error)
 }
 
 // WithPipelines installs the server-held pipeline endpoints.
@@ -45,6 +48,15 @@ type pipelineSetRequest struct {
 	Trigger  string `json:"trigger"`
 	Document string `json:"document"`
 	Ref      string `json:"ref"`
+}
+
+// repoRegisterRequest is the POST /api/repos body. The repository travels in
+// the body for the same reason it does on the pipeline endpoints: an Oberth
+// repository name is qualified with slashes and a path segment cannot carry
+// it.
+type repoRegisterRequest struct {
+	Repo     string `json:"repo"`
+	Upstream string `json:"upstream"`
 }
 
 type pipelineCheckRequest struct {
@@ -104,6 +116,25 @@ func (server *Server) handlePipelineCheck(writer http.ResponseWriter, request *h
 	actor := actorFrom(request.Context())
 	value, err := server.pipelines.PipelineCheck(request.Context(), actor.Identity,
 		body.Repo, body.Trigger, body.Ref, body.Store)
+	server.writeView(writer, value, err)
+}
+
+// handleRepoRegister is registration over the API.
+//
+// It exists so that onboarding a repository does not require `kubectl exec`
+// into the server pod, which is what made onboarding an administrator's task
+// rather than a one-line command.
+func (server *Server) handleRepoRegister(writer http.ResponseWriter, request *http.Request) {
+	var body repoRegisterRequest
+	if !decodePipelineBody(writer, request, &body) {
+		return
+	}
+	if strings.TrimSpace(body.Repo) == "" {
+		writeJSON(writer, http.StatusBadRequest, map[string]string{"error": "repo is required"})
+		return
+	}
+	actor := actorFrom(request.Context())
+	value, err := server.pipelines.RepoRegister(request.Context(), actor.Identity, body.Repo, body.Upstream)
 	server.writeView(writer, value, err)
 }
 
