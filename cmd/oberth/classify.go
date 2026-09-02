@@ -93,7 +93,7 @@ var repositorySignatures = []struct {
 			// Maven and JUnit.
 			"tests run:", "there are test failures", "surefire",
 		},
-		why:      "its own test suite failed",
+		why: "its own test suite failed",
 	},
 	{
 		patterns: []string{
@@ -103,7 +103,7 @@ var repositorySignatures = []struct {
 			// Java compilation.
 			"compilation failure", "cannot find symbol",
 		},
-		why:      "its own typecheck or compile failed",
+		why: "its own typecheck or compile failed",
 	},
 	{
 		patterns: []string{"lint error", "checked ", "found 1 error.", "biome found", "eslint", "problems ("},
