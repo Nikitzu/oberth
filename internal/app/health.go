@@ -31,6 +31,11 @@ type Health struct {
 	// Version is the running server build, reported on the status view so the
 	// dashboard can confirm which binary answered.
 	Version string
+	// Engine and SSHEndpoint are reported verbatim so a client can generate a
+	// pipeline this engine accepts and point a git remote at this server
+	// without either being configured by hand.
+	Engine      string
+	SSHEndpoint string
 	// Identity optionally reports the SSH public-key fingerprint used for
 	// upstream Git authentication (never the private key).
 	Identity func(context.Context) (string, error)
@@ -105,6 +110,15 @@ type HealthStatus struct {
 	VCS          string `json:"vcs"`
 	Cluster      string `json:"cluster"`
 	Audit        string `json:"audit"`
+	// Engine is the execution engine this deployment runs, "argo" or
+	// "docker". A generated pipeline is not portable between them: the docker
+	// engine refuses repository-declared volumeMounts, which the Argo engine
+	// requires. A client that generates a pipeline has to ask before it
+	// writes one.
+	Engine string `json:"engine,omitempty"`
+	// SSHEndpoint is the host and port a push goes to, so a client can set up
+	// the git remote without being told it out of band.
+	SSHEndpoint string `json:"ssh_endpoint,omitempty"`
 	AuditMode    string `json:"audit_mode,omitempty"`
 	Version      string `json:"version,omitempty"`
 	// PublishOnGreen reports whether a green branch run is force-synced to the
@@ -184,7 +198,8 @@ func requiresSSHIdentity(upstreams []model.Upstream) bool {
 }
 
 func (health Health) Status(ctx context.Context) (any, error) {
-	status := HealthStatus{Database: "unavailable", VCS: "unavailable", Cluster: "unavailable", Audit: "unavailable", AuditMode: health.AuditMode, Version: health.Version, PublishOnGreen: health.PublishOnGreen, SecretStore: health.SecretStore}
+	status := HealthStatus{Database: "unavailable", VCS: "unavailable", Cluster: "unavailable", Audit: "unavailable", AuditMode: health.AuditMode, Version: health.Version, PublishOnGreen: health.PublishOnGreen, SecretStore: health.SecretStore,
+		Engine: health.Engine, SSHEndpoint: health.SSHEndpoint}
 	if health.Store == nil {
 		return status, nil
 	}

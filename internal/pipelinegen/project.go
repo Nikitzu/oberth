@@ -458,3 +458,11 @@ func pnpmMajorForLockfile(version string) string {
 		return ""
 	}
 }
+
+// OriginIdentity is originIdentity for callers outside this package.
+//
+// `oberth onboard` needs the same reading of the origin remote the generator
+// does: the repository name it will register, and the org it will refuse to
+// cross. Re-implementing the parse in the command is how the two would come to
+// disagree about what a checkout is called.
+func OriginIdentity(root string) (org, repo string) { return originIdentity(root) }

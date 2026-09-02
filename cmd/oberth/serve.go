@@ -77,6 +77,7 @@ type serveOptions struct {
 	dataRoot                string
 	database                string
 	sshListen               string
+	sshAdvertise            string
 	httpsListen             string
 	tlsCert                 string
 	tlsKey                  string
@@ -172,6 +173,8 @@ func parseServeOptions(arguments []string, output io.Writer) (serveOptions, erro
 	flags.StringVar(&options.dataRoot, "data", "/data", "persistent data root")
 	flags.StringVar(&options.database, "database", "/data/oberth.sqlite", "SQLite database path")
 	flags.StringVar(&options.sshListen, "ssh-listen", ":2222", "SSH listen address")
+	flags.StringVar(&options.sshAdvertise, "ssh-advertise", "",
+		"host:port clients reach this server's SSH on, when it differs from --ssh-listen (NodePort, load balancer)")
 	flags.StringVar(&options.httpsListen, "https-listen", ":8443", "HTTPS listen address")
 	flags.StringVar(&options.tlsCert, "tls-cert", "/etc/oberth/tls/tls.crt", "TLS certificate")
 	flags.StringVar(&options.tlsKey, "tls-key", "/etc/oberth/tls/tls.key", "TLS private key")
@@ -729,6 +732,7 @@ func serve(ctx context.Context, options serveOptions, logger *log.Logger) (resul
 		return err
 	}
 	health := app.Health{Store: database, Audit: anchors.Ready, VCSCache: &app.VCSSnapshot{},
+		Engine: options.engine, SSHEndpoint: advertisedSSHEndpoint(options),
 		PipelineDrift: database.DriftedPipelineRuns, Configured: func(ctx context.Context) error {
 			if err := ctx.Err(); err != nil {
 				return err
@@ -1834,4 +1838,17 @@ func probeHTTPSUpstream(ctx context.Context, baseURL string) error {
 	}
 	defer func() { _ = response.Body.Close() }()
 	return nil
+}
+
+// advertisedSSHEndpoint is the host and port a client points a git remote at.
+//
+// The listen address is what this process bound, which is the only thing it
+// knows for certain. A deployment behind a NodePort or a load balancer says so
+// with --ssh-advertise, because a server cannot discover the address its
+// clients reach it on.
+func advertisedSSHEndpoint(options serveOptions) string {
+	if advertised := strings.TrimSpace(options.sshAdvertise); advertised != "" {
+		return advertised
+	}
+	return strings.TrimSpace(options.sshListen)
 }
