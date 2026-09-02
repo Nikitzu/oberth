@@ -18,8 +18,11 @@ import (
 // cache. Each named ref carries its own tree, so a test can push a change by
 // naming a second ref.
 type fakePipelineGit struct {
-	head  string
-	trees map[string]map[string]string
+	head string
+	// advertised is the branch the upstream calls HEAD. Empty means the fake
+	// advertises nothing and the registered branch stands.
+	advertised string
+	trees      map[string]map[string]string
 }
 
 func (git *fakePipelineGit) RefSHA(_ context.Context, _, _ string) (string, error) {
@@ -27,6 +30,16 @@ func (git *fakePipelineGit) RefSHA(_ context.Context, _, _ string) (string, erro
 		return "", errors.New("no head")
 	}
 	return git.head, nil
+}
+
+// EnsureMirror stands in for the clone-or-fetch the real cache performs. The
+// fake has nothing to mirror, so it reports the branch it would have
+// advertised, or nothing when the head is unresolvable.
+func (git *fakePipelineGit) EnsureMirror(context.Context, string) (string, error) {
+	if git.head == "" {
+		return "", errors.New("no upstream")
+	}
+	return git.advertised, nil
 }
 
 func (git *fakePipelineGit) Checkout(_ context.Context, _, sha, destination string) error {

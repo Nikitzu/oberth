@@ -32,6 +32,10 @@ type PipelineStore interface {
 type PipelineGit interface {
 	Checkout(context.Context, string, string, string) error
 	RefSHA(context.Context, string, string) (string, error)
+	// EnsureMirror mirrors the repository if it is not already, and reports
+	// the branch its upstream advertises as HEAD. Storing a pipeline for a
+	// repository that has never been pushed to depends on it.
+	EnsureMirror(context.Context, string) (string, error)
 }
 
 // UpstreamReader resolves the upstream a repository belongs to, which is what
@@ -327,6 +331,20 @@ func (service *API) checkoutForPipeline(ctx context.Context, repository model.Re
 		branch := repository.DefaultBranch
 		if branch == "" {
 			branch = "main"
+		}
+		// Mirror it first. A repository registered a moment ago has no
+		// mirror, and the only thing that used to create one was a push, so
+		// storing its pipeline required pushing first -- which is the
+		// mandatory ordering onboarding exists to remove. A mirror that is
+		// already there is refreshed, which is what a fingerprint wants
+		// anyway.
+		if advertised, ensureErr := service.pipelineGit.EnsureMirror(ctx, repository.Name); ensureErr == nil {
+			// The upstream is the authority on its own default branch. A
+			// registration that disagrees is stale, and honouring it here
+			// would resolve a ref the repository does not have.
+			if strings.TrimSpace(advertised) != "" {
+				branch = advertised
+			}
 		}
 		sha, err := service.pipelineGit.RefSHA(ctx, repository.Name, branch)
 		if err != nil {

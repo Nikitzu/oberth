@@ -333,6 +333,28 @@ func (board *onboarder) ensureRemote() error {
 	return nil
 }
 
+// push sends HEAD and reports whether it actually moved the remote ref.
+//
+// git exits zero and sends no pack when the ref is already at this commit, so
+// a successful push is not evidence that a run exists.
+func (board *onboarder) push(branch string) (bool, error) {
+	command := exec.Command("git", "-C", board.options.root, // #nosec G204 -- fixed verbs, repository path from the caller.
+		"push", "--porcelain", "oberth", "HEAD:refs/heads/"+branch)
+	out, err := command.CombinedOutput()
+	body := string(out)
+	if err != nil {
+		return false, fmt.Errorf("push to oberth: %s", strings.TrimSpace(body))
+	}
+	// --porcelain marks an unchanged ref with a leading "=". Everything else
+	// it reports for a ref it wrote is a space or a flag character.
+	for _, line := range strings.Split(body, "\n") {
+		if strings.HasPrefix(line, "=\t") {
+			return false, nil
+		}
+	}
+	return !strings.Contains(body, "Everything up-to-date"), nil
+}
+
 func (board *onboarder) git(arguments ...string) (string, error) {
 	command := exec.Command("git", append([]string{"-C", board.options.root}, arguments...)...) // #nosec G204 -- fixed verbs, repository path from the caller.
 	out, err := command.Output()
@@ -367,8 +389,18 @@ func (board *onboarder) pushAndSettle(ctx context.Context, document string, resu
 			return err
 		}
 		board.step("pushing %s to oberth as %s", shortSHA(head), branch)
-		if _, err := board.git("push", "oberth", "HEAD:refs/heads/"+branch); err != nil {
+		pushed, err := board.push(branch)
+		if err != nil {
 			return err
+		}
+		if !pushed {
+			// git sends no pack when the remote ref is already at this
+			// commit, so there is no receive event and no run. Waiting for
+			// one would spend the whole timeout and then report a timeout,
+			// which says nothing about the actual situation.
+			return board.verdict("nothing to run: oberth already has " + shortSHA(head) +
+				" on " + branch + ", so the push moved no ref and triggered no run.\n" +
+				"  Commit something and re-run, or name another branch with --branch.")
 		}
 		run, waitErr := waitForRun(ctx, board.api, head, board.options.timeout, io.Discard)
 		if waitErr != nil {

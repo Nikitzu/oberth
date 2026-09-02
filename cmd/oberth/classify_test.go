@@ -1,6 +1,9 @@
 package main
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // The classifier decides whether Oberth fixes its own document or hands the
 // failure back. Getting this wrong in the generous direction means a tool that
@@ -87,5 +90,49 @@ func TestTheRunsOwnErrorIsClassifiedWhenThereIsNoLog(t *testing.T) {
 	run := remoteRun{Error: "dockerjob: construct not supported by the docker engine: repository-declared volumeMounts"}
 	if class, _ := classifyFailure(run, ""); class != failureGenerator {
 		t.Fatal("a run that failed before any step ran was not classified from its own error")
+	}
+}
+
+// Go, Maven and JUnit output, taken from real runs. The first version of this
+// classifier only knew JavaScript output, so a Go test failure fell through to
+// the default arm and was reported with no diagnosis.
+func TestClassifyRecognisesNonJavaScriptToolchains(t *testing.T) {
+	t.Parallel()
+	for name, body := range map[string]string{
+		"go test": "--- FAIL: TestAddIsDeliberatelyWrong (0.00s)\n" +
+			"    adder_test.go:15: Add(2,2) = 4, want 5\nFAIL\nFAIL\texample.com/toy\t0.001s\nFAIL",
+		"go build":       "./adder.go:7:2: declared and not used: unused",
+		"go vet":         "./adder.go:12:9: undefined: missingHelper",
+		"maven surefire": "[ERROR] Tests run: 14, Failures: 1, Errors: 0, Skipped: 0",
+		"javac":          "[ERROR] COMPILATION ERROR :\n[ERROR] cannot find symbol",
+	} {
+		class, why := classifyFailure(remoteRun{}, body)
+		if class != failureRepository {
+			t.Errorf("%s: classified as generator-class, want repository-class", name)
+		}
+		if strings.Contains(why, "does not match anything") {
+			t.Errorf("%s: fell through to the default arm with no diagnosis", name)
+		}
+	}
+}
+
+// Oberth ends every docker-engine step log with a paragraph about the sandbox
+// that contains the words "read-only root filesystem". Those are the server's
+// words about every step, not the step's words about itself, and classifying
+// on them would read the same evidence into every run.
+func TestOberthsOwnTrailerIsNotEvidence(t *testing.T) {
+	t.Parallel()
+	trailer := "\noberth: this step ran with a read-only root filesystem as UID 0, with all " +
+		"Linux capabilities dropped and privilege escalation disabled. Only /work and /tmp are " +
+		"writable; a step that writes anywhere else fails here.\n"
+
+	// A genuine repository failure stays repository-class with the trailer on.
+	body := "--- FAIL: TestAdd (0.00s)\nFAIL\texample.com/toy\t0.001s" + trailer
+	if class, _ := classifyFailure(remoteRun{}, body); class != failureRepository {
+		t.Error("the server's own sandbox trailer turned a failing test into a pipeline fault")
+	}
+	// And the trailer alone is not evidence of anything.
+	if class, why := classifyFailure(remoteRun{}, trailer); class != failureRepository {
+		t.Errorf("the trailer alone was classified as a generator fault: %s", why)
 	}
 }

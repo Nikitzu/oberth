@@ -86,12 +86,24 @@ var repositorySignatures = []struct {
 	why      string
 }{
 	{
-		patterns: []string{"tests failed", "test failed", "failed tests", "assertionerror", "expected", "✕", "✗"},
+		patterns: []string{
+			"tests failed", "test failed", "failed tests", "assertionerror", "✕", "✗",
+			// Go: `--- FAIL: TestName` and the per-package `FAIL\tmodule`.
+			"--- fail:", "\nfail\t", "panic: test",
+			// Maven and JUnit.
+			"tests run:", "there are test failures", "surefire",
+		},
 		why:      "its own test suite failed",
 	},
 	{
-		patterns: []string{"found 1 error", "found 2 errors", "error ts", "type error", "typescript error"},
-		why:      "its own typecheck failed",
+		patterns: []string{
+			"found 1 error", "found 2 errors", "error ts", "type error", "typescript error",
+			// Go build and vet failures are the repository's code too.
+			"declared and not used", "undefined:", "cannot use", "composite literal uses unkeyed fields",
+			// Java compilation.
+			"compilation failure", "cannot find symbol",
+		},
+		why:      "its own typecheck or compile failed",
 	},
 	{
 		patterns: []string{"lint error", "checked ", "found 1 error.", "biome found", "eslint", "problems ("},
@@ -101,7 +113,7 @@ var repositorySignatures = []struct {
 
 // classifyFailure reads the failed step's log and decides who is at fault.
 func classifyFailure(run remoteRun, logBody string) (failureClass, string) {
-	haystack := strings.ToLower(logBody + "\n" + run.Error)
+	haystack := strings.ToLower(stripOberthTrailer(logBody) + "\n" + run.Error)
 
 	// The repository speaks first. See repositorySignatures.
 	for _, signature := range repositorySignatures {
@@ -124,4 +136,23 @@ func matchesAny(haystack string, patterns []string) bool {
 		}
 	}
 	return false
+}
+
+// stripOberthTrailer removes the lines Oberth itself appends to a step log.
+//
+// The docker engine ends every step's log with a paragraph explaining the
+// sandbox, and it contains the words "read-only root filesystem". Those are
+// Oberth's words about every step, not the step's words about itself, and
+// classifying on them would read the same evidence into every single run.
+// Any line the server prefixes with "oberth:" is the server talking.
+func stripOberthTrailer(body string) string {
+	lines := strings.Split(body, "\n")
+	kept := make([]string, 0, len(lines))
+	for _, line := range lines {
+		if strings.HasPrefix(strings.TrimSpace(line), "oberth:") {
+			continue
+		}
+		kept = append(kept, line)
+	}
+	return strings.Join(kept, "\n")
 }

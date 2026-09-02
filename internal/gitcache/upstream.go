@@ -401,3 +401,19 @@ func (c *Cache) LsRemoteDefaultBranch(ctx context.Context, input string) (string
 	}
 	return parseSymrefHead(output)
 }
+
+// EnsureMirror makes sure the repository is mirrored locally and reports the
+// branch its upstream advertises as HEAD.
+//
+// It exists so that a repository can have a pipeline stored for it before it
+// has ever been pushed to. Resolving a ref used to require a mirror, and the
+// only thing that created one was a push, so onboarding had a mandatory order
+// -- register, add the remote, push, and only then store the pipeline -- whose
+// first three steps produced errors that named none of this.
+func (c *Cache) EnsureMirror(ctx context.Context, input string) (string, error) {
+	repository, err := c.Ensure(ctx, input)
+	if err != nil {
+		return "", err
+	}
+	return repository.DefaultBranch, nil
+}

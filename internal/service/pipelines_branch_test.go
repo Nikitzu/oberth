@@ -55,3 +55,36 @@ func TestPipelineSetWithAnExplicitRefIgnoresTheRegisteredBranch(t *testing.T) {
 		t.Fatalf("fingerprint ref = %q, want %q", stored.FingerprintRef, firstCommit)
 	}
 }
+
+// A repository registered a moment ago has no mirror, and the only thing that
+// used to create one was a push. Storing its pipeline therefore required
+// pushing first, which is the mandatory ordering onboarding exists to remove.
+func TestPipelineSetMirrorsARepositoryThatHasNeverBeenPushedTo(t *testing.T) {
+	t.Parallel()
+	fixture := newPipelineFixture(t)
+	document := generatedDocument(t, fixture, firstCommit)
+
+	stored, err := fixture.api.pipelineSet(context.Background(), "SHA256:operator", "oberth", "build",
+		[]byte(document), "")
+	if err != nil {
+		t.Fatalf("storing a pipeline before the first push: %v", err)
+	}
+	if stored.FingerprintRef == "" {
+		t.Fatal("the document was stored with no fingerprint, so drift can never be measured")
+	}
+}
+
+// The upstream is the authority on its own default branch, so a stale
+// registration must not send the resolution at a ref the repository lacks.
+func TestPipelineSetPrefersTheAdvertisedBranchOverAStaleRegistration(t *testing.T) {
+	t.Parallel()
+	fixture := newPipelineFixture(t)
+	// Registered as main; the upstream says master.
+	fixture.git.advertised = "master"
+
+	document := generatedDocument(t, fixture, firstCommit)
+	if _, err := fixture.api.pipelineSet(context.Background(), "SHA256:operator", "oberth", "build",
+		[]byte(document), ""); err != nil {
+		t.Fatalf("a stale registration must not break the store: %v", err)
+	}
+}
