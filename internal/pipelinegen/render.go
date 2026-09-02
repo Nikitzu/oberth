@@ -70,14 +70,21 @@ func render(project Project, steps []step, result Result) string {
 	out.WriteString("spec:\n")
 	out.WriteString("  entrypoint: ci\n")
 	out.WriteString("  activeDeadlineSeconds: 3600\n\n")
-	out.WriteString("  volumeClaimTemplates:\n")
-	out.WriteString("  - metadata:\n")
-	out.WriteString("      name: work\n")
-	out.WriteString("    spec:\n")
-	out.WriteString(`      accessModes: ["ReadWriteOnce"]` + "\n")
-	out.WriteString("      resources:\n")
-	out.WriteString("        requests:\n")
-	out.WriteString("          storage: 10Gi\n\n")
+	// The docker engine mounts the /work tree itself out of a per-run volume
+	// and REFUSES a repository-declared volumeMount outright, so the shape
+	// the Argo engine requires is the shape the docker engine rejects. The
+	// tree is at the same paths under both, which is why only the declaration
+	// differs and no step script does.
+	if project.Engine != EngineDocker {
+		out.WriteString("  volumeClaimTemplates:\n")
+		out.WriteString("  - metadata:\n")
+		out.WriteString("      name: work\n")
+		out.WriteString("    spec:\n")
+		out.WriteString(`      accessModes: ["ReadWriteOnce"]` + "\n")
+		out.WriteString("      resources:\n")
+		out.WriteString("        requests:\n")
+		out.WriteString("          storage: 10Gi\n\n")
+	}
 	out.WriteString("  templates:\n\n")
 
 	// The chain. Each element of `steps` is its own sequential group, so a red
@@ -93,8 +100,8 @@ func render(project Project, steps []step, result Result) string {
 	}
 	out.WriteString("\n")
 
-	for _, one := range steps {
-		writeTemplate(&out, project, one, result.SecretPath)
+	for index, one := range steps {
+		writeTemplate(&out, project, one, result.SecretPath, index == 0)
 	}
 	return out.String()
 }
@@ -166,7 +173,22 @@ func wrapCommentAt(prefix, continuation, line string) string {
 	return out.String()
 }
 
-func writeTemplate(out *strings.Builder, project Project, one step, secretPath string) {
+// writeTemplate emits one step.
+//
+// The boilerplate every step shares -- the environment, the mounts, the
+// resource request -- is written ONCE, on the first template, behind a YAML
+// anchor, and aliased everywhere after. It used to be repeated verbatim, which
+// put roughly forty-five lines behind every step and meant a human adding a
+// step had to copy all of them correctly. Aliased, a step is its image, its
+// script and three alias lines, and adding one by hand is three lines of new
+// text.
+//
+// Anchors are resolved by the YAML parser before anything decodes the
+// document, so admission, the size bound and both engines see exactly the
+// structure the expanded form would have produced. Merge keys are deliberately
+// NOT used: the strict decode refuses a merge that a later key overrides,
+// which is precisely what a per-step script would need to do.
+func writeTemplate(out *strings.Builder, project Project, one step, secretPath string, first bool) {
 	if one.comment != "" {
 		out.WriteString(wrapCommentAt("  # ", "  #   ", "["+one.name+"] "+one.comment))
 	}
@@ -204,30 +226,49 @@ func writeTemplate(out *strings.Builder, project Project, one step, secretPath s
 		out.WriteString("        " + line + "\n")
 	}
 
-	out.WriteString("      env:\n")
+	writeSharedBlocks(out, project, first)
+	out.WriteString("\n")
+}
+
+// writeSharedBlocks writes the env, mounts and resources either as the
+// anchored definition (on the first template) or as three aliases.
+func writeSharedBlocks(out *strings.Builder, project Project, first bool) {
+	if !first {
+		out.WriteString("      env: *env\n")
+		if project.Engine != EngineDocker {
+			out.WriteString("      volumeMounts: *mounts\n")
+		}
+		out.WriteString("      resources: *resources\n")
+		return
+	}
+
+	out.WriteString("      # Defined once here and aliased by every later step.\n")
+	out.WriteString("      env: &env\n")
 	for _, variable := range environment(project) {
 		out.WriteString("      - name: " + variable.name + "\n")
 		out.WriteString(`        value: "` + variable.value + `"` + "\n")
 	}
 
-	out.WriteString("      volumeMounts:\n")
-	for _, mount := range []struct{ path, subPath string }{
-		{buildDir, "build"},
-		{"/work/cache", "cache"},
-		{"/work/home", "home"},
-	} {
-		out.WriteString("      - name: work\n")
-		out.WriteString("        mountPath: " + mount.path + "\n")
-		out.WriteString("        subPath: " + mount.subPath + "\n")
+	if project.Engine != EngineDocker {
+		out.WriteString("      volumeMounts: &mounts\n")
+		for _, mount := range []struct{ path, subPath string }{
+			{buildDir, "build"},
+			{"/work/cache", "cache"},
+			{"/work/home", "home"},
+		} {
+			out.WriteString("      - name: work\n")
+			out.WriteString("        mountPath: " + mount.path + "\n")
+			out.WriteString("        subPath: " + mount.subPath + "\n")
+		}
 	}
 
-	out.WriteString("      resources:\n")
+	out.WriteString("      resources: &resources\n")
 	out.WriteString("        requests:\n")
 	out.WriteString(`          cpu: "2"` + "\n")
 	out.WriteString(`          memory: "4Gi"` + "\n")
 	out.WriteString("        limits:\n")
 	out.WriteString(`          cpu: "2"` + "\n")
-	out.WriteString(`          memory: "4Gi"` + "\n\n")
+	out.WriteString(`          memory: "4Gi"` + "\n")
 }
 
 // injectPreamble puts the token lookup directly after `set -eu`, so the step

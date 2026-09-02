@@ -1,0 +1,26 @@
+{
+  "name": "rides",
+  "private": true,
+  "packageManager": "pnpm@11.0.0",
+  "engines": { "node": ">=26" },
+  "scripts": {
+    "prepare": "husky && git config core.hooksPath .husky",
+    "lint": "biome check .",
+    "typecheck": "tsc --noEmit",
+    "validate:structure": "node scripts/validate-structure.mjs",
+    "validate:compile": "tsc -p tsconfig.validate.json --noEmit",
+    "test": "vitest run",
+    "build": "vite build",
+    "start": "node dist/server.js"
+  },
+  "dependencies": {
+    "@transferz/fe-sdk": "3.5.0"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.1.2",
+    "husky": "9.1.7",
+    "typescript": "5.6.3",
+    "vite": "6.0.5",
+    "vitest": "2.1.8"
+  }
+}

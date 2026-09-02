@@ -93,8 +93,15 @@ func TestGeneratedNodePipelineIsAdmitted(t *testing.T) {
 	if !strings.Contains(result.YAML, "npm ci --no-audit --no-fund --legacy-peer-deps") {
 		t.Fatalf("LEGACY_PEER_DEPS from the Actions inputs was not applied:\n%s", result.YAML)
 	}
-	if !strings.Contains(result.YAML, "node:20-trixie-slim@sha256:") {
+	// The major is what the Actions inputs decide. The variant is decided
+	// separately: this repository's `prepare` runs `husky install`, which
+	// shells out to git, and the -slim images carry no git, so it gets the
+	// full Debian variant. Asserting the slim spelling asserted a bug.
+	if !strings.Contains(result.YAML, "node:20-trixie@sha256:") {
 		t.Fatalf("NODEJS_VERSION 20 from the Actions inputs did not select the Node 20 image:\n%s", result.YAML)
+	}
+	if strings.Contains(result.YAML, "node:20-trixie-slim@sha256:") {
+		t.Fatalf("a repository whose prepare script runs husky got an image with no git:\n%s", result.YAML)
 	}
 	// npx tsc with no local typescript fetches the abandoned `tsc` package and
 	// reports TS6046, which reads like a config error. The repository's own

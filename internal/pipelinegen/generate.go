@@ -52,7 +52,11 @@ const (
 // lint keeps a five-minute test suite running and the run reports minutes
 // after it already knew the answer. Chained steps stop at the first red.
 func Generate(project Project) Result {
-	steps, complete := planSteps(project)
+	// planSteps takes a pointer because the cookbook discovers things worth
+	// saying in the header while it plans: a gate it declined to run, a
+	// lockfile that pins one architecture. Passing a value silently dropped
+	// every one of those notes.
+	steps, complete := planSteps(&project)
 
 	secretPath := ""
 	if project.PrivateRegistry && project.Org != "" && usesSecret(steps) {
@@ -77,14 +81,14 @@ func usesSecret(steps []step) bool {
 }
 
 // planSteps chooses the chain for a project kind.
-func planSteps(project Project) (steps []step, complete bool) {
+func planSteps(project *Project) (steps []step, complete bool) {
 	switch project.Kind {
 	case KindNode:
 		return nodeSteps(project), true
 	case KindMaven:
-		return mavenSteps(project), true
+		return mavenSteps(*project), true
 	case KindGo:
-		return goSteps(project), true
+		return goSteps(*project), true
 	default:
 		return scaffoldSteps(), false
 	}
@@ -112,40 +116,111 @@ func copySource(image string) step {
 	}
 }
 
-func nodeSteps(project Project) []step {
-	image, _ := nodeImage(project.NodeMajor)
+func nodeSteps(project *Project) []step {
+	image, exact := nodeImageFor(*project)
+	if !exact && project.NodeMajor != "" {
+		// substitutionNote has existed unused since the image table was
+		// written. A repository that declares engines.node ">=26" gets a
+		// Node 22 image, which is a real difference, and finding it in a
+		// build log is worse than reading it at the top of the file.
+		project.cannot(substitutionNote("Node", project.NodeMajor, imageTag(image)))
+	}
 	steps := []step{copySource(image)}
 
-	runner := packageRunner(project)
-	steps = append(steps, step{
+	install := step{
 		name:    "install",
-		comment: installComment(project),
+		comment: installComment(*project),
 		image:   image,
 		secret:  project.PrivateRegistry && project.Org != "",
-		script:  "set -eu\ncd " + buildDir + "\n" + runner + installCommand(project),
-	})
+		script:  installScript(*project),
+	}
+	steps = append(steps, install)
 
-	// The repository's own scripts, in the order a build runs them. Only
-	// scripts that exist are emitted: inventing `npm run lint` for a
-	// repository with no lint script produces a step that fails for a reason
-	// that has nothing to do with the code.
-	for _, candidate := range []struct{ script, comment string }{
-		{"lint", "the repository's own lint script"},
-		{"typecheck", "the repository's own typecheck script. Invoking the compiler through npx is deliberately avoided: with no local typescript, npx fetches the long-abandoned standalone `tsc` package, which reports TS6046 about --jsx and reads like a config error"},
-		{"test", "the repository's own test script; CI=true makes a watch-mode runner run once and exit"},
-		{"build", "the repository's own build script"},
-	} {
-		if _, ok := project.script(candidate.script); !ok {
-			continue
-		}
+	// The per-architecture repair runs after the install, because it reads
+	// the version of the tool the install just placed.
+	for _, tool := range missingPlatformTools(*project) {
 		steps = append(steps, step{
-			name:    candidate.script,
-			comment: candidate.comment,
+			name: "platform-" + platformStepName(tool.module),
+			comment: "this repository depends on " + tool.module + ", whose real binary ships in a " +
+				"per-architecture optional dependency, and its lockfile does not pin both Linux " +
+				"architectures. That is a latent bug in the repository: a plain install on an " +
+				"architecture the lockfile missed leaves the tool with no binary. This step fetches " +
+				"the one matching the runner rather than editing the lockfile.",
+			image:  image,
+			script: "set -eu\ncd " + buildDir + "\n" + platformPackageStep(tool),
+		})
+		project.cannot(tool.module + " is pinned for only some architectures in this repository's lockfile. " +
+			"The pipeline works around it at run time; the repository should add the missing " +
+			"optional dependencies so a plain install works for everyone.")
+	}
+
+	// Every gate-shaped script the repository declares, in an order that puts
+	// the cheap and specific checks first. Only scripts that exist are
+	// emitted: inventing `npm run lint` for a repository with no lint script
+	// produces a step that fails for a reason that has nothing to do with the
+	// code.
+	gates, left := classifyGates(*project)
+	for _, one := range gates {
+		steps = append(steps, step{
+			name:    templateName(one.script),
+			comment: gateComment(one),
 			image:   image,
-			script:  "set -eu\ncd " + buildDir + "\n" + runner + "run " + candidate.script + " --if-present",
+			script:  "set -eu\ncd " + buildDir + "\n" + runScript(*project, one.script),
 		})
 	}
+	for _, one := range left {
+		project.cannot("package.json script " + one.script + " is gate-shaped but is not run: " + one.why + ".")
+	}
+	if berryRegistryUntranslatable(*project) {
+		project.cannot("this repository authenticates to " + project.Registry + " and uses yarn berry, " +
+			"whose credentials live in .yarnrc.yml under npmScopes rather than in an npmrc. " +
+			"The install step exports the token but does not configure yarn with it; add the " +
+			"npmScopes entry before trusting a green run.")
+	}
 	return steps
+}
+
+// platformStepName turns a package name into a step name Argo accepts.
+func platformStepName(module string) string {
+	name := module
+	if slash := strings.LastIndexByte(name, '/'); slash >= 0 {
+		name = name[slash+1:]
+	}
+	return strings.Map(func(r rune) rune {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+			return r
+		case r >= 'A' && r <= 'Z':
+			return r + 32
+		default:
+			return '-'
+		}
+	}, name)
+}
+
+func gateComment(one gate) string {
+	switch one.family {
+	case "test":
+		return "the repository's own " + one.script + " script; CI=true makes a watch-mode runner run once and exit"
+	case "typecheck":
+		return "the repository's own " + one.script + " script. Invoking the compiler through npx is " +
+			"deliberately avoided: with no local typescript, npx fetches the long-abandoned standalone " +
+			"`tsc` package, which reports TS6046 about --jsx and reads like a config error"
+	default:
+		return "the repository's own " + one.script + " script"
+	}
+}
+
+// installScript is the install command plus, when the repository resolves from
+// an authenticated registry, the credential written where that manager reads
+// it.
+func installScript(project Project) string {
+	lines := []string{"set -eu", "cd " + buildDir}
+	if project.PrivateRegistry && project.Org != "" {
+		lines = append(lines, registryAuthCommands(project)...)
+	}
+	lines = append(lines, packageRunner(project)+installCommand(project))
+	return strings.Join(lines, "\n")
 }
 
 // packageRunner is the prefix that puts the repository's own package manager

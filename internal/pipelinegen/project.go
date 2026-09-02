@@ -52,6 +52,24 @@ type Project struct {
 	// nothing to reproduce, and `npm ci` refuses to run.
 	Lockfile bool
 
+	// LockfileBody is the lockfile's text, kept so the cookbook can ask which
+	// per-architecture optional dependencies it actually pins. It is searched
+	// as text rather than parsed because the three lockfile formats spell the
+	// same fact three ways and the question is only whether a package name
+	// occurs.
+	LockfileBody string
+
+	// Dependencies is the set of package names package.json declares, across
+	// dependencies, devDependencies and optionalDependencies. It answers "does
+	// this repository use biome" without a resolution step.
+	Dependencies map[string]bool
+
+	// Engine is the execution engine the server runs. The two engines do not
+	// accept the same document, so a pipeline generated for one can be refused
+	// by the other. Empty means the Argo engine, which is the default and the
+	// stricter shape.
+	Engine Engine
+
 	// Workspaces reports a pnpm workspace root (pnpm-workspace.yaml). It
 	// changes what a script name means: a root script is one package's, and
 	// the suite usually lives in the members.
@@ -107,7 +125,7 @@ func (p Project) script(name string) (string, bool) {
 // absent file means one less thing known, and the caller turns "nothing known"
 // into a scaffold that says so.
 func DetectProject(root string) Project {
-	project := Project{Kind: KindUnknown, Scripts: map[string]string{}}
+	project := Project{Kind: KindUnknown, Scripts: map[string]string{}, Dependencies: map[string]bool{}}
 
 	if raw, err := os.ReadFile(filepath.Join(root, "package.json")); err == nil {
 		var manifest struct {
@@ -118,11 +136,21 @@ func DetectProject(root string) Project {
 			// packageManager is the authoritative statement when it exists:
 			// the repository names the tool and the exact version it expects,
 			// and a lockfile format can only imply a range.
-			PackageManager string `json:"packageManager"`
+			PackageManager       string            `json:"packageManager"`
+			Dependencies         map[string]string `json:"dependencies"`
+			DevDependencies      map[string]string `json:"devDependencies"`
+			OptionalDependencies map[string]string `json:"optionalDependencies"`
 		}
 		if json.Unmarshal(raw, &manifest) == nil {
 			project.Kind = KindNode
 			project.Scripts = manifest.Scripts
+			for _, set := range []map[string]string{
+				manifest.Dependencies, manifest.DevDependencies, manifest.OptionalDependencies,
+			} {
+				for name := range set {
+					project.Dependencies[name] = true
+				}
+			}
 			if names := scriptNames(manifest.Scripts); len(names) > 0 {
 				project.note("package.json scripts: " + strings.Join(names, ", "))
 			} else {
@@ -321,6 +349,7 @@ func detectPackageManager(root string, project *Project) {
 
 	if raw, err := os.ReadFile(filepath.Join(root, "pnpm-lock.yaml")); err == nil {
 		project.Lockfile = true
+		project.LockfileBody = string(raw)
 		if project.PackageManager == "" {
 			project.PackageManager = "pnpm"
 		}
@@ -340,8 +369,9 @@ func detectPackageManager(root string, project *Project) {
 		return
 	}
 
-	if _, err := os.Stat(filepath.Join(root, "yarn.lock")); err == nil {
+	if raw, err := os.ReadFile(filepath.Join(root, "yarn.lock")); err == nil {
 		project.Lockfile = true
+		project.LockfileBody = string(raw)
 		if project.PackageManager == "" {
 			project.PackageManager = "yarn"
 		}
@@ -363,8 +393,9 @@ func detectPackageManager(root string, project *Project) {
 		return
 	}
 
-	if _, err := os.Stat(filepath.Join(root, "package-lock.json")); err == nil {
+	if raw, err := os.ReadFile(filepath.Join(root, "package-lock.json")); err == nil {
 		project.Lockfile = true
+		project.LockfileBody = string(raw)
 		if project.PackageManager == "" {
 			project.PackageManager = "npm"
 		}

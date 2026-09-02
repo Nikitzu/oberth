@@ -10,7 +10,10 @@
 // instead of going green.
 package pipelinegen
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 // Runner images must be pinned by digest and must start with one of the
 // administrator's allowed prefixes (golang:, debian:, node:, maven:,
@@ -30,6 +33,20 @@ const (
 	imageNode22 = "node:22-trixie-slim@sha256:7b8a0c89c54499bee567618f96578e1a12a800f062fbdbfd1fb6a443fa6f6284"
 	// crane digest node:24-trixie-slim
 	imageNode24 = "node:24-trixie-slim@sha256:ab3eebe934147fee049b5eb83c570f68c849a13c930bdfa482de99fcdfa3b3de"
+
+	// The full Debian variants, which ship git. A repository whose install
+	// runs husky, or any other prepare script that shells out to git, cannot
+	// build on a -slim image, and it cannot install git either: pipeline
+	// containers run with a read-only root filesystem, so an apt-get in a
+	// step is a step that always fails. Picking the variant that already has
+	// the binary is the only thing that works.
+	//
+	// crane digest node:20-trixie
+	imageNode20Git = "node:20-trixie@sha256:26dbaa01b7b1e98d004d4b5bdc9502dedd0c8051dc7ae25dfc9fdfa5ee5c5065"
+	// crane digest node:22-trixie
+	imageNode22Git = "node:22-trixie@sha256:2082d2bf902c8835655c6bcfee3594c00ea900498a9f6e2b96d3352536f9e8d8"
+	// crane digest node:24-trixie
+	imageNode24Git = "node:24-trixie@sha256:f7d34e58713740f9eef9092c0bd6ff10369d132f7238399a4b270f16d47fa608"
 
 	// crane digest maven:3.9-eclipse-temurin-17
 	imageMaven17 = "maven:3.9-eclipse-temurin-17@sha256:a8746f15d5bb26b5b8bacb056cc76211553850f4c71d16aff845cfa004cbc197"
@@ -65,6 +82,25 @@ func nodeImage(major string) (image string, exact bool) {
 	}
 }
 
+// nodeImageFor picks the variant this repository can actually install with:
+// the slim image normally, the full one when a prepare or postinstall script
+// needs git.
+func nodeImageFor(project Project) (image string, exact bool) {
+	if !prepareNeedsGit(project) {
+		return nodeImage(project.NodeMajor)
+	}
+	switch project.NodeMajor {
+	case "20":
+		return imageNode20Git, true
+	case "22":
+		return imageNode22Git, true
+	case "24":
+		return imageNode24Git, true
+	default:
+		return imageNode22Git, false
+	}
+}
+
 // mavenImage picks the pinned Maven image carrying a given JDK major.
 func mavenImage(major string) (image string, exact bool) {
 	switch major {
@@ -85,4 +121,13 @@ func mavenImage(major string) (image string, exact bool) {
 // available for the version the repository declared.
 func substitutionNote(tool, wanted, used string) string {
 	return fmt.Sprintf("%s %s has no pinned image here; this pipeline runs %s instead. Re-pin it before trusting a green run.", tool, wanted, used)
+}
+
+// imageTag is the human half of a digest-pinned reference, for a message that
+// would otherwise carry seventy characters of hash.
+func imageTag(image string) string {
+	if at := strings.IndexByte(image, '@'); at >= 0 {
+		return image[:at]
+	}
+	return image
 }
