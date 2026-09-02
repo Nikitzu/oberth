@@ -119,8 +119,8 @@ type HealthStatus struct {
 	// SSHEndpoint is the host and port a push goes to, so a client can set up
 	// the git remote without being told it out of band.
 	SSHEndpoint string `json:"ssh_endpoint,omitempty"`
-	AuditMode    string `json:"audit_mode,omitempty"`
-	Version      string `json:"version,omitempty"`
+	AuditMode   string `json:"audit_mode,omitempty"`
+	Version     string `json:"version,omitempty"`
 	// PublishOnGreen reports whether a green branch run is force-synced to the
 	// forge. False is the advisory gate: the verdict is recorded and nothing
 	// leaves the machine, so the dashboard's compare link is a link and not a

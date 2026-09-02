@@ -78,4 +78,3 @@ func runRepoAddRemote(ctx context.Context, repo, upstream string, output io.Writ
 // waitTimeoutForOnboard keeps the onboard default and the wait default in one
 // place, so they cannot drift apart.
 const waitTimeoutForOnboard = defaultWaitTimeout
-
