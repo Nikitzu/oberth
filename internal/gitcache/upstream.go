@@ -376,3 +376,28 @@ func (c *Cache) LsRemoteHeads(ctx context.Context, input string) (int, error) {
 	}
 	return count, nil
 }
+
+// LsRemoteDefaultBranch asks the upstream which branch it advertises as HEAD,
+// without cloning anything.
+//
+// Registration used to seed the default branch from a flag whose value
+// defaulted to "main". A repository on master was then registered as being on
+// a branch it does not have, and every server-side operation that resolves the
+// default-branch head -- storing a pipeline among them -- failed against a ref
+// that was never there. Only a push that moved a ref corrected it, which made
+// the correct onboarding order "register, push, then set the pipeline" and
+// made every other order produce an error that named nothing.
+//
+// The advertisement costs one network round trip and no disk, so registration
+// can afford to ask rather than assume.
+func (c *Cache) LsRemoteDefaultBranch(ctx context.Context, input string) (string, error) {
+	remote, err := c.validatedUpstream(input)
+	if err != nil {
+		return "", err
+	}
+	output, err := c.execute(ctx, commandSpec{args: []string{"ls-remote", "--symref", remote, "HEAD"}}, true)
+	if err != nil {
+		return "", fmt.Errorf("ls-remote --symref probe for %s: %w", input, err)
+	}
+	return parseSymrefHead(output)
+}

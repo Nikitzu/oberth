@@ -386,16 +386,27 @@ func (c *Cache) listRefsAtMost(ctx context.Context, path string, maximum int, pr
 
 // specTargetsHTTPS reports whether this command talks to an HTTPS remote.
 //
-// Resolved from the repository's configured remote rather than from the
-// arguments: a push names a remote by its short name, so the URL is not on the
-// command line to inspect.
+// A push names a remote by its short name, so the URL is not on the command
+// line and has to come from the repository's own config. A bare probe is the
+// other shape: `ls-remote <url>` runs in no repository at all and carries the
+// URL in argv, so there is no config to read. Both are checked, because
+// reading only the config meant an HTTPS probe ran with no credential and
+// reported "repository not found" for a private repository that was simply
+// never authenticated.
 func specTargetsHTTPS(spec commandSpec) bool {
+	remoteCommand := false
 	for _, arg := range spec.args {
-		if arg == "push" || arg == "fetch" || arg == "ls-remote" {
-			return remoteIsHTTPS(spec.dir)
+		switch {
+		case arg == "push" || arg == "fetch" || arg == "ls-remote":
+			remoteCommand = true
+		case upstreamNeedsToken(arg):
+			return true
 		}
 	}
-	return false
+	if !remoteCommand {
+		return false
+	}
+	return remoteIsHTTPS(spec.dir)
 }
 
 // remoteIsHTTPS reads the configured remotes of a repository and reports

@@ -854,6 +854,16 @@ func (c *Cache) discoverDefaultBranch(ctx context.Context, path string) (string,
 	if err != nil {
 		return "", err
 	}
+	return parseSymrefHead(output)
+}
+
+// parseSymrefHead reads the branch out of `git ls-remote --symref <remote> HEAD`.
+//
+// The advertisement is the only place a forge states which branch it calls
+// default. Everything else is a guess, and the guess that used to be made here
+// was the constant "main", which is wrong for every repository still on
+// master.
+func parseSymrefHead(output string) (string, error) {
 	for _, line := range strings.Split(output, "\n") {
 		fields := strings.Fields(line)
 		if len(fields) != 3 || fields[0] != "ref:" || fields[2] != "HEAD" || !strings.HasPrefix(fields[1], "refs/heads/") {
