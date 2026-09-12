@@ -92,6 +92,7 @@ func switchCheckout(ctx context.Context, output io.Writer, root string, profile 
 	}
 	var status struct {
 		SSHEndpoint string `json:"ssh_endpoint"`
+		SSHHostKey  string `json:"ssh_host_key"`
 	}
 	if err := api.Get(ctx, "/api/status", nil, &status); err != nil {
 		return sealedAdvice(fmt.Errorf("read %s: %w", profile.BaseURL, err))
@@ -116,13 +117,29 @@ func switchCheckout(ctx context.Context, output io.Writer, root string, profile 
 			return fmt.Errorf("update the oberth remote: %w", err)
 		}
 	}
-	if err := ensureSSHCommandIn(root, profile.SSHCommand, func(string, ...any) {}); err != nil {
+	sshCommand := profile.SSHCommand
+	if sshCommand == "" && strings.TrimSpace(status.SSHHostKey) != "" {
+		known, err := clientprofile.WriteKnownHosts(profile.Name, endpoint, status.SSHHostKey)
+		if err != nil {
+			return err
+		}
+		home, _ := os.UserHomeDir()
+		sshCommand = "ssh -o 'UserKnownHostsFile=" + known + " " + home + "/.ssh/known_hosts'"
+	}
+	if err := ensureSSHCommandIn(root, sshCommand, func(string, ...any) {}); err != nil {
 		return err
 	}
 	if err := clientprofile.Pin(root, profile.Name); err != nil {
 		return err
 	}
 	fmt.Fprintf(output, "%s now pushes to %s (%s)\n", root, profile.Name, want)
+	if out, err := gitIn(root, "ls-remote", "--exit-code", "oberth", "HEAD"); err != nil && !strings.Contains(out, "HEAD") {
+		if strings.Contains(err.Error(), "Permission denied") || strings.Contains(err.Error(), "publickey") {
+			fmt.Fprintf(output, "warning: %s does not accept this machine's SSH key. An admin registers it as an uplink on that server:\n  oberth uplink add \"$(cat ~/.ssh/id_ed25519.pub)\" <you@this-machine>\n", profile.Name)
+		} else if !strings.Contains(err.Error(), "exit status 2") {
+			fmt.Fprintf(output, "warning: could not reach %s over ssh: %v\n", profile.Name, err)
+		}
+	}
 	fmt.Fprintln(output, "next: git push oberth HEAD:refs/heads/<branch>, or oberth onboard if this server does not know the repository yet")
 	return nil
 }

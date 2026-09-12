@@ -36,6 +36,9 @@ type Health struct {
 	// without either being configured by hand.
 	Engine      string
 	SSHEndpoint string
+	// SSHHostKey is the server's SSH host public key in authorized_keys form,
+	// so a client can pin it without a first-use prompt or a network scan.
+	SSHHostKey string
 	// Identity optionally reports the SSH public-key fingerprint used for
 	// upstream Git authentication (never the private key).
 	Identity func(context.Context) (string, error)
@@ -119,6 +122,7 @@ type HealthStatus struct {
 	// SSHEndpoint is the host and port a push goes to, so a client can set up
 	// the git remote without being told it out of band.
 	SSHEndpoint string `json:"ssh_endpoint,omitempty"`
+	SSHHostKey  string `json:"ssh_host_key,omitempty"`
 	AuditMode   string `json:"audit_mode,omitempty"`
 	Version     string `json:"version,omitempty"`
 	// PublishOnGreen reports whether a green branch run is force-synced to the
@@ -199,7 +203,7 @@ func requiresSSHIdentity(upstreams []model.Upstream) bool {
 
 func (health Health) Status(ctx context.Context) (any, error) {
 	status := HealthStatus{Database: "unavailable", VCS: "unavailable", Cluster: "unavailable", Audit: "unavailable", AuditMode: health.AuditMode, Version: health.Version, PublishOnGreen: health.PublishOnGreen, SecretStore: health.SecretStore,
-		Engine: health.Engine, SSHEndpoint: health.SSHEndpoint}
+		Engine: health.Engine, SSHEndpoint: health.SSHEndpoint, SSHHostKey: health.SSHHostKey}
 	if health.Store == nil {
 		return status, nil
 	}

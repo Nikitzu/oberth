@@ -87,11 +87,23 @@ func offerClientAccessToConfiguredDeployment(ctx context.Context, cfg Config, de
 	if err != nil {
 		return nil
 	}
-	if _, statErr := os.Stat(filepath.Join(root, "env")); statErr == nil {
-		return nil
-	}
-	if _, statErr := os.Stat(filepath.Join(root, "mcp.json")); statErr == nil {
-		return nil
+	_, envErr := os.Stat(filepath.Join(root, "env"))
+	_, mcpErr := os.Stat(filepath.Join(root, "mcp.json"))
+	if envErr == nil || mcpErr == nil {
+		// A machine that already opted in gets its files refreshed for this
+		// deployment (address, certificate, profile, token entry) without a
+		// second question; a stale env pointing at localhost is what a re-run
+		// against a renamed or re-certified server left behind before.
+		if strings.TrimSpace(cfg.ClientAccess) == "" {
+			switch {
+			case envErr == nil && mcpErr == nil:
+				cfg.ClientAccess = "both"
+			case envErr == nil:
+				cfg.ClientAccess = "cli"
+			default:
+				cfg.ClientAccess = "mcp"
+			}
+		}
 	}
 	return runClientAccessOffer(ctx, cfg, deps, tw, false, "")
 }

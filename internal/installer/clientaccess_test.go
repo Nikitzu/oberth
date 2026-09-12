@@ -239,25 +239,32 @@ func TestClientAccessIsOfferedOnAReadyDeploymentThatHasNoConfigYet(t *testing.T)
 
 // It must stay quiet when the machine is already configured, or every install
 // on a working setup ends with a prompt that has nothing to do.
-func TestClientAccessIsNotReofferedWhenItIsAlreadyConfigured(t *testing.T) {
-	deps, _, home := clientAccessDeps(t, "\n")
+func TestClientAccessIsRefreshedWithoutAskingWhenItIsAlreadyConfigured(t *testing.T) {
+	deps, out, home := clientAccessDeps(t, "")
 	root := filepath.Join(home, ".config", "oberth")
 	if err := os.MkdirAll(root, 0700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(root, "env"), []byte("export OBERTH_BASE_URL=x\n"), 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "env"), []byte("export OBERTH_BASE_URL=\"https://localhost:30443\"\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	tw := newTableWriter(deps.Output, false)
 
-	if err := offerClientAccessToConfiguredDeployment(context.Background(), Config{}, deps, tw); err != nil {
+	cfg := Config{ProfileName: "server", TLSExtraDNSNames: []string{"ci.example.internal"}}
+	if err := offerClientAccessToConfiguredDeployment(context.Background(), cfg, deps, tw); err != nil {
 		t.Fatal(err)
+	}
+	if strings.Contains(out.String(), "Client access") && strings.Contains(out.String(), "Both") {
+		t.Error("a machine that already opted in was asked again")
 	}
 	body, err := os.ReadFile(filepath.Join(root, "env"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(body) != "export OBERTH_BASE_URL=x\n" {
-		t.Error("an existing client configuration was overwritten without being asked about")
+	if !strings.Contains(string(body), "https://ci.example.internal:30443") {
+		t.Errorf("the env was not refreshed for this deployment:\n%s", body)
+	}
+	if _, err := os.Stat(filepath.Join(root, "profiles", "server", "env")); err != nil {
+		t.Error("the re-run did not write the profile")
 	}
 }

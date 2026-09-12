@@ -207,3 +207,23 @@ func Pin(dir, name string) error {
 	}
 	return exec.Command("git", "-C", dir, "config", "--local", GitConfigKey, name).Run() // #nosec G204 -- fixed verbs.
 }
+
+func WriteKnownHosts(name, endpoint, hostKey string) (string, error) {
+	dir, err := Dir(name)
+	if err != nil {
+		return "", err
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", fmt.Errorf("clientprofile: create %s: %w", dir, err)
+	}
+	host, port, found := strings.Cut(endpoint, ":")
+	line := host + " " + strings.TrimSpace(hostKey)
+	if found && port != "22" {
+		line = "[" + host + "]:" + port + " " + strings.TrimSpace(hostKey)
+	}
+	path := filepath.Join(dir, "known_hosts")
+	if err := os.WriteFile(path, []byte(line+"\n"), 0o600); err != nil {
+		return "", fmt.Errorf("clientprofile: write %s: %w", path, err)
+	}
+	return path, nil
+}

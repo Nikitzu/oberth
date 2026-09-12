@@ -66,7 +66,11 @@ func runWait(ctx context.Context, arguments []string, output io.Writer) error {
 		return err
 	}
 	reportMode("server")
-	run, err := waitForRun(ctx, api, flags.Arg(0), *timeout, progressWriter(output, *quiet))
+	selector := flags.Arg(0)
+	if resolved, err := gitIn(".", "rev-parse", "--verify", selector+"^{commit}"); err == nil && len(resolved) == 40 && !looksLikeRunID(selector) {
+		selector = resolved
+	}
+	run, err := waitForRun(ctx, api, selector, *timeout, progressWriter(output, *quiet))
 	if err != nil {
 		return err
 	}
@@ -225,4 +229,16 @@ func printVerdict(output io.Writer, run remoteRun) error {
 		}
 	}
 	return errRunFailed
+}
+
+func looksLikeRunID(selector string) bool {
+	if len(selector) != 12 && len(selector) != 32 {
+		return false
+	}
+	for _, r := range selector {
+		if !strings.ContainsRune("0123456789abcdef", r) {
+			return false
+		}
+	}
+	return true
 }

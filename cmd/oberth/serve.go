@@ -42,6 +42,7 @@ import (
 	"github.com/oberthci/oberth/internal/store"
 	"github.com/oberthci/oberth/pkg/periapsis"
 
+	"golang.org/x/crypto/ssh"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
@@ -736,7 +737,7 @@ func serve(ctx context.Context, options serveOptions, logger *log.Logger) (resul
 		return err
 	}
 	health := app.Health{Store: database, Audit: anchors.Ready, VCSCache: &app.VCSSnapshot{},
-		Engine: options.engine, SSHEndpoint: advertisedSSHEndpoint(options),
+		Engine: options.engine, SSHEndpoint: advertisedSSHEndpoint(options), SSHHostKey: hostPublicKey(hostKey),
 		PipelineDrift: database.DriftedPipelineRuns, Configured: func(ctx context.Context) error {
 			if err := ctx.Err(); err != nil {
 				return err
@@ -1878,4 +1879,12 @@ func advertisedSSHEndpoint(options serveOptions) string {
 		return advertised
 	}
 	return strings.TrimSpace(options.sshListen)
+}
+
+func hostPublicKey(privateKeyPEM []byte) string {
+	signer, err := ssh.ParsePrivateKey(privateKeyPEM)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(ssh.MarshalAuthorizedKey(signer.PublicKey())))
 }
