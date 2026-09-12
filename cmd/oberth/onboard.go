@@ -5,6 +5,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"github.com/oberthci/oberth/internal/clientprofile"
 	"io"
 	"os"
 	"os/exec"
@@ -44,6 +45,7 @@ type onboardOptions struct {
 	timeout  time.Duration
 	dryRun   bool
 	branch   string
+	server   string
 }
 
 func runOnboard(ctx context.Context, arguments []string, output io.Writer) error {
@@ -54,6 +56,7 @@ func runOnboard(ctx context.Context, arguments []string, output io.Writer) error
 	flags.DurationVar(&options.timeout, "timeout", defaultWaitTimeout, "how long to wait for the run")
 	flags.BoolVar(&options.dryRun, "dry-run", false, "do everything except pushing")
 	flags.StringVar(&options.branch, "branch", "", "branch to push HEAD to (default: the checkout's current branch)")
+	flags.StringVar(&options.server, "server", "", "profile of the server to onboard onto (default: the checkout's pinned profile, else the default profile)")
 	if err := flags.Parse(permuteFlagsFirst(arguments)); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			flags.SetOutput(output)
@@ -94,7 +97,16 @@ type onboarder struct {
 }
 
 func onboard(ctx context.Context, options onboardOptions, output io.Writer) error {
-	api, err := remoteClient(ctx)
+	if strings.TrimSpace(options.server) != "" {
+		profile, err := clientprofile.Load(options.server)
+		if err != nil {
+			return err
+		}
+		if err := switchCheckout(ctx, output, options.root, profile); err != nil {
+			return err
+		}
+	}
+	api, err := remoteClientFor(ctx, options.root)
 	if err != nil {
 		return err
 	}
@@ -408,26 +420,39 @@ const sshCommandOwnerKey = "oberth.sshCommandManaged"
 // and the server's host key prompts, which no one-line onboarding survives.
 func (board *onboarder) ensureSSHCommand() error {
 	want := strings.TrimSpace(os.Getenv(sshCommandEnv))
+	if name := clientprofile.ForCheckout(board.options.root); name != "" {
+		if profile, err := clientprofile.Load(name); err == nil {
+			want = strings.TrimSpace(profile.SSHCommand)
+		}
+	}
+	return ensureSSHCommandIn(board.options.root, want, board.step)
+}
+
+func ensureSSHCommandIn(root, want string, step func(string, ...any)) error {
+	existing, _ := gitIn(root, "config", "--local", "--get", "core.sshCommand")
+	managed, _ := gitIn(root, "config", "--local", "--get", sshCommandOwnerKey)
 	if want == "" {
+		if strings.TrimSpace(managed) == "true" {
+			_, _ = gitIn(root, "config", "--local", "--unset", "core.sshCommand")
+			_, _ = gitIn(root, "config", "--local", "--unset", sshCommandOwnerKey)
+			step("core.sshCommand cleared: this server takes the keys your ssh agent offers")
+		}
 		return nil
 	}
-	existing, _ := board.git("config", "--local", "--get", "core.sshCommand")
 	switch {
 	case strings.TrimSpace(existing) == want:
 		return nil
-	case strings.TrimSpace(existing) != "":
-		if managed, _ := board.git("config", "--local", "--get", sshCommandOwnerKey); strings.TrimSpace(managed) != "true" {
-			board.step("core.sshCommand is already set in this checkout and was not written by oberth, so it is left alone; pushes to the oberth remote use it")
-			return nil
-		}
+	case strings.TrimSpace(existing) != "" && strings.TrimSpace(managed) != "true":
+		step("core.sshCommand is already set in this checkout and was not written by oberth, so it is left alone; pushes to the oberth remote use it")
+		return nil
 	}
-	if _, err := board.git("config", "--local", "core.sshCommand", want); err != nil {
+	if _, err := gitIn(root, "config", "--local", "core.sshCommand", want); err != nil {
 		return fmt.Errorf("set core.sshCommand for the oberth remote: %w", err)
 	}
-	if _, err := board.git("config", "--local", sshCommandOwnerKey, "true"); err != nil {
+	if _, err := gitIn(root, "config", "--local", sshCommandOwnerKey, "true"); err != nil {
 		return fmt.Errorf("mark core.sshCommand as oberth's: %w", err)
 	}
-	board.step("core.sshCommand set to the install's client key and host key")
+	step("core.sshCommand set to the install's client key and host key")
 	return nil
 }
 

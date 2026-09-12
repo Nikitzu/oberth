@@ -11,7 +11,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/oberthci/oberth/internal/client"
 	"github.com/oberthci/oberth/internal/dockerjob"
 	"github.com/oberthci/oberth/pkg/argoworkflow"
 	"github.com/oberthci/oberth/pkg/periapsis"
@@ -303,7 +302,7 @@ func readConfinedPipelineFile(repoRoot, relative string) ([]byte, error) {
 // server it could not reach into a validation failure, because the document it
 // would be asking about is not this checkout's to be wrong about.
 func serverHeldPipeline(ctx context.Context, root, triggerFile string) (remotePipeline, bool) {
-	if !client.FromEnv().Configured() {
+	if !clientConfig().Configured() {
 		return remotePipeline{}, false
 	}
 	candidates := checkoutNameCandidates(root)

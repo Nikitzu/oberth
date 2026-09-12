@@ -62,8 +62,10 @@ type remoteRunDetail struct {
 	Repository remoteRepository
 }
 
-func remoteClient(ctx context.Context) (*client.Client, error) {
-	config := client.FromEnv()
+func remoteClient(ctx context.Context) (*client.Client, error) { return remoteClientFor(ctx, ".") }
+
+func remoteClientFor(ctx context.Context, dir string) (*client.Client, error) {
+	config := clientConfigFor(dir)
 	if !config.Configured() {
 		return nil, errors.New("set OBERTH_BASE_URL to the server's address to read it from here")
 	}

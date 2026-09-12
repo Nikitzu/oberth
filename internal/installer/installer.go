@@ -171,7 +171,10 @@ type Config struct {
 	// is a deployment decision rather than something a client works around.
 	// Ignored when the chart adopts an existing TLS Secret.
 	TLSExtraDNSNames []string
-	TLSExtraIPs      []string
+	// ProfileName is what the written client configuration is called, so a
+	// machine reaching more than one server can switch between them.
+	ProfileName string
+	TLSExtraIPs []string
 
 	// ValuesFiles are helm values files applied to the Oberth release, in the
 	// order given, so a deployment can express its own settings at install time

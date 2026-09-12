@@ -9,7 +9,6 @@ import (
 	"os"
 
 	"github.com/oberthci/oberth/internal/artifacts"
-	"github.com/oberthci/oberth/internal/client"
 )
 
 func runArtifacts(ctx context.Context, arguments []string, output io.Writer) error {
@@ -36,10 +35,10 @@ func runArtifacts(ctx context.Context, arguments []string, output io.Writer) err
 			localForced = true
 		}
 	})
-	if config := client.FromEnv(); config.Configured() && !localForced {
+	if config := clientConfig(); config.Configured() && !localForced {
 		return remoteArtifacts(ctx, config, rest, output)
 	}
-	if localForced && client.FromEnv().Configured() {
+	if localForced && clientConfig().Configured() {
 		fmt.Fprintf(os.Stderr, "note: --data-root overrides OBERTH_BASE_URL; reading local store\n")
 	}
 	reportMode("local store")

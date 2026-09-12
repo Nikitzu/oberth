@@ -7,6 +7,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"github.com/oberthci/oberth/internal/clientprofile"
 	"io"
 	"net"
 	"os"
@@ -24,6 +25,7 @@ import (
 // because a machine may well be running a cluster install at the same time and
 // two servers fighting over one port is the first thing that would go wrong.
 const (
+	localProfileName      = "local"
 	defaultLocalHTTPSPort = 8443
 	defaultLocalSSHPort   = 8022
 )
@@ -405,9 +407,9 @@ func writeClientAccess(ctx context.Context, output io.Writer, baseURL string,
 	if err := installer.AtomicWriteFile(caPath, authority, 0o600); err != nil {
 		return fmt.Errorf("write %s: %w", caPath, err)
 	}
-	tokenCommand, tokenHint := installer.TokenCommandForHost()
+	tokenCommand, tokenHint := installer.TokenCommandForHost(localProfileName)
 	if minted && strings.TrimSpace(token) != "" {
-		if err := installer.StoreUplinkToken(ctx, token); err != nil {
+		if err := installer.StoreUplinkToken(ctx, localProfileName, token); err != nil {
 			// Deliberately not the error: on macOS the secret store takes the
 			// token as an argument, so a failure from it quotes the command.
 			say(output, "token      could not be saved to your secret store; store it yourself with:\n    %s", tokenHint)
@@ -415,19 +417,21 @@ func writeClientAccess(ctx context.Context, output io.Writer, baseURL string,
 			say(output, "token      saved to your secret store")
 		}
 	}
-	envPath := filepath.Join(root, "env")
-	if err := installer.AtomicWriteFile(envPath,
-		[]byte(installer.RenderClientEnv(baseURL, caPath, tokenCommand)+localinstall.RenderClientSSHEnv(layout)), 0o600); err != nil {
-		return fmt.Errorf("write %s: %w", envPath, err)
-	}
-	say(output, "client     %s", installer.DisplayPath(envPath))
+	envBody := installer.RenderClientEnv(baseURL, caPath, tokenCommand) + localinstall.RenderClientSSHEnv(layout)
 	mcpBody, err := installer.RenderMCPConfig(baseURL, tokenCommand)
-	if err == nil {
-		mcpPath := filepath.Join(root, "mcp.json")
-		if writeErr := installer.AtomicWriteFile(mcpPath, mcpBody, 0o600); writeErr == nil {
-			say(output, "client     %s", installer.DisplayPath(mcpPath))
-		}
+	if err != nil {
+		mcpBody = nil
 	}
+	dir, err := clientprofile.Write(localProfileName, envBody, authority, mcpBody)
+	if err != nil {
+		return err
+	}
+	if err := clientprofile.SetDefault(localProfileName); err != nil {
+		return err
+	}
+	envPath := filepath.Join(root, "env")
+	say(output, "client     profile %s (default), %s", localProfileName, installer.DisplayPath(dir))
+	say(output, "client     %s", installer.DisplayPath(envPath))
 	line := localinstall.ShellProfileLine(envPath)
 	if strings.TrimSpace(shellProfile) == "" {
 		say(output, "\nAdd this to your shell profile:\n\n    %s\n", line)

@@ -23,6 +23,8 @@ type secretLocation struct {
 	label string
 	// passPath is the entry name inside `pass`.
 	passPath string
+	// account scopes a Keychain item to one profile; empty means the user.
+	account string
 }
 
 var (
@@ -75,6 +77,23 @@ func storeUplinkToken(ctx context.Context, deps Deps, token string) error {
 	return storeSecret(ctx, deps, uplinkTokenLocation, token)
 }
 
+func uplinkTokenLocationFor(profile string) secretLocation {
+	profile = strings.TrimSpace(profile)
+	if profile == "" {
+		return uplinkTokenLocation
+	}
+	return secretLocation{
+		service:  uplinkTokenLocation.service,
+		label:    uplinkTokenLocation.label + " (" + profile + ")",
+		passPath: "oberth/" + profile + "/token",
+		account:  profile,
+	}
+}
+
+func storeUplinkTokenFor(ctx context.Context, deps Deps, profile, token string) error {
+	return storeSecret(ctx, deps, uplinkTokenLocationFor(profile), token)
+}
+
 // storeSecret writes one credential to the host's secret store.
 //
 // The value is written to the store's standard input wherever the store reads
@@ -98,6 +117,9 @@ func storeSecret(ctx context.Context, deps Deps, where secretLocation, value str
 		if err != nil {
 			return err
 		}
+		if where.account != "" {
+			account = where.account
+		}
 		// The value is inline rather than on standard input.
 		//
 		// `security -w` with no value reads from the controlling terminal, not
@@ -117,7 +139,7 @@ func storeSecret(ctx context.Context, deps Deps, where secretLocation, value str
 	default:
 		if _, err := lookPath("secret-tool"); err == nil {
 			return runWithSecret(ctx, deps, value,
-				"secret-tool", "store", "--label="+where.label, "service", where.service)
+				"secret-tool", "store", "--label="+where.label, "service", where.service, "profile", where.account)
 		}
 		if _, err := lookPath("pass"); err == nil {
 			// --echo takes the value from stdin instead of prompting twice.
@@ -144,6 +166,9 @@ func readStoredSecret(ctx context.Context, deps Deps, where secretLocation) (str
 		if err != nil {
 			return "", err
 		}
+		if where.account != "" {
+			account = where.account
+		}
 		// The account-scoped read first, because that is what storeSecret
 		// wrote. The service-only read second, because an entry an operator
 		// created by hand before this code existed carries whatever account
@@ -159,7 +184,7 @@ func readStoredSecret(ctx context.Context, deps Deps, where secretLocation) (str
 		return strings.TrimSpace(string(out)), nil
 	default:
 		if _, err := lookPath("secret-tool"); err == nil {
-			out, err := run(ctx, nil, "secret-tool", "lookup", "service", where.service)
+			out, err := run(ctx, nil, "secret-tool", "lookup", "service", where.service, "profile", where.account)
 			if err != nil || strings.TrimSpace(string(out)) == "" {
 				return "", fmt.Errorf("%w: secret-tool service %s", errSecretNotStored, where.service)
 			}

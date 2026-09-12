@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -12,6 +13,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/oberthci/oberth/internal/clientprofile"
 )
 
 // onboardServer is a whole Oberth deployment, in a handler. It records what it
@@ -455,5 +458,51 @@ func TestOnboardSetsTheInstallsSSHCommandOnlyWhereItOwnsIt(t *testing.T) {
 	}
 	if got := gitConfig(t, cluster, "core.sshCommand"); got != "" {
 		t.Fatalf("a checkout against a cluster install got a core.sshCommand: %q", got)
+	}
+}
+
+func TestUseSwitchesACheckoutBetweenServers(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	_, local := newOnboardServer(t, "docker")
+	_, remote := newOnboardServer(t, "argo")
+	write := func(name, url, ssh string) {
+		env := fmt.Sprintf("export OBERTH_BASE_URL=%q\nexport OBERTH_TOKEN_COMMAND=%q\n", url, "echo test-token")
+		if ssh != "" {
+			env += fmt.Sprintf("export OBERTH_SSH_COMMAND=%q\n", ssh)
+		}
+		if _, err := clientprofile.Write(name, env, []byte("ca"), nil); err != nil {
+			t.Fatalf("write profile %s: %v", name, err)
+		}
+	}
+	write("local", local.URL, "/install/ssh/git-ssh")
+	write("server", remote.URL, "")
+	root := onboardCheckout(t, "git@forge.example:acme/web-app.git")
+	t.Chdir(root)
+	t.Setenv("OBERTH_TOKEN", "test-token")
+
+	var out bytes.Buffer
+	if err := runUse(context.Background(), []string{"local"}, &out); err != nil {
+		t.Fatalf("use local: %v", err)
+	}
+	if got := gitConfig(t, root, "remote.oberth.url"); got != "ssh://git@oberth.invalid:2222/web-app" {
+		t.Fatalf("remote after use local = %q", got)
+	}
+	if got := gitConfig(t, root, "core.sshCommand"); got != "/install/ssh/git-ssh" {
+		t.Fatalf("sshCommand after use local = %q", got)
+	}
+	if got := clientprofile.ForCheckout(root); got != "local" {
+		t.Fatalf("pin = %q", got)
+	}
+	if err := runUse(context.Background(), []string{"server"}, &out); err != nil {
+		t.Fatalf("use server: %v", err)
+	}
+	if got := gitConfig(t, root, "core.sshCommand"); got != "" {
+		t.Fatalf("a cluster profile left the local ssh command in place: %q", got)
+	}
+	if got := clientprofile.ForCheckout(root); got != "server" {
+		t.Fatalf("pin = %q", got)
+	}
+	if err := runUse(context.Background(), []string{"nowhere"}, &out); err == nil {
+		t.Fatal("use of a missing profile must fail")
 	}
 }

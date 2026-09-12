@@ -7,6 +7,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"github.com/oberthci/oberth/internal/clientprofile"
 	"io"
 	"net"
 	"os"
@@ -149,7 +150,7 @@ func runClientAccessOffer(ctx context.Context, cfg Config, deps Deps, tw *tableW
 	}
 
 	baseURL := "https://" + ClientHost(cfg, deps) + ":" + httpsNodePort
-	tokenCommand, tokenHint := tokenCommandForHost()
+	tokenCommand, tokenHint := tokenCommandForHost(cfg.ProfileName)
 
 	// The evidence, not the exit code: the handshake a client is about to
 	// make, with the pool that client was just given.
@@ -167,7 +168,7 @@ func runClientAccessOffer(ctx context.Context, cfg Config, deps Deps, tw *tableW
 	// against a deployment whose token this process never saw.
 	stored := false
 	if freshToken && strings.TrimSpace(token) != "" {
-		if err := storeUplinkToken(ctx, deps, token); err != nil {
+		if err := storeUplinkTokenFor(ctx, deps, cfg.ProfileName, token); err != nil {
 			// Deliberately not the error: the secret store takes the token as
 			// an argument, so a failure from it quotes the command, and the
 			// command contains the credential. The instruction printed below
@@ -183,7 +184,8 @@ func runClientAccessOffer(ctx context.Context, cfg Config, deps Deps, tw *tableW
 	var trustNotes []string
 	if choice == clientAccessBoth || choice == clientAccessCLI {
 		path := filepath.Join(root, "env")
-		if err := atomicWriteFile(path, []byte(renderClientEnv(baseURL, caPath, tokenCommand)), 0600); err != nil {
+		envBody := renderClientEnv(baseURL, caPath, tokenCommand)
+		if err := atomicWriteFile(path, []byte(envBody), 0600); err != nil {
 			tw.AppendRow("CLI access", displayPath(path), "✗ error", false)
 		} else {
 			tw.AppendRow("CLI access", displayPath(path), "✓ written", false)
@@ -252,6 +254,13 @@ func runClientAccessOffer(ctx context.Context, cfg Config, deps Deps, tw *tableW
 
 	if cliNote != "" {
 		_, _ = fmt.Fprint(w, cliNote)
+	}
+	if dir, err := clientprofile.Write(cfg.ProfileName, renderClientEnv(baseURL, caPath, tokenCommand), authority, mcpBodyFor(baseURL, tokenCommand)); err != nil {
+		tw.AppendRow("Profile", cfg.ProfileName, "✗ error", false)
+	} else if err := clientprofile.SetDefault(cfg.ProfileName); err != nil {
+		tw.AppendRow("Profile", displayPath(dir), "⚠ not default", false)
+	} else {
+		tw.AppendRow("Profile", cfg.ProfileName+" (default), "+displayPath(dir), "✓ written", false)
 	}
 	printCATrustNotes(w, trustNotes)
 	printClientAccessNotes(w, root, choice, tokenHint, freshToken && !stored)
@@ -369,7 +378,8 @@ func ClientHost(cfg Config, deps Deps) string {
 // tokenCommandForHost proposes the platform's own secret store. The second
 // return value is the command that puts the token there, which the install
 // prints rather than runs: storing a credential is the operator's to do.
-func tokenCommandForHost() (read string, store string) {
+func tokenCommandForHost(profile string) (read string, store string) {
+	location := uplinkTokenLocationFor(profile)
 	switch runtime.GOOS {
 	case "darwin":
 		// Both halves name the account.
@@ -381,14 +391,18 @@ func tokenCommandForHost() (read string, store string) {
 		// request fails with 401, and an MCP client reads a 401 as "this
 		// server wants OAuth" and reports a registration failure instead of a
 		// bad credential.
-		return `security find-generic-password -s oberth-token -a "$USER" -w`,
-			`security add-generic-password -s oberth-token -a "$USER" -U -w`
+		account := `"$USER"`
+		if location.account != "" {
+			account = `"` + location.account + `"`
+		}
+		return "security find-generic-password -s " + location.service + " -a " + account + " -w",
+			"security add-generic-password -s " + location.service + " -a " + account + " -U -w"
 	default:
 		if _, err := exec.LookPath("secret-tool"); err == nil {
-			return "secret-tool lookup service oberth",
-				`secret-tool store --label="Oberth uplink token" service oberth`
+			return "secret-tool lookup service " + location.service + " profile " + location.account,
+				`secret-tool store --label="` + location.label + `" service ` + location.service + " profile " + location.account
 		}
-		return "pass show oberth/token", "pass insert oberth/token"
+		return "pass show " + location.passPath, "pass insert " + location.passPath
 	}
 }
 
@@ -593,4 +607,12 @@ func clientAccessFromConfig(cfg Config) (int, error) {
 	default:
 		return -1, fmt.Errorf("--client-access %q is not both, cli, mcp or none", cfg.ClientAccess)
 	}
+}
+
+func mcpBodyFor(baseURL, tokenCommand string) []byte {
+	body, err := renderMCPConfig(baseURL, tokenCommand)
+	if err != nil {
+		return nil
+	}
+	return body
 }

@@ -59,6 +59,8 @@ func runInstall(ctx context.Context, arguments []string, input io.Reader, output
 	flags.StringVar(&cfg.ShellProfile, "shell-profile", "",
 		"append the environment sourcing line to your shell profile without asking: yes or no "+
 			"(default: ask when there is a terminal, and do nothing when there is not)")
+	flags.StringVar(&cfg.ProfileName, "name", "server",
+		"what the client configuration for this deployment is called; `oberth use <name>` switches a checkout to it")
 	flags.StringVar(&cfg.ClientAccess, "client-access", "",
 		"configure clients without prompting: both, cli, mcp or none")
 	flags.StringVar(&cfg.ChartPath, "chart", "",

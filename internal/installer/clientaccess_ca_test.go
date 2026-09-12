@@ -66,7 +66,7 @@ func TestKeychainReadAndStoreNameTheSameItem(t *testing.T) {
 	if runtime.GOOS != "darwin" {
 		t.Skip("Keychain is macOS only")
 	}
-	read, store := tokenCommandForHost()
+	read, store := tokenCommandForHost("")
 	for _, command := range []string{read, store} {
 		if !strings.Contains(command, `-a "$USER"`) {
 			t.Errorf("command does not name the account, so it can match another item: %s", command)

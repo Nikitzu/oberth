@@ -48,7 +48,7 @@ func main() {
 	}
 }
 
-const usageCommands = "audit, init, onboard, validate, install, upgrade, unseal, preload, serve, upstream, repo, fragments, artifacts, schedules, skills, runs, run, wait, log, repos, issues, status, uplink, access, secretstore, or version"
+const usageCommands = "audit, init, onboard, validate, install, upgrade, unseal, use, profile, preload, serve, upstream, repo, fragments, artifacts, schedules, skills, runs, run, wait, log, repos, issues, status, uplink, access, secretstore, or version"
 
 func runCLI(ctx context.Context, arguments []string, input io.Reader, output io.Writer) error {
 	if len(arguments) == 0 {
@@ -106,6 +106,10 @@ func runCLI(ctx context.Context, arguments []string, input io.Reader, output io.
 		return runInstall(ctx, arguments[1:], input, output)
 	case "unseal":
 		return runUnseal(ctx, arguments[1:], input, output)
+	case "use":
+		return runUse(ctx, arguments[1:], output)
+	case "profile":
+		return runProfile(ctx, arguments[1:], output)
 	case "preload":
 		return runPreload(ctx, arguments[1:], output)
 	case "upgrade":

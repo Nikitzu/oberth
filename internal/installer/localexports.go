@@ -20,7 +20,9 @@ func ClientConfigRoot() (string, error) { return clientConfigRoot() }
 
 // TokenCommandForHost returns the command whose output is the bearer token,
 // and the command that puts it there.
-func TokenCommandForHost() (read string, store string) { return tokenCommandForHost() }
+func TokenCommandForHost(profile string) (read string, store string) {
+	return tokenCommandForHost(profile)
+}
 
 // RenderClientEnv is the env file the CLI sources. It deliberately holds no
 // token: OBERTH_TOKEN_COMMAND names a command that reads one.
@@ -36,8 +38,8 @@ func RenderMCPConfig(baseURL, tokenCommand string) ([]byte, error) {
 // StoreUplinkToken puts the bearer token in the platform secret store, under
 // the same service name the cluster install uses, so a machine that has had
 // either install answers OBERTH_TOKEN_COMMAND.
-func StoreUplinkToken(ctx context.Context, token string) error {
-	return storeUplinkToken(ctx, Deps{}, token)
+func StoreUplinkToken(ctx context.Context, profile, token string) error {
+	return storeUplinkTokenFor(ctx, Deps{}, profile, token)
 }
 
 // DisplayPath shortens a path under the home directory for operator output.
