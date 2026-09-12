@@ -23,7 +23,7 @@ One command, idempotent, safe to re-run. It:
 2. initialises it with one key share and stores the unseal key and the root
    token in the macOS keychain under `oberth-openbao-unseal` and
    `oberth-openbao-root`, then unseals it;
-3. generates the run-identity signing key at `~/.oberth/jwt-signing.pem`, mode
+3. generates the run-identity signing key at `~/.oberth/local/jwt-signing.pem` (the install root, `--root` to change it), mode
    0600, if it does not exist;
 4. enables the `jwt` auth mount and configures it with the public half of that
    key and a bound issuer;
@@ -36,7 +36,7 @@ Then start the server:
 ```
 oberth serve --engine=docker ... \
   --secretstore-address=http://127.0.0.1:8200 \
-  --secretstore-jwt-signing-key=$HOME/.oberth/jwt-signing.pem
+  --secretstore-jwt-signing-key=$HOME/.oberth/local/jwt-signing.pem
 ```
 
 `--secretstore-jwt-signing-key` is the only flag this adds. Everything else the
@@ -71,7 +71,7 @@ in at all. Run it with:
 
 ```
 OBERTH_BAO_PROBE_ADDR=http://127.0.0.1:8200 \
-OBERTH_BAO_PROBE_KEY=$HOME/.oberth/jwt-signing.pem \
+OBERTH_BAO_PROBE_KEY=$HOME/.oberth/local/jwt-signing.pem \
   go test ./internal/secretstore/ -run TestLiveJWT
 ```
 
