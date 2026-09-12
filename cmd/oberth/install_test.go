@@ -5,8 +5,12 @@ import (
 	"context"
 	"errors"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/oberthci/oberth/internal/localbao"
 )
 
 func TestRunInstallHelpReturnsNil(t *testing.T) {
@@ -194,5 +198,48 @@ func TestRunInstallWiresSecretStoreFlag(t *testing.T) {
 	err := runInstall(context.Background(), []string{"--secretstore", "bogus"}, strings.NewReader(""), io.Discard)
 	if err == nil || !strings.Contains(err.Error(), "production, dev or none") {
 		t.Fatalf("--secretstore should reach Config validation, got: %v", err)
+	}
+}
+
+// The docker store verbs and the docker install have to agree on where the
+// material lives. They did not: the verbs defaulted to ~/.oberth while the
+// install wrote ~/.oberth/local, and a bare `secretstore put` then minted a
+// second store certificate in the directory it had guessed.
+func TestDockerStoreVerbsResolveTheInstallRoot(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	options := localbao.Options{}
+	if err := storeMaterial(&options, "", ""); err != nil {
+		t.Fatal(err)
+	}
+	if want := filepath.Join(home, ".oberth", "local", "jwt-signing.pem"); options.SigningKeyPath != want {
+		t.Fatalf("default signing key = %s, want %s", options.SigningKeyPath, want)
+	}
+	if err := storeMaterial(&options, filepath.Join(home, "elsewhere"), ""); err != nil {
+		t.Fatal(err)
+	}
+	if want := filepath.Join(home, "elsewhere", "jwt-signing.pem"); options.SigningKeyPath != want {
+		t.Fatalf("--root signing key = %s, want %s", options.SigningKeyPath, want)
+	}
+}
+
+func TestDockerStoreVerbsNeverMintACertificate(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	for _, verb := range []string{"put", "unseal"} {
+		var output bytes.Buffer
+		arguments := []string{"secretstore", verb, "--engine=docker"}
+		if verb == "put" {
+			arguments = append(arguments, "oberth/upstream/acme/github-token", "token=x")
+		}
+		err := runCLI(context.Background(), arguments, strings.NewReader(""), &output)
+		if err == nil || !strings.Contains(err.Error(), "no store certificate at") || !strings.Contains(err.Error(), "--root") {
+			t.Fatalf("%s with no store material: err = %v, want a refusal naming the certificate and --root", verb, err)
+		}
+		if _, statErr := os.Stat(filepath.Join(home, ".oberth", "local", "openbao-tls", "tls.crt")); statErr == nil {
+			t.Fatalf("%s minted a store certificate", verb)
+		}
 	}
 }
