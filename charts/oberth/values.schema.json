@@ -47,6 +47,10 @@
       "description": "Optional HTTPS dashboard URL echoed to every accepted git push as remote: watch output. Empty disables the line.",
       "pattern": "^(|https://.+)$"
     },
+    "sshAdvertise": {
+      "type": "string",
+      "description": "Optional host:port clients point a git remote at, reported by /api/status. Empty reports the in-pod listen address."
+    },
     "auditAnchor": {
       "type": "object",
       "additionalProperties": false,

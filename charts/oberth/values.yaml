@@ -28,6 +28,11 @@ maxConcurrentJobs: 3
 # "remote: watch: <url>" line. Display-only; must be HTTPS when set.
 pushBannerURL: ""
 
+# The host and port clients point a git remote at, echoed by /api/status as
+# ssh_endpoint. Empty advertises the in-pod listen address, which only a client
+# inside the cluster can use; the installer sets <client host>:<sshNodePort>.
+sshAdvertise: ""
+
 # External audit anchoring is OFF by default. The local gap-free SHA-256 audit
 # chain in SQLite always runs — every action is hash-chained and verified —
 # but no external service is contacted, so an outage of a public free service

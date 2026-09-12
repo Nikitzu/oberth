@@ -107,10 +107,11 @@ func waitAndAnnounceReady(ctx context.Context, cfg Config, deps Deps) error {
 		return err
 	}
 	color := isColor(deps)
+	url := "https://" + ClientHost(cfg, deps) + ":" + httpsNodePort + "/runs"
 	if color {
-		_, _ = fmt.Fprintf(deps.Output, "\n\033[1;32mReady\033[0m — %s\n", oberthWebUIURL)
+		_, _ = fmt.Fprintf(deps.Output, "\n\033[1;32mReady\033[0m — %s\n", url)
 	} else {
-		_, _ = fmt.Fprintf(deps.Output, "\nReady — %s\n", oberthWebUIURL)
+		_, _ = fmt.Fprintf(deps.Output, "\nReady — %s\n", url)
 	}
 	return nil
 }

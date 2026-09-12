@@ -1566,6 +1566,10 @@ func OberthHelmArgs(cfg Config, openbao OpenBaoResult, rekor RekorResult) []stri
 	for index, name := range cfg.TLSExtraDNSNames {
 		args = append(args, "--set-string", fmt.Sprintf("tls.extraDNSNames[%d]=%s", index, name))
 	}
+	// A client outside the cluster points its git remote at the node port on
+	// the host it reaches the dashboard on; the in-pod listen address the
+	// server would otherwise report is unreachable from anywhere else.
+	args = append(args, "--set-string", "sshAdvertise="+cfg.advertisedHost()+":"+sshNodePort)
 	for index, address := range cfg.TLSExtraIPs {
 		args = append(args, "--set-string", fmt.Sprintf("tls.extraIPs[%d]=%s", index, address))
 	}
@@ -2243,4 +2247,16 @@ func loadFromRules(rules *clientcmd.ClientConfigLoadingRules, contextName string
 		selectedContext = contextName
 	}
 	return client, restConfig, selectedContext, nil
+}
+
+// advertisedHost is the name a client outside the cluster reaches this
+// deployment on, as far as the flags alone can tell: the first certificate
+// name, else localhost, which is where kind maps the node ports.
+func (cfg Config) advertisedHost() string {
+	for _, name := range cfg.TLSExtraDNSNames {
+		if trimmed := strings.TrimSpace(name); trimmed != "" {
+			return trimmed
+		}
+	}
+	return "localhost"
 }

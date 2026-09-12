@@ -148,7 +148,7 @@ func runClientAccessOffer(ctx context.Context, cfg Config, deps Deps, tw *tableW
 		return nil
 	}
 
-	baseURL := "https://" + clientReachableHost(deps) + ":" + httpsNodePort
+	baseURL := "https://" + ClientHost(cfg, deps) + ":" + httpsNodePort
 	tokenCommand, tokenHint := tokenCommandForHost()
 
 	// The evidence, not the exit code: the handshake a client is about to
@@ -351,6 +351,19 @@ func serverCACertificate(ctx context.Context, cfg Config, deps Deps) ([]byte, er
 // --tls-extra-dns-name.
 func clientReachableHost(deps Deps) string {
 	return sshHostFromServer(deps)
+}
+
+// ClientHost is the name clients reach this deployment on. A deployment that
+// named an address for its certificate is reached on that address; the
+// certificate would refuse any other. Otherwise it is the API server's own
+// host, or localhost on kind.
+func ClientHost(cfg Config, deps Deps) string {
+	for _, name := range cfg.TLSExtraDNSNames {
+		if trimmed := strings.TrimSpace(name); trimmed != "" && trimmed != "localhost" {
+			return trimmed
+		}
+	}
+	return clientReachableHost(deps)
 }
 
 // tokenCommandForHost proposes the platform's own secret store. The second

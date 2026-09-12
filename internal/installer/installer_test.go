@@ -1299,7 +1299,7 @@ func TestOberthHelmArgs(t *testing.T) {
 			args := OberthHelmArgs(test.cfg, test.openbao, RekorResult{})
 			want := []string{
 				"upgrade", "--install", "oberth", "oberth-charts/oberth",
-				"-n", "oberth", "--create-namespace",
+				"-n", "oberth", "--create-namespace", "--set-string", "sshAdvertise=localhost:30022",
 				// The execution engine binding is unconditional: Argo is how
 				// every pipeline runs, not an optional integration.
 				"--set", "argo.namespace=oberth-argo",
@@ -1444,7 +1444,7 @@ func TestOberthHelmArgsWithoutSecretStore(t *testing.T) {
 	args := OberthHelmArgs(cfg, OpenBaoResult{}, RekorResult{})
 	want := []string{
 		"upgrade", "--install", "oberth", "oberth-charts/oberth",
-		"-n", "oberth", "--create-namespace",
+		"-n", "oberth", "--create-namespace", "--set-string", "sshAdvertise=localhost:30022",
 		"--set", "argo.namespace=oberth-argo",
 		"--version", "v0.10.54",
 		"--reuse-values",
@@ -1468,7 +1468,7 @@ func TestOberthHelmArgsWithRekor(t *testing.T) {
 	args := OberthHelmArgs(cfg, OpenBaoResult{}, rekor)
 	want := []string{
 		"upgrade", "--install", "oberth", "oberth-charts/oberth",
-		"-n", "oberth", "--create-namespace",
+		"-n", "oberth", "--create-namespace", "--set-string", "sshAdvertise=localhost:30022",
 		"--set", "argo.namespace=oberth-argo",
 		"--set", "auditAnchor.rekorURL=http://rekor-server.rekor.svc:80",
 		"--set", "auditAnchor.rekorInsecureHTTP=true",
@@ -2508,7 +2508,7 @@ func TestInstallOberthReconcilesRekorAtInstalledVersion(t *testing.T) {
 			}
 			want := []string{
 				"upgrade", "--install", "oberth", "oberth-charts/oberth",
-				"-n", "oberth", "--create-namespace",
+				"-n", "oberth", "--create-namespace", "--set-string", "sshAdvertise=localhost:30022",
 				"--set", "argo.namespace=oberth-argo",
 				"--set", "auditAnchor.rekorURL=http://rekor-server.rekor.svc:80",
 				"--set", "auditAnchor.rekorInsecureHTTP=true",
@@ -2656,7 +2656,7 @@ func TestInstallOberthRekorUpgradeAllowsUnknownInstalledVersion(t *testing.T) {
 	}
 	want := []string{
 		"upgrade", "--install", "oberth", "oberth-charts/oberth",
-		"-n", "oberth", "--create-namespace",
+		"-n", "oberth", "--create-namespace", "--set-string", "sshAdvertise=localhost:30022",
 		"--set", "argo.namespace=oberth-argo",
 		"--set", "auditAnchor.rekorURL=http://rekor-server.rekor.svc:80",
 		"--set", "auditAnchor.rekorInsecureHTTP=true",

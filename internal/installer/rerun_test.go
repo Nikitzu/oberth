@@ -272,3 +272,17 @@ func TestKubedockIsPinnedOnlyWhenTheOperatorSaidSomething(t *testing.T) {
 		t.Errorf("an install that never mentioned kubedock pins it anyway:\n%s", silent)
 	}
 }
+
+func TestAClusterReachedByNameAdvertisesThatNameToClients(t *testing.T) {
+	cfg := Config{TLSExtraDNSNames: []string{"ci.example.internal"}, TLSExtraIPs: []string{"10.0.0.7"}}
+	joined := strings.Join(OberthHelmArgs(cfg, OpenBaoResult{}, RekorResult{}), " ")
+	if !strings.Contains(joined, "--set-string sshAdvertise=ci.example.internal:30022") {
+		t.Fatalf("the advertised SSH endpoint is not the certificate's name: %s", joined)
+	}
+	if got := ClientHost(cfg, Deps{}); got != "ci.example.internal" {
+		t.Fatalf("ClientHost = %q, want the certificate's name", got)
+	}
+	if got := ClientHost(Config{}, Deps{KindClusterName: "oberth"}); got != "localhost" {
+		t.Fatalf("ClientHost on kind = %q, want localhost", got)
+	}
+}

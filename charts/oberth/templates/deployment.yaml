@@ -149,6 +149,9 @@ spec:
             - --publish-on-green={{ if kindIs "bool" .Values.publishOnGreen }}{{ .Values.publishOnGreen }}{{ else }}false{{ end }}
             - --ci-cache-root={{ .Values.cache.ciRoot }}
             - --release-cache-root={{ .Values.cache.releaseRoot }}
+            {{- if .Values.sshAdvertise }}
+            - --ssh-advertise={{ .Values.sshAdvertise }}
+            {{- end }}
             {{- if .Values.pushBannerURL }}
             - --push-banner-url={{ .Values.pushBannerURL }}
             {{- end }}
