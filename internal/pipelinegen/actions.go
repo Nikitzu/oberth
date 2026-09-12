@@ -3,6 +3,7 @@ package pipelinegen
 import (
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -188,4 +189,77 @@ func flatten(values map[string]any) map[string]string {
 		}
 	}
 	return flat
+}
+
+// WorkflowScripts returns every package manager script name the repository's
+// own workflows invoke, in the order they are first seen. It reads the `run:`
+// lines of every workflow that is not a release, so the answer is what the
+// repository's CI actually runs rather than what its package.json could run.
+//
+// The names are not checked against package.json here: `pnpm install` yields
+// "install", and it is the caller, which holds the scripts, that drops it.
+func WorkflowScripts(root string) []string {
+	dir := filepath.Join(root, ".github", "workflows")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	var names []string
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		lower := strings.ToLower(name)
+		if !strings.HasSuffix(lower, ".yml") && !strings.HasSuffix(lower, ".yaml") {
+			continue
+		}
+		if skipped(lower) {
+			continue
+		}
+		names = append(names, name)
+	}
+	sortStrings(names)
+	var found []string
+	seen := map[string]bool{}
+	for _, name := range names {
+		workflow, err := parseWorkflow(filepath.Join(dir, name))
+		if err != nil {
+			continue
+		}
+		for _, job := range workflow.Jobs {
+			for _, step := range job.Steps {
+				for _, script := range scriptsInRun(step.Run) {
+					if !seen[script] {
+						seen[script] = true
+						found = append(found, script)
+					}
+				}
+			}
+		}
+	}
+	return found
+}
+
+// runInvocation matches one package manager invocation of a script: `npm run
+// X`, `npm test`, `pnpm X`, `pnpm run X`, `yarn X` and `yarn run X`. The
+// leading group anchors on a command boundary so that a word inside an
+// argument is not read as a manager.
+var runInvocation = regexp.MustCompile(
+	`(?:^|[\s;&|(])(?:npm|pnpm|yarn)(?:\s+run)?\s+([A-Za-z0-9_.:@/-]+)`)
+
+// scriptsInRun extracts the script names one shell body invokes, in order and
+// without repeats.
+func scriptsInRun(body string) []string {
+	var found []string
+	seen := map[string]bool{}
+	for _, match := range runInvocation.FindAllStringSubmatch(body, -1) {
+		script := match[1]
+		if strings.HasPrefix(script, "-") || seen[script] {
+			continue
+		}
+		seen[script] = true
+		found = append(found, script)
+	}
+	return found
 }

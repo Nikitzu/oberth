@@ -214,15 +214,32 @@ func missingPlatformTools(project Project) []platformTool {
 // `lint:arch` and with `validate:structure` and `validate:compile`. A pipeline
 // that runs fewer gates than the repository believes it runs is the failure
 // mode this whole package exists to prevent, and it had it.
+//
+// The second failure this kills is the opposite one: the generator then
+// emitted every script in every family, and a repository with nineteen
+// gate-shaped scripts got sixteen steps, among them lint:staged (needs a
+// staged index), lint:commits (needs a commit range), validate:precommit
+// (hook time) and validate:feature (needs a --feature-root argument). Its own
+// workflows ran three of them. So the workflows are read first: when the
+// build workflow is readable and runs scripts, the gates are exactly the
+// scripts the workflows run, plus test and build, which are what a CI is.
+// When the build is delegated to a reusable workflow that cannot be read, the
+// class families below stand in for it, and the validate family runs only
+// what some workflow names, because a validate script is as often a hook as
+// a gate.
 var gateFamilies = []struct {
 	name     string
 	prefixes []string
+	// named restricts the family to scripts a workflow invokes, even when
+	// the build workflow cannot be read.
+	named bool
 }{
-	{"lint", []string{"lint"}},
-	{"typecheck", []string{"typecheck", "typecheck", "tsc", "check"}},
-	{"validate", []string{"validate"}},
-	{"test", []string{"test"}},
-	{"build", []string{"build", "compile"}},
+	{"lint", []string{"lint"}, false},
+	{"typecheck", []string{"typecheck", "typecheck", "tsc", "check"}, false},
+	{"validate", []string{"validate"}, true},
+	{"workflow", nil, true},
+	{"test", []string{"test"}, false},
+	{"build", []string{"build", "compile"}, false},
 }
 
 // nonGateMarkers are the words that make a gate-shaped script name something
@@ -241,6 +258,21 @@ var nonGateMarkers = []struct{ marker, why string }{
 	{"clean", "it deletes build output rather than checking it"},
 	{"ui", "it opens an interactive reporter"},
 	{"e2e", "it needs a browser and a running application, which this pipeline does not start"},
+}
+
+// neverGateMarkers are the words that make a script something a pipeline
+// step can never be, whatever a workflow says: it needs the git index, a
+// commit range or a hook context, or it ships rather than checks.
+var neverGateMarkers = []struct{ marker, why string }{
+	{"staged", "it works on staged files, and a pipeline checkout stages nothing"},
+	{"precommit", "it is a precommit hook, which runs against a commit in progress"},
+	{"commit", "it needs a commit range, which a pipeline checkout does not carry"},
+	{"hook", "it is a git hook"},
+	{"husky", "it is a git hook"},
+	{"prepare", "it is an install lifecycle script, which the install already ran"},
+	{"release", "it releases rather than checks"},
+	{"publish", "it publishes rather than checks"},
+	{"deploy", "it deploys rather than checks"},
 }
 
 // gate is one script the pipeline will run.
@@ -263,6 +295,15 @@ type skippedGate struct {
 // output would report drift on every check.
 func classifyGates(project Project) ([]gate, []skippedGate) {
 	names := scriptNames(project.Scripts)
+	invoked := map[string]bool{}
+	for _, script := range project.WorkflowScripts {
+		if _, ok := project.script(script); ok {
+			invoked[script] = true
+		}
+	}
+	// With a readable build workflow the workflows decide; test and build
+	// run regardless, because a CI that does neither is not one.
+	always := map[string]bool{"test": true, "build": true}
 
 	var gates []gate
 	var left []skippedGate
@@ -274,16 +315,35 @@ func classifyGates(project Project) ([]gate, []skippedGate) {
 			if claimed[name] {
 				continue
 			}
-			if _, ok := project.script(name); !ok {
+			body, ok := project.script(name)
+			if !ok {
 				continue
 			}
-			if !matchesFamily(name, family.prefixes) {
+			if family.prefixes != nil && !matchesFamily(name, family.prefixes) {
+				continue
+			}
+			if family.prefixes == nil && !invoked[name] {
 				continue
 			}
 			claimed[name] = true
+			if why, isNot := neverGateReason(name, body); isNot {
+				left = append(left, skippedGate{script: name, why: why})
+				continue
+			}
 			if why, isNot := nonGateReason(name); isNot {
 				left = append(left, skippedGate{script: name, why: why})
 				continue
+			}
+			if !invoked[name] {
+				switch {
+				case project.BuildRunsScripts && !always[name]:
+					left = append(left, skippedGate{script: name, why: "no workflow in .github/workflows runs it"})
+					continue
+				case family.named:
+					left = append(left, skippedGate{script: name,
+						why: "no workflow in .github/workflows runs it, and a " + family.name + " script runs only when one does"})
+					continue
+				}
 			}
 			matched = append(matched, name)
 		}
@@ -293,6 +353,26 @@ func classifyGates(project Project) ([]gate, []skippedGate) {
 		}
 	}
 	return gates, left
+}
+
+// neverGateReason is the refusal that no workflow can override: the name
+// says the script needs a context a pipeline step does not have, or the body
+// reads positional arguments nothing here would supply. The markers match
+// anywhere in the name, unlike nonGateMarkers, because "commits" and
+// "precommit" are the same refusal as "commit".
+func neverGateReason(name, body string) (string, bool) {
+	lowered := strings.ToLower(name)
+	for _, marker := range neverGateMarkers {
+		if strings.Contains(lowered, marker.marker) {
+			return marker.why, true
+		}
+	}
+	for _, needle := range []string{"$1", "${1", "$@", `"$@"`, "$*"} {
+		if strings.Contains(body, needle) {
+			return "it takes arguments this pipeline cannot supply", true
+		}
+	}
+	return "", false
 }
 
 // matchesFamily reports whether a script name belongs to a family. The match

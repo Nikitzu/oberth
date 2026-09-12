@@ -1,0 +1,5 @@
+[core]
+	repositoryformatversion = 0
+[remote "origin"]
+	url = git@forge.example:acme/booking-ui.git
+	fetch = +refs/heads/*:refs/remotes/origin/*

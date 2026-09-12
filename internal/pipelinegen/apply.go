@@ -44,6 +44,11 @@ func Apply(workflow Workflow, project *Project) {
 
 	for _, step := range job.Steps {
 		if strings.TrimSpace(step.Run) != "" {
+			for _, script := range scriptsInRun(step.Run) {
+				if _, exists := project.script(script); exists {
+					project.BuildRunsScripts = true
+				}
+			}
 			continue
 		}
 		if step.Uses != "" && !knownSetupAction(step.Uses) {

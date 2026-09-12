@@ -1,0 +1,13 @@
+name: Build
+on:
+  push:
+    branches:
+      - '**'
+jobs:
+  build:
+    name: Build
+    uses: acme/reusable-workflows/.github/workflows/node-build-deploy.yml@master
+    with:
+      NODEJS_VERSION: "22"
+    secrets:
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}

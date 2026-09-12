@@ -308,3 +308,121 @@ func TestRegistryAndOrgAreTakenFromTheCheckoutNotFromAConstant(t *testing.T) {
 		t.Error("the credential line does not name the registry the checkout declared")
 	}
 }
+
+// --- pnpm-workflow-gates ----------------------------------------------------
+
+// rides declared nineteen gate-shaped scripts and the generator emitted a step
+// for sixteen of them, including lint:staged (needs a staged index),
+// lint:commits (needs a commit range), validate:precommit (hook time) and
+// validate:feature (needs a --feature-root argument). Its own workflows ran
+// three. The repository's workflows are the authority on what CI runs; test
+// and build are what a CI is, so they run regardless.
+func TestAReadableWorkflowDecidesTheGates(t *testing.T) {
+	t.Parallel()
+	result := generateFor(t, "pnpm-workflow-gates")
+	admitGenerated(t, result.YAML)
+
+	want := []string{"copy-source", "install", "lint", "validate-contracts-all", "validate-structure", "test", "build"}
+	if strings.Join(result.Steps, " ") != strings.Join(want, " ") {
+		t.Fatalf("steps = %v, want exactly %v", result.Steps, want)
+	}
+	header := headerText(result.YAML)
+	for script, reason := range map[string]string{
+		"lint:staged":                "it works on staged files",
+		"lint:commits":               "it needs a commit range",
+		"validate:precommit":         "it is a precommit hook",
+		"validate:toolkit:precommit": "it is a precommit hook",
+		"validate:feature":           "it takes arguments",
+		"validate:compile":           "no workflow in .github/workflows runs it",
+		"lint:workflows":             "no workflow in .github/workflows runs it",
+		"build:check":                "no workflow in .github/workflows runs it",
+	} {
+		if !strings.Contains(header, "script "+script+" is gate-shaped but is not run: "+reason) {
+			t.Errorf("skipping %q for %q is not explained in the header", script, reason)
+		}
+	}
+}
+
+// headerText joins the wrapped comment lines of a generated document back
+// into one line, so a sentence can be looked for whole.
+func headerText(document string) string {
+	var words []string
+	for _, line := range strings.Split(document, "\n") {
+		if strings.HasPrefix(line, "#") {
+			words = append(words, strings.Fields(strings.TrimPrefix(line, "#"))...)
+		}
+	}
+	return strings.Join(words, " ")
+}
+
+// The same repository behind a reusable build workflow that cannot be read:
+// the class allowlist applies (lint, typecheck, test, build), a validate
+// script runs only because contracts.yml names it, and the hook-time scripts
+// still never run.
+func TestAReusableWorkflowFallsBackToTheClassAllowlist(t *testing.T) {
+	t.Parallel()
+	result := generateFor(t, "pnpm-reusable-workflow")
+	admitGenerated(t, result.YAML)
+
+	want := []string{"copy-source", "install", "lint", "lint-workflows", "validate-contracts-all", "test", "build", "build-check"}
+	if strings.Join(result.Steps, " ") != strings.Join(want, " ") {
+		t.Fatalf("steps = %v, want exactly %v", result.Steps, want)
+	}
+	header := headerText(result.YAML)
+	for _, script := range []string{"validate:structure", "validate:compile", "validate:final"} {
+		if !strings.Contains(header, "script "+script+" is gate-shaped but is not run: no workflow") {
+			t.Errorf("skipping %q must say no workflow names it", script)
+		}
+	}
+}
+
+// A script that is never a gate, whatever the workflow says: the marker list
+// is a property of the name, and the argument check is a property of the body.
+func TestHookTimeAndArgumentScriptsAreNeverGates(t *testing.T) {
+	t.Parallel()
+	for name, body := range map[string]string{
+		"lint:staged":        "biome check --staged",
+		"lint:commits":       "commitlint",
+		"validate:precommit": "sh x.sh",
+		"hook:check":         "sh x.sh",
+		"husky":              "husky",
+		"prepare":            "husky",
+		"release":            "semantic-release",
+		"publish":            "npm publish",
+		"deploy":             "sh deploy.sh",
+		"validate:feature":   "toolkit validate --feature-root \"$1\"",
+		"check:all":          "sh check.sh \"$@\"",
+	} {
+		if _, isNot := neverGateReason(name, body); !isNot {
+			t.Errorf("%q must never be a gate", name)
+		}
+	}
+	for name, body := range map[string]string{
+		"lint":               "biome check .",
+		"validate:structure": "toolkit validate structure --path .",
+		"test":               "vitest run",
+	} {
+		if why, isNot := neverGateReason(name, body); isNot {
+			t.Errorf("%q was refused: %s", name, why)
+		}
+	}
+}
+
+// Only invocations of a script that exists count; `pnpm install`, `pnpm exec`
+// and `pnpm config set` are the manager's own verbs and must not become gates.
+func TestWorkflowScriptsAreReadFromRunLines(t *testing.T) {
+	t.Parallel()
+	got := scriptsInRun(strings.Join([]string{
+		"pnpm install --frozen-lockfile",
+		`pnpm config set "//x/:_authToken" "$T" --location project`,
+		"pnpm exec toolkit validate",
+		"pnpm lint && pnpm run validate:structure",
+		"npm run build:check -- --mode ci; npm test",
+		"yarn typecheck || yarn run lint:arch",
+		"npm ci",
+	}, "\n"))
+	want := []string{"install", "config", "exec", "lint", "validate:structure", "build:check", "test", "typecheck", "lint:arch", "ci"}
+	if strings.Join(got, " ") != strings.Join(want, " ") {
+		t.Fatalf("scriptsInRun = %v, want %v", got, want)
+	}
+}

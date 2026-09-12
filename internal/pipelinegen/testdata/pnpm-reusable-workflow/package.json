@@ -1,0 +1,38 @@
+{
+  "name": "booking-ui",
+  "private": true,
+  "packageManager": "pnpm@11.0.0",
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "prepare": "command -v git > /dev/null || exit 0; husky",
+    "lint": "biome check ./src",
+    "lint:staged": "biome check --staged --write --no-errors-on-unmatched",
+    "lint:fix": "biome check --write ./src",
+    "lint:commits": "commitlint --last --verbose",
+    "lint:workflows": "node scripts/lint-workflows.mjs",
+    "validate:structure": "toolkit validate structure --path .",
+    "validate:compile": "toolkit validate compile --path .",
+    "validate:precommit": "sh scripts/validate-precommit.sh",
+    "validate:toolkit:precommit": "toolkit validate precommit --path .",
+    "validate:feature": "toolkit validate feature --path . --feature-root \"$1\"",
+    "validate:assumptions": "toolkit validate assumptions --path .",
+    "validate:contracts": "toolkit validate contracts",
+    "validate:contracts:all": "sh scripts/validate-contracts.sh",
+    "validate:final": "pnpm run validate:structure && pnpm run validate:compile && pnpm run validate:contracts:all",
+    "release:type": "node scripts/release-type.mjs",
+    "test": "TZ=UTC vitest",
+    "build": "vite build",
+    "build:check": "tsc && vite build",
+    "start": "vite"
+  },
+  "dependencies": {
+    "@acme/fe-sdk": "3.5.0"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.1.2",
+    "husky": "9.1.7",
+    "typescript": "5.6.3",
+    "vite": "6.0.5",
+    "vitest": "2.1.8"
+  }
+}

@@ -10,8 +10,8 @@ jobs:
         with:
           node-version: 22
       - run: pnpm install --frozen-lockfile
-      - run: pnpm run lint
-      - run: pnpm run validate:structure
-      - run: pnpm run test
-      - run: pnpm run typecheck
-      - run: pnpm run validate:compile
+      - run: pnpm lint
+      - name: Structure
+        run: |
+          echo "checking the tree"
+          pnpm run validate:structure

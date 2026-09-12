@@ -27,8 +27,6 @@ func materialize(t *testing.T, fixture string) string {
 		}
 		var target string
 		switch entry.Name() {
-		case "build.yml":
-			target = filepath.Join(root, ".github", "workflows", "build.yml")
 		case "git-config":
 			target = filepath.Join(root, ".git", "config")
 		case "npmrc":
@@ -37,6 +35,9 @@ func materialize(t *testing.T, fixture string) string {
 			target = filepath.Join(root, ".nvmrc")
 		default:
 			target = filepath.Join(root, entry.Name())
+			if strings.HasSuffix(entry.Name(), ".yml") {
+				target = filepath.Join(root, ".github", "workflows", entry.Name())
+			}
 		}
 		if err := os.MkdirAll(filepath.Dir(target), 0o750); err != nil {
 			t.Fatal(err)

@@ -102,6 +102,13 @@ type Project struct {
 	// the registered org. It is never used to build a path.
 	OriginOrg string
 
+	// WorkflowScripts is every script name the repository's own workflows
+	// invoke, and BuildRunsScripts reports that the build workflow itself is
+	// readable and invokes at least one. Together they decide which
+	// gate-shaped scripts become steps: see classifyGates.
+	WorkflowScripts  []string
+	BuildRunsScripts bool
+
 	// Provenance and honesty.
 	Sources      []string
 	Untranslated []string
@@ -126,6 +133,7 @@ func (p Project) script(name string) (string, bool) {
 // into a scaffold that says so.
 func DetectProject(root string) Project {
 	project := Project{Kind: KindUnknown, Scripts: map[string]string{}, Dependencies: map[string]bool{}}
+	project.WorkflowScripts = WorkflowScripts(root)
 
 	if raw, err := os.ReadFile(filepath.Join(root, "package.json")); err == nil {
 		var manifest struct {
