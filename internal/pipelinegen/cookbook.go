@@ -235,7 +235,7 @@ var gateFamilies = []struct {
 	named bool
 }{
 	{"lint", []string{"lint"}, false},
-	{"typecheck", []string{"typecheck", "typecheck", "tsc", "check"}, false},
+	{"typecheck", []string{"typecheck", "tsc", "check"}, false},
 	{"validate", []string{"validate"}, true},
 	{"workflow", nil, true},
 	{"test", []string{"test"}, false},

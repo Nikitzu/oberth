@@ -86,11 +86,17 @@ func decideHelperSource(config HelperConfig, goOnPath bool) (helperSource, error
 // helperCached reports whether a release version's volume already holds the
 // helper. A development volume is rebuilt once per server process, because
 // the binary it mirrors changes with every build.
-func (controller *Controller) helperCached(ctx context.Context, version string) bool {
-	if strings.TrimSpace(version) == "" || version == "dev" {
+func (controller *Controller) helperCached(ctx context.Context, config HelperConfig) bool {
+	if strings.TrimSpace(config.Version) == "" || config.Version == "dev" || strings.TrimSpace(config.ImageRef) == "" {
 		return false
 	}
-	_, err := controller.client.run(ctx, "volume", "inspect", HelperVolumeName(version))
+	volume := HelperVolumeName(config.Version)
+	if _, err := controller.client.run(ctx, "volume", "inspect", volume); err != nil {
+		return false
+	}
+	_, err := controller.client.run(ctx, "run", "--rm",
+		"--volume", volume+":"+HelperMountPath+":ro",
+		"--entrypoint", HelperMountPath+"/oberth", "--", config.ImageRef, "version")
 	return err == nil
 }
 
@@ -106,7 +112,7 @@ func (controller *Controller) ensureHelper(ctx context.Context, seedImage string
 	}
 	config := controller.config.Helper
 	volume := HelperVolumeName(config.Version)
-	if controller.helperCached(ctx, config.Version) {
+	if controller.helperCached(ctx, config) {
 		controller.helperVolume = volume
 		return nil
 	}
@@ -218,6 +224,7 @@ func (controller *Controller) writeHelperVolume(ctx context.Context, volume, ima
 		return err
 	})
 	if err != nil {
+		_, _ = controller.client.run(ctx, "volume", "rm", "--force", volume)
 		return fmt.Errorf("dockerjob: write the helper into %s: %w", volume, err)
 	}
 	return nil
