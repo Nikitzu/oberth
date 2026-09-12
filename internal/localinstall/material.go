@@ -11,7 +11,9 @@
 package localinstall
 
 import (
+	"crypto/ecdsa"
 	"crypto/ed25519"
+	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/x509"
 	"crypto/x509/pkix"
@@ -113,28 +115,49 @@ func EnsureMaterial(layout Layout, now time.Time) ([]string, error) {
 // anchor through OBERTH_CA_CERT, which is the same mechanism the cluster
 // install uses for its own private signer.
 func ensureTLS(layout Layout, now time.Time) (bool, error) {
-	if _, err := os.Stat(layout.TLSCert); err == nil {
-		if _, keyErr := os.Stat(layout.TLSKey); keyErr == nil {
-			return false, nil
-		}
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return false, fmt.Errorf("localinstall: read %s: %w", layout.TLSCert, err)
-	}
-	return true, IssueSelfSignedCertificate(layout.TLSCert, layout.TLSKey, "localhost",
+	return EnsureSelfSignedCertificate(layout.TLSCert, layout.TLSKey, "localhost",
 		[]string{"localhost"}, []net.IP{net.ParseIP("127.0.0.1"), net.ParseIP("::1")}, now)
 }
 
-// EnsureSelfSignedCertificate issues a certificate only if one is not already
-// there, and reports whether it made one.
+// EnsureSelfSignedCertificate issues a certificate if one is not already
+// there, or if the one there is one no browser will accept, and reports
+// whether it wrote one.
 func EnsureSelfSignedCertificate(certPath, keyPath, commonName string, names []string, addresses []net.IP, now time.Time) (bool, error) {
 	if _, err := os.Stat(certPath); err == nil {
 		if _, keyErr := os.Stat(keyPath); keyErr == nil {
-			return false, nil
+			unusable, err := CertificateIsEd25519(certPath)
+			if err != nil {
+				return false, err
+			}
+			if !unusable {
+				return false, nil
+			}
 		}
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return false, fmt.Errorf("localinstall: read %s: %w", certPath, err)
 	}
 	return true, IssueSelfSignedCertificate(certPath, keyPath, commonName, names, addresses, now)
+}
+
+// CertificateIsEd25519 reports whether the certificate at path carries an
+// Ed25519 key. Earlier installs issued those, and Safari, Chrome, Firefox and
+// the macOS curl all refuse Ed25519 in a TLS handshake, so the dashboard was
+// unreachable from a browser while every Go client worked and nobody noticed.
+// Such a certificate is replaced on the next install run.
+func CertificateIsEd25519(path string) (bool, error) {
+	body, err := os.ReadFile(path) // #nosec G304 -- the certificate this install manages.
+	if err != nil {
+		return false, fmt.Errorf("localinstall: read %s: %w", path, err)
+	}
+	block, _ := pem.Decode(body)
+	if block == nil {
+		return false, fmt.Errorf("localinstall: %s holds no PEM certificate", path)
+	}
+	certificate, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return false, fmt.Errorf("localinstall: parse %s: %w", path, err)
+	}
+	return certificate.PublicKeyAlgorithm == x509.Ed25519, nil
 }
 
 // IssueSelfSignedCertificate writes a certificate and its key.
@@ -152,10 +175,13 @@ func IssueSelfSignedCertificate(certPath, keyPath, commonName string, names []st
 	if err := os.MkdirAll(filepath.Dir(keyPath), 0o700); err != nil {
 		return fmt.Errorf("localinstall: create %s: %w", filepath.Dir(keyPath), err)
 	}
-	public, private, err := ed25519.GenerateKey(rand.Reader)
+	// ECDSA P-256, not Ed25519: every browser and the platform TLS stacks
+	// accept it, and Ed25519 is exactly what they do not.
+	private, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		return fmt.Errorf("localinstall: generate the TLS key: %w", err)
 	}
+	public := &private.PublicKey
 	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 127))
 	if err != nil {
 		return fmt.Errorf("localinstall: generate the certificate serial: %w", err)

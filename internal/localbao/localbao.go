@@ -326,6 +326,22 @@ func (options Options) initialiseAndUnseal(ctx context.Context) (string, error) 
 	return root, nil
 }
 
+// RestartContainer restarts the store's container so it reads a reissued
+// certificate; the bind-mounted directory already holds the new one. It
+// reports whether there was a container to restart. The data volume is not
+// touched, and the store comes back sealed, as it does after any restart.
+func RestartContainer(ctx context.Context, options Options) (bool, error) {
+	options.applyDefaults()
+	if _, err := options.Run(ctx, options.Docker, "inspect", "--format", "{{.State.Running}}", options.Container); err != nil {
+		return false, nil
+	}
+	if _, err := options.Run(ctx, options.Docker, "restart", options.Container); err != nil {
+		return false, fmt.Errorf("localbao: restart %s: %w", options.Container, err)
+	}
+	options.say("openbao: restarted %s so it serves the reissued certificate", options.Container)
+	return true, nil
+}
+
 // Unseal brings an already-initialised store back to usable, which is what a
 // laptop reboot needs and nothing else does.
 func Unseal(ctx context.Context, options Options) error {

@@ -76,6 +76,10 @@ func runInstallDocker(ctx context.Context, arguments []string, output io.Writer)
 		return err
 	}
 	layout := localinstall.NewLayout(installRoot)
+	serverCertReplaced, err := ed25519Certificate(layout.TLSCert)
+	if err != nil {
+		return err
+	}
 	created, err := localinstall.EnsureMaterial(layout, time.Now())
 	if err != nil {
 		return err
@@ -84,6 +88,10 @@ func runInstallDocker(ctx context.Context, arguments []string, output io.Writer)
 		say(output, "material   reusing the existing TLS and SSH material under %s", installer.DisplayPath(installRoot))
 	}
 	for _, path := range created {
+		if path == layout.TLSCert && serverCertReplaced {
+			say(output, "material   replaced the Ed25519 certificate at %s with an ECDSA P-256 one; browsers and macOS curl do not accept Ed25519 in TLS", installer.DisplayPath(path))
+			continue
+		}
 		say(output, "material   created %s", installer.DisplayPath(path))
 	}
 
@@ -95,8 +103,18 @@ func runInstallDocker(ctx context.Context, arguments []string, output io.Writer)
 
 	storeOptions := localbao.Options{SigningKeyPath: layout.SigningKey, Output: output}
 	if *secretStore {
+		storeCertReplaced, err := ed25519Certificate(filepath.Join(installRoot, "openbao-tls", "tls.crt"))
+		if err != nil {
+			return err
+		}
 		if err := ensureStoreTLS(&storeOptions, ""); err != nil {
 			return err
+		}
+		if storeCertReplaced {
+			say(output, "material   replaced the Ed25519 certificate at %s with an ECDSA P-256 one", installer.DisplayPath(storeOptions.TLSCertPath))
+			if _, err := localbao.RestartContainer(ctx, storeOptions); err != nil {
+				return err
+			}
 		}
 		if err := localbao.Init(ctx, storeOptions); err != nil {
 			return fmt.Errorf("secret store setup: %w", err)
@@ -155,6 +173,18 @@ func runInstallDocker(ctx context.Context, arguments []string, output io.Writer)
 	say(output, "Running in the foreground. Press Ctrl-C to stop, or re-run with --launchd to keep it running.")
 	<-ctx.Done()
 	return nil
+}
+
+// ed25519Certificate reports whether a certificate exists at path and is one
+// the install will replace. Absent is not an error: it is the first run.
+func ed25519Certificate(path string) (bool, error) {
+	if _, err := os.Stat(path); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return false, nil
+		}
+		return false, err
+	}
+	return localinstall.CertificateIsEd25519(path)
 }
 
 func say(output io.Writer, format string, args ...any) {

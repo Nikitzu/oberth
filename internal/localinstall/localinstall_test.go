@@ -1,8 +1,11 @@
 package localinstall
 
 import (
+	"crypto/ed25519"
+	"crypto/rand"
 	"crypto/x509"
 	"encoding/pem"
+	"math/big"
 	"net"
 	"os"
 	"path/filepath"
@@ -171,5 +174,88 @@ func TestPushBannerNamesTheOneCommandThatMattersAndTheSetupItNeeds(t *testing.T)
 		if !strings.Contains(banner, expected) {
 			t.Fatalf("banner missing %q:\n%s", expected, banner)
 		}
+	}
+}
+
+// Safari, Chrome, Firefox and macOS curl do not accept an Ed25519 key in a
+// TLS handshake, so the dashboard was unreachable from a browser while every
+// Go client worked. ECDSA P-256 is accepted by all of them.
+func TestCertificatesAreECDSAAndAnEd25519OneIsReplaced(t *testing.T) {
+	layout := NewLayout(t.TempDir())
+	if _, err := EnsureMaterial(layout, time.Now()); err != nil {
+		t.Fatalf("EnsureMaterial: %v", err)
+	}
+	if algorithm := certificateAlgorithm(t, layout.TLSCert); algorithm != x509.ECDSA {
+		t.Fatalf("issued a %s certificate, want ECDSA", algorithm)
+	}
+
+	writeEd25519Certificate(t, layout.TLSCert, layout.TLSKey)
+	created, err := EnsureMaterial(layout, time.Now())
+	if err != nil {
+		t.Fatalf("EnsureMaterial: %v", err)
+	}
+	if algorithm := certificateAlgorithm(t, layout.TLSCert); algorithm != x509.ECDSA {
+		t.Fatalf("an Ed25519 certificate was kept: %s", algorithm)
+	}
+	if len(created) != 1 || created[0] != layout.TLSCert {
+		t.Fatalf("the replacement was not reported: %v", created)
+	}
+
+	storeCert := filepath.Join(layout.Root, "openbao-tls", "tls.crt")
+	storeKey := filepath.Join(layout.Root, "openbao-tls", "tls.key")
+	writeEd25519Certificate(t, storeCert, storeKey)
+	made, err := EnsureSelfSignedCertificate(storeCert, storeKey, "oberth-openbao", []string{"localhost"}, nil, time.Now())
+	if err != nil || !made {
+		t.Fatalf("EnsureSelfSignedCertificate over an Ed25519 certificate = (%v, %v), want a replacement", made, err)
+	}
+	if algorithm := certificateAlgorithm(t, storeCert); algorithm != x509.ECDSA {
+		t.Fatalf("the store's Ed25519 certificate was kept: %s", algorithm)
+	}
+	made, err = EnsureSelfSignedCertificate(storeCert, storeKey, "oberth-openbao", []string{"localhost"}, nil, time.Now())
+	if err != nil || made {
+		t.Fatalf("an ECDSA certificate was reissued: (%v, %v)", made, err)
+	}
+}
+
+func certificateAlgorithm(t *testing.T, path string) x509.PublicKeyAlgorithm {
+	t.Helper()
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	block, _ := pem.Decode(body)
+	if block == nil {
+		t.Fatalf("%s holds no PEM certificate", path)
+	}
+	certificate, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return certificate.PublicKeyAlgorithm
+}
+
+func writeEd25519Certificate(t *testing.T, certPath, keyPath string) {
+	t.Helper()
+	public, private, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	template := &x509.Certificate{SerialNumber: big.NewInt(1), NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour)}
+	der, err := x509.CreateCertificate(rand.Reader, template, template, public, private)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyDER, err := x509.MarshalPKCS8PrivateKey(private)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(certPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(certPath, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(keyPath, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER}), 0o600); err != nil {
+		t.Fatal(err)
 	}
 }

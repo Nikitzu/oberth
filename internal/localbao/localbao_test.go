@@ -3,6 +3,7 @@ package localbao
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -247,5 +248,45 @@ func TestUnsealSaysWhenTheKeychainHoldsNoKey(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), UnsealKeychainService) {
 		t.Fatalf("expected a message naming the keychain service, got %v", err)
+	}
+}
+
+// A reissued certificate is read by the container only on restart, and the
+// restart must be exactly that: no volume removed, no container recreated,
+// and nothing done when there is no container yet.
+func TestRestartContainerOnlyRestarts(t *testing.T) {
+	var commands [][]string
+	options := Options{Run: func(_ context.Context, _ string, args ...string) ([]byte, error) {
+		commands = append(commands, args)
+		if args[0] == "inspect" {
+			return []byte("true\n"), nil
+		}
+		return nil, nil
+	}}
+	restarted, err := RestartContainer(context.Background(), options)
+	if err != nil || !restarted {
+		t.Fatalf("RestartContainer = (%v, %v)", restarted, err)
+	}
+	if len(commands) != 2 || commands[1][0] != "restart" || commands[1][1] != DefaultContainer {
+		t.Fatalf("commands = %v, want inspect then restart %s", commands, DefaultContainer)
+	}
+	for _, command := range commands {
+		for _, word := range command {
+			if word == "rm" || word == "volume" || word == "run" {
+				t.Fatalf("a restart touched more than the container: %v", commands)
+			}
+		}
+	}
+
+	absent := Options{Run: func(_ context.Context, _ string, args ...string) ([]byte, error) {
+		if args[0] == "inspect" {
+			return nil, errors.New("no such container")
+		}
+		t.Fatalf("ran %v with no container present", args)
+		return nil, nil
+	}}
+	restarted, err = RestartContainer(context.Background(), absent)
+	if err != nil || restarted {
+		t.Fatalf("RestartContainer with no container = (%v, %v)", restarted, err)
 	}
 }
