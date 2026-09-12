@@ -1,5 +1,5 @@
 [core]
 	repositoryformatversion = 0
 [remote "origin"]
-	url = git@github.com:transferz/backoffice-portal.git
+	url = git@forge.example:acme/web-portal.git
 	fetch = +refs/heads/*:refs/remotes/origin/*

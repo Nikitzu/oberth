@@ -180,10 +180,10 @@ func TestAnUnknownLockfileVersionIsNotGuessedAt(t *testing.T) {
 func TestMavenSettingsTakesTheUsernameAndPasswordFields(t *testing.T) {
 	t.Parallel()
 	project := DetectProject(checkout(t, map[string]string{
-		"pom.xml": `<project><parent><groupId>com.transferz</groupId></parent>` +
+		"pom.xml": `<project><parent><groupId>com.acme</groupId></parent>` +
 			`<properties><java.version>21</java.version></properties></project>`,
 	}))
-	project.Org = "transferz"
+	project.Org = "acme"
 	yaml := Generate(project).YAML
 
 	for _, want := range []string{

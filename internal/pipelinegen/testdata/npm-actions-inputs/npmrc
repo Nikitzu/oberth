@@ -1,0 +1,3 @@
+@acme:registry=https://packages.forge.example
+
+//packages.forge.example/:_authToken=${GITHUB_TOKEN}

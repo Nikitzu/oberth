@@ -8,7 +8,7 @@ on:
 jobs:
   build:
     name: Build
-    uses: transferz/reusable-workflows/.github/workflows/node-build-deploy.yml@master
+    uses: acme/reusable-workflows/.github/workflows/node-build-deploy.yml@master
     with:
       GCR_REPOSITORY: 'portal-ui'
       HELM_VALUES_FOLDER: '${{ github.event.repository.name }}'

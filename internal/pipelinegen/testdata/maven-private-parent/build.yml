@@ -14,12 +14,12 @@ concurrency:
 jobs:
   build:
     name: Build
-    uses: transferz/reusable-workflows/.github/workflows/java-build-deploy.yml@stable
+    uses: acme/reusable-workflows/.github/workflows/java-build-deploy.yml@stable
     with:
       GCR_REPOSITORY: ${{ github.event.repository.name }}
       HELM_VALUES_FOLDER: ${{ github.event.repository.name }}
       JAVA_VERSION: ${{ vars.JAVA_25_VERSION }}
-      GATEWAY_URLS: '[{"url":"https://gateway.staging.transferz.com/bookings","description":"Staging environment"},{"url":"https://gateway.test.transferz.com/bookings","description":"Test environment"},{"url":"https://gateway.transferz.com/bookings","description":"Live environment"}]'
+      GATEWAY_URLS: '[{"url":"https://api.staging.forge.example/bookings","description":"Staging environment"},{"url":"https://api.test.forge.example/bookings","description":"Test environment"},{"url":"https://api.forge.example/bookings","description":"Live environment"}]'
       PUBLISH_TO_INTERNAL_README: "true"
     secrets:
       SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}

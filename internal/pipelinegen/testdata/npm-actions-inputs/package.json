@@ -1,5 +1,5 @@
 {
-  "name": "@transferz/backoffice-portal",
+  "name": "@acme/web-portal",
   "private": true,
   "scripts": {
     "dev:compose": "docker compose up --force-recreate --build",

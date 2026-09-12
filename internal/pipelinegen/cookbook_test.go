@@ -92,7 +92,7 @@ func TestRidesLikeIsAdmitted(t *testing.T) {
 // flag is not needed for any manager.
 func TestNoInvocationCarriesIfPresent(t *testing.T) {
 	t.Parallel()
-	for _, fixture := range []string{"npm-arch-lockfile", "pnpm-scoped-registry", "node"} {
+	for _, fixture := range []string{"npm-arch-lockfile", "pnpm-scoped-registry", "npm-actions-inputs"} {
 		if body := generateFor(t, fixture).YAML; strings.Contains(body, "--if-present") {
 			t.Errorf("%s: an --if-present survived into the generated pipeline", fixture)
 		}
@@ -182,7 +182,7 @@ func TestRidesLikeKeepsValidateGatesAndWarnsAboutTheNodeMajor(t *testing.T) {
 // map iteration order leaking into the output reports drift on every check.
 func TestGenerationIsByteStable(t *testing.T) {
 	t.Parallel()
-	for _, fixture := range []string{"npm-arch-lockfile", "pnpm-scoped-registry", "node", "maven"} {
+	for _, fixture := range []string{"npm-arch-lockfile", "pnpm-scoped-registry", "npm-actions-inputs", "maven-private-parent"} {
 		first := generateFor(t, fixture).YAML
 		for attempt := 0; attempt < 8; attempt++ {
 			if again := generateFor(t, fixture).YAML; again != first {

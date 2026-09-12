@@ -84,7 +84,7 @@ func admitGenerated(t *testing.T, document string) {
 
 func TestGeneratedNodePipelineIsAdmitted(t *testing.T) {
 	t.Parallel()
-	result := generateFor(t, "node")
+	result := generateFor(t, "npm-actions-inputs")
 	admitGenerated(t, result.YAML)
 
 	if !result.Complete {
@@ -121,17 +121,17 @@ func TestGeneratedNodePipelineIsAdmitted(t *testing.T) {
 
 func TestGeneratedNodePipelineDeclaresTheUpstreamTokenAndItsGrant(t *testing.T) {
 	t.Parallel()
-	result := generateFor(t, "node")
+	result := generateFor(t, "npm-actions-inputs")
 
-	if result.SecretPath != "oberth/upstream/transferz/github-token" {
+	if result.SecretPath != "oberth/upstream/acme/github-token" {
 		t.Fatalf("SecretPath = %q", result.SecretPath)
 	}
-	if !strings.Contains(result.YAML, "oberth.ci/secret-paths: oberth/upstream/transferz/github-token") {
+	if !strings.Contains(result.YAML, "oberth.ci/secret-paths: oberth/upstream/acme/github-token") {
 		t.Fatalf("the path must be declared in the workflow annotation:\n%s", result.YAML)
 	}
 	// Admission checks every `oberth secretstore exec --path` against the
 	// annotation, so the two spellings must be identical.
-	if !strings.Contains(result.YAML, "--path=oberth/upstream/transferz/github-token") {
+	if !strings.Contains(result.YAML, "--path=oberth/upstream/acme/github-token") {
 		t.Fatalf("the exec path must match the annotation:\n%s", result.YAML)
 	}
 	// The hierarchical namespace is authorized structurally, so the generated
@@ -151,7 +151,7 @@ func TestGeneratedNodePipelineDeclaresTheUpstreamTokenAndItsGrant(t *testing.T) 
 
 func TestGeneratedMavenPipelineIsAdmitted(t *testing.T) {
 	t.Parallel()
-	result := generateFor(t, "maven")
+	result := generateFor(t, "maven-private-parent")
 	admitGenerated(t, result.YAML)
 
 	if !result.Complete {
@@ -166,8 +166,8 @@ func TestGeneratedMavenPipelineIsAdmitted(t *testing.T) {
 	if !strings.Contains(result.YAML, "maven:3.9-eclipse-temurin-25@sha256:") {
 		t.Fatalf("JAVA_VERSION did not select the Java 25 image:\n%s", result.YAML)
 	}
-	// The parent is com.transferz, which does not resolve from Central.
-	if result.SecretPath != "oberth/upstream/transferz/github-token" {
+	// The parent is com.acme, which does not resolve from Central.
+	if result.SecretPath != "oberth/upstream/acme/github-token" {
 		t.Fatalf("a non-public parent must make the build credentialed, got %q", result.SecretPath)
 	}
 	if !strings.Contains(result.YAML, "mvn -B -ntp") {
@@ -181,7 +181,7 @@ func TestGeneratedMavenPipelineIsAdmitted(t *testing.T) {
 // the difference between a translation and a guess.
 func TestGeneratedPipelinesRecordWhatWasNotTranslated(t *testing.T) {
 	t.Parallel()
-	for _, fixture := range []string{"node", "maven"} {
+	for _, fixture := range []string{"npm-actions-inputs", "maven-private-parent"} {
 		t.Run(fixture, func(t *testing.T) {
 			t.Parallel()
 			result := generateFor(t, fixture)
@@ -262,7 +262,7 @@ func containsStep(steps []string, want string) bool {
 // at all, rather than produce a plausible wrong one.
 func TestDetectionDoesNotInventAnOrg(t *testing.T) {
 	t.Parallel()
-	project := DetectProject(materialize(t, "node"))
+	project := DetectProject(materialize(t, "npm-actions-inputs"))
 	if project.Org != "" {
 		t.Fatalf("detection guessed an org: %q", project.Org)
 	}
@@ -275,7 +275,7 @@ func TestDetectionDoesNotInventAnOrg(t *testing.T) {
 // enforced rather than silently using either.
 func TestADisagreementWithTheOriginIsSaidInTheFile(t *testing.T) {
 	t.Parallel()
-	project := DetectProject(materialize(t, "node"))
+	project := DetectProject(materialize(t, "npm-actions-inputs"))
 	project.Org = "acme"
 	document := Generate(project).YAML
 	if !strings.Contains(document, "acme") || !strings.Contains(document, project.OriginOrg) {
