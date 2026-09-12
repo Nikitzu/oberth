@@ -151,3 +151,15 @@ func TestOberthsOwnTrailerIsNotEvidence(t *testing.T) {
 		t.Errorf("the trailer alone was classified as a generator fault: %s", why)
 	}
 }
+
+func TestARunThatNeverReachedAStepIsTheServersFault(t *testing.T) {
+	t.Parallel()
+	run := remoteRun{Error: "dockerjob: this is a development build with no release image, and no --helper-source names the oberth source"}
+	class, why := classifyFailure(run, "")
+	if class != failureEngine {
+		t.Fatalf("classified as %d, want engine-class", class)
+	}
+	if !strings.Contains(why, "before any step") || !strings.Contains(why, "--helper-source") {
+		t.Fatalf("the reason does not say the run never started a step, or drops the server's error: %s", why)
+	}
+}

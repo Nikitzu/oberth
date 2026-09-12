@@ -135,6 +135,13 @@ var repositorySignatures = []struct {
 func classifyFailure(run remoteRun, logBody string) (failureClass, string) {
 	haystack := strings.ToLower(stripOberthTrailer(logBody) + "\n" + run.Error)
 
+	// A run that never reached a step failed in the server or its engine, and
+	// the repository had no say in it.
+	if strings.TrimSpace(run.FailedBurn) == "" && strings.TrimSpace(run.FailedStep) == "" &&
+		strings.TrimSpace(logBody) == "" && strings.TrimSpace(run.Error) != "" {
+		return failureEngine, "the run failed before any step started, which is this server's doing, not the repository's: " + strings.TrimSpace(run.Error)
+	}
+
 	// The repository speaks first. See repositorySignatures.
 	for _, signature := range repositorySignatures {
 		if matchesAny(haystack, signature.patterns) {
