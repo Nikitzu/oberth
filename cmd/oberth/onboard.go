@@ -319,6 +319,14 @@ from the repository so no credential is needed.
 		if strings.Contains(strings.ToLower(probe), "sealed") {
 			return errors.New("sealed, run: oberth unseal")
 		}
+		// A server older than this client probes with the cluster login on
+		// every engine, and on the docker engine that fails on the file only
+		// a kubelet writes. That says nothing about the store, so the check
+		// stops at "configured" and says so rather than refusing the push.
+		if board.engine == pipelinegen.EngineDocker && strings.Contains(probe, "kubernetes.io/serviceaccount") {
+			board.step("secret store is configured; this server's probe logs in the cluster way and cannot run on the docker engine, so nothing beyond that was checked (upgrade the server to probe it)")
+			return nil
+		}
 		if !strings.EqualFold(probe, "ready") && !strings.EqualFold(probe, "ok") {
 			return fmt.Errorf(`this pipeline needs a credential and the secret store is not answering: %s
 

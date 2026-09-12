@@ -351,6 +351,25 @@ func captureStderr(t *testing.T) func() string {
 	}
 }
 
+// A server that predates the engine-aware probe reports the kubelet token
+// error on the docker engine. That is the probe's limitation, not the
+// store's state, and it must not refuse the push.
+func TestOnboardTreatsTheClusterProbeOnDockerAsUnprobed(t *testing.T) {
+	state, _ := newOnboardServer(t, "docker")
+	state.storeProbe = "read ServiceAccount token for secret store login: open /var/run/secrets/kubernetes.io/serviceaccount/token: no such file or directory"
+	root := onboardCheckout(t, "git@forge.example:acme/service-ui.git")
+	writeScopedRegistry(t, root)
+
+	steps := captureStderr(t)
+	var out bytes.Buffer
+	if err := runOnboard(context.Background(), []string{root, "--dry-run"}, &out); err != nil {
+		t.Fatalf("an old server's cluster probe must not stop a docker onboarding: %v", err)
+	}
+	if !strings.Contains(steps(), "cannot run on the docker engine") {
+		t.Errorf("the limitation is not stated:\n%s", steps())
+	}
+}
+
 // A sealed store answered 500 to everything that touched it, and "internal
 // error" sent more than one session looking for a server fault.
 func TestOnboardSaysSealedRatherThanReportingAServerFault(t *testing.T) {
