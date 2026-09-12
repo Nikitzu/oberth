@@ -33,6 +33,21 @@ func TestClassifyGeneratorFaults(t *testing.T) {
 	}
 }
 
+// The docker engine started a credentialed step without the helper binary,
+// and the log's "Cannot find module '/run/oberth/bin/oberth'" was read as a
+// missing platform package. The pipeline was regenerated for nothing and
+// pushed again to a ref that had not moved.
+func TestAMissingHelperBinaryIsTheEnginesFaultNotAPlatformPackage(t *testing.T) {
+	t.Parallel()
+	class, why := classifyFailure(remoteRun{}, "Error: Cannot find module '/run/oberth/bin/oberth'\n  code: 'MODULE_NOT_FOUND'")
+	if class != failureEngine {
+		t.Fatalf("classified as %d, want engine-class", class)
+	}
+	if !strings.Contains(why, "oberth helper") {
+		t.Fatalf("the reason does not name the missing helper: %s", why)
+	}
+}
+
 func TestClassifyRepositoryFaults(t *testing.T) {
 	t.Parallel()
 	for name, body := range map[string]string{

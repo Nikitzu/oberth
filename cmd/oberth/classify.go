@@ -28,7 +28,27 @@ type failureClass int
 const (
 	failureRepository failureClass = iota
 	failureGenerator
+	// failureEngine is the server's: the step was started correctly and the
+	// engine did not give it something every credentialed step is owed. No
+	// regeneration can help, so it is reported once and the push is not
+	// repeated.
+	failureEngine
 )
+
+// engineSignatures are read before the generator's. A credentialed step is
+// started with the Oberth helper the engine mounts at /run/oberth/bin, and a
+// log saying that path does not exist is the engine's fault, not a missing
+// platform package, which is what "cannot find module" would otherwise mean.
+var engineSignatures = []struct {
+	patterns []string
+	why      string
+}{
+	{
+		patterns: []string{"/run/oberth/bin/oberth"},
+		why: "this server's engine did not deliver the oberth helper a credentialed step is started with, " +
+			"so no secret can be materialised; nothing in the pipeline can be regenerated around that, the server needs the fix",
+	},
+}
 
 // generatorSignatures are the log patterns that mean the pipeline, not the
 // code. Each carries the sentence printed when it matches, because a retry
@@ -119,6 +139,11 @@ func classifyFailure(run remoteRun, logBody string) (failureClass, string) {
 	for _, signature := range repositorySignatures {
 		if matchesAny(haystack, signature.patterns) {
 			return failureRepository, "That is the repository's own gate, not the pipeline's: " + signature.why + "."
+		}
+	}
+	for _, signature := range engineSignatures {
+		if matchesAny(haystack, signature.patterns) {
+			return failureEngine, signature.why
 		}
 	}
 	for _, signature := range generatorSignatures {

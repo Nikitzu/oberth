@@ -496,7 +496,7 @@ func (board *onboarder) classify(ctx context.Context, run remoteRun, document st
 	logBody := board.failedStepLog(ctx, run)
 	class, why := classifyFailure(run, logBody)
 
-	if class == failureRepository {
+	if class == failureRepository || class == failureEngine {
 		return fmt.Sprintf("red: %s failed at %s/%s. %s\n  oberth log %s --burn %s --step %s",
 			board.repo, run.FailedBurn, run.FailedStep, why, run.ID, run.FailedBurn, run.FailedStep), false
 	}
