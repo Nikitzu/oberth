@@ -13,6 +13,7 @@ and the `oberth` command. Use whichever this session has.
 
 ```
 oberth status                       # the deployment
+oberth wait <sha|run-id>            # block until a run is terminal, non-zero on red
 oberth runs                         # recent runs
 oberth run <id>                     # which burn and step failed
 oberth log <id> -pattern <re> -context 3

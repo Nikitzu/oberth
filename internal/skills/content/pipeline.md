@@ -9,6 +9,11 @@ A pipeline is a real Argo Workflow document at `.oberth/build.yaml` for a
 branch push, or `.oberth/release.yaml` for a tag. It is decoded strictly: an
 unknown field is an error, not an ignored line.
 
+`oberth onboard` writes the first version from the repository's own workflows
+and manifests and stores it on the server; edit by hand only when it needs
+something the generator did not see. The oberth-workflow skill covers the
+verbs around it.
+
 ## The gate refuses things, and each refusal has a reason
 
 The server reads one flat document and rejects every construct through which a

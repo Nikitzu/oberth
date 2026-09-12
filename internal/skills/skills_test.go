@@ -8,12 +8,12 @@ import (
 func TestListNamesEverySkillWithADescription(t *testing.T) {
 	t.Parallel()
 	all := List()
-	if len(all) != 4 {
-		t.Fatalf("listed %d skills, want 4: %v", len(all), names(all))
+	if len(all) != 5 {
+		t.Fatalf("listed %d skills, want 5: %v", len(all), names(all))
 	}
 	want := map[string]bool{
 		"oberth-triage": true, "oberth-pipeline": true,
-		"oberth-fragments": true, "oberth-release": true,
+		"oberth-fragments": true, "oberth-release": true, "oberth-workflow": true,
 	}
 	for _, skill := range all {
 		if !want[skill.Name] {
