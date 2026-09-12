@@ -90,6 +90,12 @@ engine ran it:
   token occupies in a cluster. The path name is a Kubernetes convention rather
   than a Kubernetes dependency, and using it is what lets the client and
   `secretstore exec` run byte for byte unchanged.
+* `/run/oberth/bin/oberth`, the helper the step is started with, is mounted
+  read-only from a per-version volume. A release fills that volume once from
+  its own image (`ghcr.io/.../oberth:<version>`, pulled for the daemon's
+  platform, copied out of a container that is never started); a development
+  build compiles it from the source named by `--helper-source` when a Go
+  toolchain is on PATH, and refuses a credentialed run otherwise.
 * An uncredentialed run gets none of it, not even the address.
 
 Declared paths are authorized before anything runs, by the same rules the Argo

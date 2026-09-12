@@ -37,6 +37,9 @@ func buildDockerEngine(
 		RunnerImagePrefixes: splitRunnerImagePrefixes(options.runnerImagePrefixes),
 		ArtifactsLimitBytes: artifactLimit,
 		SecretStore:         store,
+		Helper: dockerjob.HelperConfig{
+			ImageRef: imageRef, Version: version, SourceDir: strings.TrimSpace(options.helperSource),
+		},
 	})
 	if err != nil {
 		return nil, fmt.Errorf("configure docker execution engine: %w", err)

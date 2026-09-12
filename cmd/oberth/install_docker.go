@@ -52,6 +52,7 @@ func runInstallDocker(ctx context.Context, arguments []string, output io.Writer)
 	shellProfile := flags.String("shell-profile", "", "shell profile to add the client environment line to (for example ~/.zshrc); empty prints the line instead")
 	secretStore := flags.Bool("secretstore", false, "also run `secretstore init --engine=docker`, so credentialed pipelines work from the first push")
 	publishOnGreen := flags.Bool("publish-on-green", false, "publish a green run to the upstream automatically")
+	helperSource := flags.String("helper-source", "", "oberth source directory a development build compiles the credentialed-step helper from; a release needs none")
 	var releaseSecretPaths stringList
 	flags.Var(&releaseSecretPaths, "secretstore-path",
 		"system-namespace secret path a release pipeline may declare (repeatable, exactly as it appears in oberth.ci/secret-paths); "+
@@ -137,6 +138,13 @@ func runInstallDocker(ctx context.Context, arguments []string, output io.Writer)
 		return errors.New("install --engine=docker needs the docker CLI on PATH")
 	}
 	serveArguments := localServeArguments(layout, *httpsPort, *sshPort, *publishOnGreen, storeCA, releaseSecretPaths, dockerBinary)
+	if source := strings.TrimSpace(*helperSource); source != "" {
+		absolute, err := filepath.Abs(source)
+		if err != nil {
+			return fmt.Errorf("resolve --helper-source: %w", err)
+		}
+		serveArguments = append(serveArguments, "--helper-source="+absolute)
+	}
 
 	// The server has to be running before an uplink can be minted: the admin
 	// path talks to the live process's audit gate, which is exactly the point

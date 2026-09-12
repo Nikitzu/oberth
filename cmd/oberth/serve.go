@@ -117,6 +117,9 @@ type serveOptions struct {
 	// process. dockerBinary overrides the CLI the docker engine shells out to.
 	engine       string
 	dockerBinary string
+	// helperSource is the oberth source a development build compiles the
+	// credentialed-step helper from; a release takes it from its image.
+	helperSource string
 
 	// Argo execution engine. Leaving argoNamespace empty leaves the engine
 	// off entirely, which is the default: every repository then runs on the
@@ -185,6 +188,7 @@ func parseServeOptions(arguments []string, output io.Writer) (serveOptions, erro
 	flags.StringVar(&options.engine, "engine", engineArgo,
 		"execution engine: \"argo\" runs steps as Argo Workflows in Kubernetes; \"docker\" runs them as containers on a local Docker daemon and needs no cluster")
 	flags.StringVar(&options.dockerBinary, "docker-binary", "docker", "Docker CLI the --engine=docker backend shells out to")
+	flags.StringVar(&options.helperSource, "helper-source", "", "oberth source directory a development build compiles the credentialed-step helper from (--engine=docker only; a release takes it from its image)")
 	flags.StringVar(&options.runnerImagePrefixes, "runner-image-prefixes", strings.Join(periapsis.DefaultRunnerImagePrefixes, ","), "comma-separated allowlist of permitted runner image prefixes")
 	flags.Int64Var(&options.artifactsLimitBytes, "artifacts-limit-bytes", defaultArtifactsLimitBytes, "maximum total bytes of artifacts kept per run")
 	flags.Int64Var(&options.artifactsBudgetBytes, "artifacts-budget-bytes", defaultArtifactsBudgetBytes, "total artifact storage before the oldest runs are evicted")

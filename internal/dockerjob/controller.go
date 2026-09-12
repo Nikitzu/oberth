@@ -61,6 +61,9 @@ type Config struct {
 	// SecretStore carries the coordinates a credentialed run needs. Left
 	// empty, a pipeline declaring secret paths is refused at submission.
 	SecretStore SecretStoreConfig
+	// Helper says where the binary a credentialed step is started with
+	// comes from. See helper.go.
+	Helper HelperConfig
 }
 
 // Request is one submission, shaped like argojob.Request so the adapter layer
@@ -119,6 +122,11 @@ type Controller struct {
 
 	mu   sync.Mutex
 	jobs map[string]*job
+
+	// helperVolume is the name of the volume holding the credentialed-step
+	// helper once ensureHelper has run; empty before.
+	helperMu     sync.Mutex
+	helperVolume string
 }
 
 type job struct {
@@ -280,6 +288,15 @@ func (controller *Controller) execute(ctx context.Context, current *job, destina
 	}
 
 	if current.request.Credentialed {
+		if len(current.plan.Steps) == 0 {
+			err := errors.New("dockerjob: a credentialed run has no step")
+			completion.Reason = err.Error()
+			return completion, err
+		}
+		if err := controller.ensureHelper(ctx, current.plan.Steps[0].Image); err != nil {
+			completion.Reason = err.Error()
+			return completion, err
+		}
 		if err := controller.deliverIdentity(ctx, current); err != nil {
 			completion.Reason = err.Error()
 			return completion, err
@@ -515,6 +532,11 @@ func (controller *Controller) createArguments(request Request, step Step, attemp
 			"--volume", controller.identityVolumeName(request.Name)+":"+IdentityMountPath+":ro",
 			"--tmpfs", fmt.Sprintf("%s:rw,noexec,nosuid,nodev,mode=0700,size=%d", SecretsMountPath, secretsTmpfsBytes),
 		)
+		// The helper the step is started with, read-only, at the path the
+		// Argo engine delivers it. Only a credentialed step gets it.
+		if volume := controller.currentHelperVolume(); volume != "" {
+			arguments = append(arguments, "--volume", volume+":"+HelperMountPath+":ro")
+		}
 		// The store runs on the host's loopback, which from inside a container
 		// is the container itself. This is the one name that reaches it, and
 		// it is added only for a credentialed run: an uncredentialed step gets
@@ -977,4 +999,11 @@ func emit(destination io.Writer, step StepResult) {
 		return
 	}
 	_, _ = destination.Write(marker)
+}
+
+// currentHelperVolume is the helper volume ensureHelper recorded, or empty.
+func (controller *Controller) currentHelperVolume() string {
+	controller.helperMu.Lock()
+	defer controller.helperMu.Unlock()
+	return controller.helperVolume
 }
