@@ -25,6 +25,8 @@ oberth validate [--engine=docker]   # admit a pipeline document without pushing
 oberth secretstore put --engine=docker <path> field=value   # a credential a pipeline declares (docker engine)
 oberth unseal                       # the store came back sealed after a restart
 oberth status                       # the deployment: engine, store, upstreams, drift warnings
+oberth use <profile>                # this checkout pushes to that server from now on; no argument lists them
+oberth profile add <name> <url> --ca <file>   # a server this machine did not install
 ```
 
 `onboard` registers the repository, generates a pipeline from the repository's
@@ -58,8 +60,12 @@ The same binary serves both; the pipeline document is the same on both.
   document using a construct the engine refuses is rejected at submission;
   `oberth validate --engine=docker` finds that before a push.
 
-`oberth status` says which engine answers. The client environment file the
-install wrote (`~/.config/oberth/env`) selects the server; source it.
+`oberth status` says which engine answers. Each install writes a profile
+(`local` for a docker install, `server` or `--name` for a cluster) and the
+default one is what `~/.config/oberth/env` describes. A checkout pinned with
+`oberth use <profile>` talks to that server for every verb, whatever the shell
+environment says, and its `oberth` remote points there; the same repository
+can be onboarded on more than one server and switched between them.
 
 ## The completion gate
 

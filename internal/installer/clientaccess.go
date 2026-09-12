@@ -489,7 +489,7 @@ func certificateNamesNotYetIssued(ctx context.Context, cfg Config, deps Deps) []
 	if len(cfg.TLSExtraDNSNames) == 0 && len(cfg.TLSExtraIPs) == 0 {
 		return nil
 	}
-	pemBytes, err := serverCACertificate(ctx, cfg, deps)
+	pemBytes, err := serverLeafCertificate(ctx, cfg, deps)
 	if err != nil {
 		return nil // no certificate yet: a fresh install gets what it asked for
 	}
@@ -615,4 +615,25 @@ func mcpBodyFor(baseURL, tokenCommand string) []byte {
 		return nil
 	}
 	return body
+}
+
+// serverLeafCertificate is the certificate the server presents, which is the
+// one that carries the names; the signer above carries none.
+func serverLeafCertificate(ctx context.Context, cfg Config, deps Deps) ([]byte, error) {
+	if deps.KubeClient == nil {
+		return nil, errors.New("no cluster client")
+	}
+	ns := cfg.Namespace
+	if ns == "" {
+		ns = DefaultNamespace
+	}
+	secret, err := deps.KubeClient.CoreV1().Secrets(ns).Get(ctx, "oberth-tls", metav1.GetOptions{})
+	if err != nil {
+		return nil, err
+	}
+	leaf := secret.Data["tls.crt"]
+	if len(leaf) == 0 {
+		return nil, errors.New("oberth-tls holds no tls.crt")
+	}
+	return leaf, nil
 }

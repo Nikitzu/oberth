@@ -49,3 +49,7 @@ func DisplayPath(path string) string { return displayPath(path) }
 func AtomicWriteFile(path string, body []byte, mode os.FileMode) error {
 	return atomicWriteFile(path, body, mode)
 }
+
+// ShellProfilePath is the profile file the login shell reads, for the
+// clusterless install's --shell-profile yes.
+func ShellProfilePath(shell string) (string, error) { return shellProfilePath(Deps{}, shell) }

@@ -371,11 +371,14 @@ func isValidDNS1123Label(s string) bool {
 
 // Deps holds injectable dependencies for testing.
 type Deps struct {
-	Output         io.Writer
-	Input          io.Reader
-	RunHelm        func(ctx context.Context, args []string) ([]byte, error)
-	RunCommand     CommandRunner
-	RunInteractive InteractiveRunner
+	// HoldCredentials takes custody of the once-only init credentials the
+	// moment they exist, before anything that can still fail.
+	HoldCredentials func(ctx context.Context, initResult baoInitResult)
+	Output          io.Writer
+	Input           io.Reader
+	RunHelm         func(ctx context.Context, args []string) ([]byte, error)
+	RunCommand      CommandRunner
+	RunInteractive  InteractiveRunner
 	// PodLogs returns one pod's bounded bootstrap output. When nil, the
 	// Kubernetes REST client is used directly.
 	PodLogs    func(ctx context.Context, namespace, pod string) ([]byte, error)
@@ -462,6 +465,9 @@ type SecretStoreResult struct {
 	// duration of the process and nothing more.
 	client    openBaoExec
 	rootToken string
+	// unseal brings the store back with the key this install holds, for the
+	// one restart a fresh store makes between init and the first write.
+	unseal func(ctx context.Context) error
 }
 
 // OberthResult describes the outcome of the Oberth install phase.

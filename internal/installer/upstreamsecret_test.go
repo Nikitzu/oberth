@@ -3,6 +3,7 @@ package installer
 import (
 	"bytes"
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -139,5 +140,33 @@ func TestConfigureUpstreamTokenNonInteractiveWithoutStoreSaysSo(t *testing.T) {
 	}
 	if !strings.Contains(buf.String(), "private packages will not install") {
 		t.Fatalf("a missing store must be reported, got:\n%s", buf.String())
+	}
+}
+
+func TestSeedUpstreamTokenUnsealsOnceWhenTheStoreCameBackSealed(t *testing.T) {
+	t.Parallel()
+	const write = "write oberth/data/upstream/acme/github-token -"
+	runner := &fakeBaoRunner{t: t, responses: map[string]fakeBaoResponse{
+		write: {err: errors.New("Error writing data: Code: 503. Errors: * Vault is sealed")},
+	}}
+	store := storeForTest(runner)
+	unsealed := 0
+	store.unseal = func(context.Context) error {
+		unsealed++
+		runner.responses[write] = fakeBaoResponse{out: "{}"}
+		return nil
+	}
+	if err := seedUpstreamToken(context.Background(), store, "acme", "ghp_value"); err != nil {
+		t.Fatalf("the seed did not recover from the sealed window: %v", err)
+	}
+	if unsealed != 1 {
+		t.Fatalf("unsealed %d times, want exactly once", unsealed)
+	}
+
+	stuck := storeForTest(&fakeBaoRunner{t: t, responses: map[string]fakeBaoResponse{
+		write: {err: errors.New("Error writing data: Code: 503. Errors: * Vault is sealed")},
+	}})
+	if err := seedUpstreamToken(context.Background(), stuck, "acme", "ghp_value"); err == nil {
+		t.Fatal("a store with no unseal at hand must still report the sealed write")
 	}
 }

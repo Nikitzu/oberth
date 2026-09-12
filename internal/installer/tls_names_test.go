@@ -42,9 +42,23 @@ func secretWithCertificate(t *testing.T, dnsNames []string, ips []string) *corev
 	if err != nil {
 		t.Fatal(err)
 	}
+	signer := &x509.Certificate{
+		SerialNumber: big.NewInt(2),
+		Subject:      pkix.Name{CommonName: "oberth installer CA"},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(time.Hour),
+		IsCA:         true,
+	}
+	signerDER, err := x509.CreateCertificate(rand.Reader, signer, signer, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
 	return &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{Name: "oberth-tls", Namespace: "oberth"},
-		Data:       map[string][]byte{"tls.crt": pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})},
+		Data: map[string][]byte{
+			"tls.crt": pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}),
+			"ca.crt":  pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: signerDER}),
+		},
 	}
 }
 

@@ -508,6 +508,9 @@ func SetupProductionSecretStoreDeferred(ctx context.Context, cfg Config, interac
 		// process exits.
 		captured = &initResult
 		rootToken = initResult.RootToken
+		if quietDeps.HoldCredentials != nil {
+			quietDeps.HoldCredentials(ctx, initResult)
+		}
 		unsealStatus, err := client.unseal(ctx, initResult.UnsealKeysB64[0])
 		if err != nil {
 			return SecretStoreResult{}, captured, err
@@ -516,12 +519,29 @@ func SetupProductionSecretStoreDeferred(ctx context.Context, cfg Config, interac
 			return SecretStoreResult{}, captured, errors.New("OpenBao is still sealed after submitting the unseal key")
 		}
 	case status.Sealed:
-		return SecretStoreResult{}, nil, fmt.Errorf("OpenBao in namespace %s is initialized but sealed (the pod restarted). Unseal it with your saved unseal key:\n\n"+
-			"    kubectl exec -i -n %s %s -- bao operator unseal\n\nthen re-run oberth install",
-			openbao.Namespace, openbao.Namespace, client.pod)
+		key, readErr := readStoredSecret(ctx, quietDeps, openBaoUnsealKeyLocation)
+		if readErr != nil {
+			return SecretStoreResult{}, nil, fmt.Errorf("OpenBao in namespace %s is initialized but sealed (the pod restarted), and no unseal key is in %s. Unseal it with the key you kept:\n\n"+
+				"    kubectl exec -i -n %s %s -- bao operator unseal\n\nthen re-run oberth install",
+				openbao.Namespace, secretStoreDisplayName(quietDeps), openbao.Namespace, client.pod)
+		}
+		unsealStatus, unsealErr := client.unseal(ctx, key)
+		if unsealErr != nil || unsealStatus.Sealed {
+			return SecretStoreResult{}, nil, fmt.Errorf("OpenBao in namespace %s is sealed and the key in %s did not unseal it; the entry may belong to an earlier deployment of the store", openbao.Namespace, secretStoreDisplayName(quietDeps))
+		}
+		_, _ = fmt.Fprintf(interactiveDeps.Output, "OpenBao in namespace %s was sealed (the pod restarted); unsealed with the key from %s.\n", openbao.Namespace, secretStoreDisplayName(quietDeps))
+		fallthrough
 	default:
-		_, _ = fmt.Fprintln(interactiveDeps.Output, "OpenBao is already initialized and unsealed; skipping operator init (credentials were printed once at first initialization).")
 		rootToken = os.Getenv(baoTokenEnvVar)
+		if rootToken == "" {
+			if stored, readErr := readStoredSecret(ctx, quietDeps, openBaoRootTokenLocation); readErr == nil {
+				rootToken = stored
+				_, _ = fmt.Fprintf(interactiveDeps.Output, "OpenBao is already initialized and unsealed; using the root token from %s to verify the secret-store configuration.\n", secretStoreDisplayName(quietDeps))
+			}
+		}
+		if rootToken == "" {
+			_, _ = fmt.Fprintln(interactiveDeps.Output, "OpenBao is already initialized and unsealed; skipping operator init. The root token is not in this machine's secret store, so it is needed once to verify the configuration.")
+		}
 		if rootToken == "" && isInteractive(interactiveDeps) && interactiveDeps.ReadPassword != nil {
 			_, _ = fmt.Fprint(interactiveDeps.Output, "Root token (echo disabled): ")
 			tokenBytes, err := interactiveDeps.ReadPassword()
@@ -556,6 +576,25 @@ func SetupProductionSecretStoreDeferred(ctx context.Context, cfg Config, interac
 	if !configured.TrustedTransitVerified {
 		return SecretStoreResult{}, captured, errors.New("production secret-store setup completed without verified Transit provisioning")
 	}
+	configured.unseal = func(ctx context.Context) error {
+		key := ""
+		if captured != nil && len(captured.UnsealKeysB64) == 1 {
+			key = captured.UnsealKeysB64[0]
+		} else if stored, err := readStoredSecret(ctx, quietDeps, openBaoUnsealKeyLocation); err == nil {
+			key = stored
+		}
+		if key == "" {
+			return errors.New("no unseal key at hand")
+		}
+		status, err := client.unseal(ctx, key)
+		if err != nil {
+			return err
+		}
+		if status.Sealed {
+			return errors.New("still sealed")
+		}
+		return nil
+	}
 	return configured, captured, nil
 }
 
@@ -566,8 +605,13 @@ func SetupProductionSecretStoreDeferred(ctx context.Context, cfg Config, interac
 // (unseal, pod readiness, configuration) must still surface them through
 // the caller's deferred flush instead of losing them forever.
 func setupProductionSecretStoreCollect(ctx context.Context, cfg Config, interactiveDeps, quietDeps Deps, openbao OpenBaoResult, creds *heldCredentials) (SecretStoreResult, error) {
+	held := false
+	quietDeps.HoldCredentials = func(ctx context.Context, initResult baoInitResult) {
+		holdOpenBaoCredentials(ctx, quietDeps, initResult, creds)
+		held = true
+	}
 	configured, initResult, err := SetupProductionSecretStoreDeferred(ctx, cfg, interactiveDeps, quietDeps, openbao)
-	if initResult != nil {
+	if initResult != nil && !held {
 		holdOpenBaoCredentials(ctx, quietDeps, *initResult, creds)
 	}
 	return configured, err

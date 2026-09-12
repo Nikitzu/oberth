@@ -51,7 +51,7 @@ func runInstallDocker(ctx context.Context, arguments []string, output io.Writer)
 	httpsPort := flags.Int("https-port", defaultLocalHTTPSPort, "loopback port for the dashboard and the API")
 	sshPort := flags.Int("ssh-port", defaultLocalSSHPort, "loopback port for the Git ingest")
 	launchd := flags.Bool("launchd", false, "install a launchd agent that keeps the server running across logins, instead of running it in the foreground")
-	shellProfile := flags.String("shell-profile", "", "shell profile to add the client environment line to (for example ~/.zshrc); empty prints the line instead")
+	shellProfile := flags.String("shell-profile", "", "add the client environment line to your shell profile: yes (the login shell's own file), no, or a path such as ~/.zshrc; empty prints the line instead")
 	secretStore := flags.Bool("secretstore", false, "also run `secretstore init --engine=docker`, so credentialed pipelines work from the first push")
 	publishOnGreen := flags.Bool("publish-on-green", false, "publish a green run to the upstream automatically")
 	helperSource := flags.String("helper-source", "", "oberth source directory a development build compiles the credentialed-step helper from; a release needs none")
@@ -433,9 +433,20 @@ func writeClientAccess(ctx context.Context, output io.Writer, baseURL string,
 	say(output, "client     profile %s (default), %s", localProfileName, installer.DisplayPath(dir))
 	say(output, "client     %s", installer.DisplayPath(envPath))
 	line := localinstall.ShellProfileLine(envPath)
-	if strings.TrimSpace(shellProfile) == "" {
+	switch strings.ToLower(strings.TrimSpace(shellProfile)) {
+	case "":
 		say(output, "\nAdd this to your shell profile:\n\n    %s\n", line)
 		return nil
+	case "no":
+		say(output, "profile    not touched; source %s in shells that need it", installer.DisplayPath(envPath))
+		return nil
+	case "yes":
+		path, err := installer.ShellProfilePath(os.Getenv("SHELL"))
+		if err != nil {
+			say(output, "profile    %v; add this line yourself:\n\n    %s\n", err, line)
+			return nil
+		}
+		return appendShellProfileLine(output, path, line)
 	}
 	return appendShellProfileLine(output, shellProfile, line)
 }

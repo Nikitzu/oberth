@@ -60,9 +60,16 @@ func seedUpstreamToken(ctx context.Context, store SecretStoreResult, org, token 
 	if !storeReachable(store) {
 		return errors.New("no secret store to write to")
 	}
-	if err := store.client.writeJSON(ctx, store.rootToken, upstreamTokenAPIPath(org), map[string]any{
-		"data": map[string]any{"token": token},
-	}); err != nil {
+	payload := map[string]any{"data": map[string]any{"token": token}}
+	err := store.client.writeJSON(ctx, store.rootToken, upstreamTokenAPIPath(org), payload)
+	if err != nil && strings.Contains(strings.ToLower(err.Error()), "sealed") && store.unseal != nil {
+		// The store restarts once in a fresh install, between the operator init
+		// and this write, and comes back sealed. The key is in hand.
+		if store.unseal(ctx) == nil {
+			err = store.client.writeJSON(ctx, store.rootToken, upstreamTokenAPIPath(org), payload)
+		}
+	}
+	if err != nil {
 		// The error names the path, never the payload.
 		return fmt.Errorf("write %s: %w", upstreamTokenAPIPath(org), err)
 	}
