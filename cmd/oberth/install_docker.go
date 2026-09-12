@@ -408,6 +408,11 @@ func writeClientAccess(ctx context.Context, output io.Writer, baseURL string,
 		return fmt.Errorf("write %s: %w", caPath, err)
 	}
 	tokenCommand, tokenHint := installer.TokenCommandForHost(localProfileName)
+	if !minted {
+		if adopted, err := installer.AdoptUplinkToken(ctx, localProfileName); err == nil && adopted {
+			say(output, "token      adopted into profile %s", localProfileName)
+		}
+	}
 	if minted && strings.TrimSpace(token) != "" {
 		if err := installer.StoreUplinkToken(ctx, localProfileName, token); err != nil {
 			// Deliberately not the error: on macOS the secret store takes the

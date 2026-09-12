@@ -167,6 +167,11 @@ func runClientAccessOffer(ctx context.Context, cfg Config, deps Deps, tw *tableW
 	// Only on the path where a token was just minted: the other path runs
 	// against a deployment whose token this process never saw.
 	stored := false
+	if !freshToken {
+		if adopted, err := adoptUplinkTokenFor(ctx, deps, cfg.ProfileName); err == nil && adopted {
+			tw.AppendRow("Bearer token", "adopted into profile "+cfg.ProfileName, "✓ stored", false)
+		}
+	}
 	if freshToken && strings.TrimSpace(token) != "" {
 		if err := storeUplinkTokenFor(ctx, deps, cfg.ProfileName, token); err != nil {
 			// Deliberately not the error: the secret store takes the token as

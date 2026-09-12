@@ -94,6 +94,24 @@ func storeUplinkTokenFor(ctx context.Context, deps Deps, profile, token string) 
 	return storeSecret(ctx, deps, uplinkTokenLocationFor(profile), token)
 }
 
+// adoptUplinkTokenFor copies a token stored under the user's account by an
+// install from before profiles existed into the profile's own entry, so a
+// re-run that mints nothing still leaves the profile's token command
+// answering. A profile that already has its own entry is left alone.
+func adoptUplinkTokenFor(ctx context.Context, deps Deps, profile string) (bool, error) {
+	if strings.TrimSpace(profile) == "" {
+		return false, nil
+	}
+	if _, err := readStoredSecret(ctx, deps, uplinkTokenLocationFor(profile)); err == nil {
+		return false, nil
+	}
+	legacy, err := readStoredSecret(ctx, deps, uplinkTokenLocation)
+	if err != nil {
+		return false, err
+	}
+	return true, storeSecret(ctx, deps, uplinkTokenLocationFor(profile), legacy)
+}
+
 // storeSecret writes one credential to the host's secret store.
 //
 // The value is written to the store's standard input wherever the store reads
@@ -175,7 +193,7 @@ func readStoredSecret(ctx context.Context, deps Deps, where secretLocation) (str
 		// they typed, and refusing to find it would make the installer's own
 		// convention the only one that works.
 		out, err := run(ctx, nil, "security", "find-generic-password", "-s", where.service, "-a", account, "-w")
-		if err != nil {
+		if err != nil && where.account == "" {
 			out, err = run(ctx, nil, "security", "find-generic-password", "-s", where.service, "-w")
 		}
 		if err != nil {

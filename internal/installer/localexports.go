@@ -53,3 +53,8 @@ func AtomicWriteFile(path string, body []byte, mode os.FileMode) error {
 // ShellProfilePath is the profile file the login shell reads, for the
 // clusterless install's --shell-profile yes.
 func ShellProfilePath(shell string) (string, error) { return shellProfilePath(Deps{}, shell) }
+
+// AdoptUplinkToken copies a pre-profile token into the profile's own entry.
+func AdoptUplinkToken(ctx context.Context, profile string) (bool, error) {
+	return adoptUplinkTokenFor(ctx, Deps{}, profile)
+}

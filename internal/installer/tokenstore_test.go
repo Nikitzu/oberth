@@ -155,3 +155,36 @@ func TestAMissingEntryIsReportedAsNotStored(t *testing.T) {
 		t.Fatalf("err = %v, want errNoSecretStore", err)
 	}
 }
+
+func TestAPreProfileTokenIsAdoptedIntoTheProfileEntryOnce(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("the Keychain path is macOS only")
+	}
+	var calls []string
+	deps := Deps{RunCommand: func(_ context.Context, _ []byte, name string, args ...string) ([]byte, error) {
+		joined := strings.Join(append([]string{name}, args...), " ")
+		calls = append(calls, joined)
+		switch {
+		case strings.Contains(joined, "find-generic-password") && strings.Contains(joined, "-a server"):
+			return nil, errSecretNotStored
+		case strings.Contains(joined, "find-generic-password"):
+			return []byte("legacy-token\n"), nil
+		}
+		return nil, nil
+	}}
+	adopted, err := adoptUplinkTokenFor(context.Background(), deps, "server")
+	if err != nil || !adopted {
+		t.Fatalf("adopted=%v err=%v, calls=%v", adopted, err, calls)
+	}
+	last := calls[len(calls)-1]
+	if !strings.Contains(last, "add-generic-password") || !strings.Contains(last, "-a server") || !strings.Contains(last, "legacy-token") {
+		t.Fatalf("the legacy token was not written under the profile account: %s", last)
+	}
+
+	present := Deps{RunCommand: func(_ context.Context, _ []byte, name string, args ...string) ([]byte, error) {
+		return []byte("already\n"), nil
+	}}
+	if adopted, err := adoptUplinkTokenFor(context.Background(), present, "server"); err != nil || adopted {
+		t.Fatalf("a profile that already has a token must be left alone: adopted=%v err=%v", adopted, err)
+	}
+}
