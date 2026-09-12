@@ -83,6 +83,10 @@ type Config struct {
 	CACertPEM []byte
 	// ServiceAccountTokenPath overrides the projected token location.
 	ServiceAccountTokenPath string
+	// Identity, when set, supplies the JWT for each login instead of the
+	// file at ServiceAccountTokenPath. The docker engine has no kubelet to
+	// project a token, so the server mints one and logs in at a jwt mount.
+	Identity func(context.Context) ([]byte, error)
 	// Timeout bounds each HTTP round trip.
 	Timeout time.Duration
 	// TransitMountPath is the administrator-owned transit engine mount used
@@ -99,6 +103,7 @@ type Client struct {
 	mount         string
 	role          string
 	tokenPath     string
+	identity      func(context.Context) ([]byte, error)
 	transit       string
 	transitKey    string
 	verifiedHTTPS bool
@@ -197,7 +202,7 @@ func New(config Config) (*Client, error) {
 	apiClient.ClearToken()
 	apiClient.ClearNamespace()
 	return &Client{
-		api: apiClient, mount: mount, role: role, tokenPath: tokenPath,
+		api: apiClient, mount: mount, role: role, tokenPath: tokenPath, identity: config.Identity,
 		transit: transit, transitKey: transitKey, verifiedHTTPS: parsed.Scheme == "https",
 	}, nil
 }
@@ -400,7 +405,7 @@ func (client *Client) FetchKV(ctx context.Context, paths []string) (map[string]m
 }
 
 func (client *Client) login(ctx context.Context) (*vaultapi.Client, error) {
-	token, err := client.serviceAccountToken()
+	token, err := client.loginIdentity(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -484,6 +489,22 @@ func (client *Client) readKV(ctx context.Context, session *vaultapi.Client, path
 		size += len(text)
 	}
 	return values, size, nil
+}
+
+// loginIdentity is the JWT this login presents: minted by the caller when it
+// said so, read from the projected ServiceAccount file otherwise.
+func (client *Client) loginIdentity(ctx context.Context) ([]byte, error) {
+	if client.identity == nil {
+		return client.serviceAccountToken()
+	}
+	token, err := client.identity(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("mint identity for secret store login: %w", err)
+	}
+	if len(bytes.TrimSpace(token)) == 0 {
+		return nil, errors.New("minted identity for secret store login is empty")
+	}
+	return token, nil
 }
 
 func (client *Client) serviceAccountToken() ([]byte, error) {

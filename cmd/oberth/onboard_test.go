@@ -287,6 +287,70 @@ func TestOnboardStopsWhenADeclaredSecretCannotBeSatisfied(t *testing.T) {
 	}
 }
 
+// On the docker engine nothing seeds the org token: `oberth install` mints
+// no forge token there, so the advice has to name `secretstore put`, and the
+// argo advice about re-running the install would send the operator to a
+// command that cannot help.
+func TestOnboardSeedingAdviceNamesTheDockerCommand(t *testing.T) {
+	state, _ := newOnboardServer(t, "docker")
+	state.noSecretStore = true
+	root := onboardCheckout(t, "git@forge.example:acme/service-ui.git")
+	writeScopedRegistry(t, root)
+
+	var out bytes.Buffer
+	err := runOnboard(context.Background(), []string{root, "--dry-run"}, &out)
+	if err == nil {
+		t.Fatal("a declared credential that cannot be satisfied must stop onboarding")
+	}
+	if !strings.Contains(err.Error(), "oberth secretstore put --engine=docker oberth/upstream/acme/github-token token=") {
+		t.Errorf("the docker seeding command is missing:\n%s", err)
+	}
+	if strings.Contains(err.Error(), "GITHUB_TOKEN") {
+		t.Errorf("the argo install advice was given on the docker engine:\n%s", err)
+	}
+}
+
+// The probe proves a store is configured, unsealed and accepting the
+// server's own login. It does not prove the path exists, and the step must
+// say so rather than let a green check read as "the token is there".
+func TestOnboardSaysThePathItselfIsNotChecked(t *testing.T) {
+	_, _ = newOnboardServer(t, "docker")
+	root := onboardCheckout(t, "git@forge.example:acme/service-ui.git")
+	writeScopedRegistry(t, root)
+
+	steps := captureStderr(t)
+	var out bytes.Buffer
+	if err := runOnboard(context.Background(), []string{root, "--dry-run"}, &out); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(steps(), "whether oberth/upstream/acme/github-token exists is not checked") {
+		t.Errorf("the limit of the check is not stated:\n%s", steps())
+	}
+}
+
+// captureStderr swaps the process's stderr, where the step narration goes,
+// for a file, and returns a reader of what was written so far.
+func captureStderr(t *testing.T) func() string {
+	t.Helper()
+	file, err := os.CreateTemp(t.TempDir(), "stderr")
+	if err != nil {
+		t.Fatal(err)
+	}
+	previous := os.Stderr
+	os.Stderr = file
+	t.Cleanup(func() {
+		os.Stderr = previous
+		_ = file.Close()
+	})
+	return func() string {
+		body, err := os.ReadFile(file.Name())
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(body)
+	}
+}
+
 // A sealed store answered 500 to everything that touched it, and "internal
 // error" sent more than one session looking for a server fault.
 func TestOnboardSaysSealedRatherThanReportingAServerFault(t *testing.T) {

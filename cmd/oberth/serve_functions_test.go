@@ -6,6 +6,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	cryptorand "crypto/rand"
+	"crypto/rsa"
 	"crypto/x509"
 	"encoding/pem"
 	"errors"
@@ -20,6 +21,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/oberthci/oberth/internal/dockerjob"
 	"github.com/oberthci/oberth/internal/secretstore"
 	"github.com/oberthci/oberth/internal/service"
 	"github.com/oberthci/oberth/internal/store"
@@ -128,6 +130,61 @@ func TestSecretStoreStatusConfiguredInsecureHTTP(t *testing.T) {
 	if status.AuthMount != secretstore.DefaultAuthMountPath {
 		t.Fatalf("empty mount fallback = %q, want %q", status.AuthMount, secretstore.DefaultAuthMountPath)
 	}
+}
+
+// The docker engine logs in at the jwt mount with a minted identity, and the
+// status page must say so: an operator reading "kubernetes" on a clusterless
+// server is being told the wrong thing.
+func TestSecretStoreStatusOnDockerReportsTheJWTMount(t *testing.T) {
+	t.Parallel()
+	status := secretStoreStatus(serveOptions{
+		engine:               engineDocker,
+		secretStoreAddress:   "https://127.0.0.1:8200",
+		secretStoreAuthMount: secretstore.DefaultAuthMountPath,
+		secretStoreRole:      dockerjob.DefaultCIRole,
+	})
+	if status.AuthMount != dockerjob.DefaultJWTAuthMount || status.Role != dockerjob.DefaultCIRole {
+		t.Fatalf("docker status = %+v", status)
+	}
+}
+
+// The probe on the docker engine mints its own identity and logs in at the
+// jwt mount; it must not go looking for a kubelet-projected token.
+func TestDockerProbeClientMintsAnIdentityAtTheJWTMount(t *testing.T) {
+	t.Parallel()
+	keyPath := writeTestSigningKey(t)
+	client, err := buildSecretStoreProbeClient(serveOptions{
+		engine:                   engineDocker,
+		secretStoreAddress:       "https://127.0.0.1:8200",
+		secretStoreAuthMount:     secretstore.DefaultAuthMountPath,
+		secretStoreRole:          dockerjob.DefaultCIRole,
+		secretStoreJWTSigningKey: keyPath,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if client.AuthMountPath() != dockerjob.DefaultJWTAuthMount {
+		t.Fatalf("probe mount = %q, want %q", client.AuthMountPath(), dockerjob.DefaultJWTAuthMount)
+	}
+	if _, err := buildSecretStoreProbeClient(serveOptions{
+		engine: engineDocker, secretStoreAddress: "https://127.0.0.1:8200", secretStoreRole: dockerjob.DefaultCIRole,
+	}); err == nil {
+		t.Fatal("a docker probe with no signing key must fail to build, not fall back to the kubelet path")
+	}
+}
+
+func writeTestSigningKey(t *testing.T) string {
+	t.Helper()
+	key, err := rsa.GenerateKey(cryptorand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "jwt-signing.pem")
+	body := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)})
+	if err := os.WriteFile(path, body, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
 }
 
 func TestWaitForAuditIntegrityImmediateSuccess(t *testing.T) {

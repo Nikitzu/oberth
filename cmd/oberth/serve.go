@@ -1533,8 +1533,14 @@ func waitForAuditIntegrity(ctx context.Context, gate func(context.Context) error
 }
 
 // buildSecretStoreProbeClient constructs a dedicated secretstore.Client for the
-// status-page login probe. The probe exercises SA → K8s-auth login → logout
+// status-page login probe. The probe exercises identity → login → logout
 // only; it never reads KV paths or transit keys.
+//
+// The identity is the engine's own: the projected ServiceAccount token on a
+// cluster, a server-minted CI-tier JWT at the jwt mount on the docker engine.
+// The probe used the cluster path on both, so a clusterless server reported
+// its store as not answering with an error about a file only a kubelet
+// writes, and `oberth onboard` refused every credentialed pipeline on it.
 func buildSecretStoreProbeClient(options serveOptions) (*secretstore.Client, error) {
 	config := secretstore.Config{
 		Address:                 options.secretStoreAddress,
@@ -1542,6 +1548,20 @@ func buildSecretStoreProbeClient(options serveOptions) (*secretstore.Client, err
 		AuthMountPath:           options.secretStoreAuthMount,
 		Role:                    options.secretStoreRole,
 		ServiceAccountTokenPath: options.secretStoreSAToken,
+	}
+	if options.engine == engineDocker {
+		minter, err := secretstore.NewJWTMinter(options.secretStoreJWTSigningKey)
+		if err != nil {
+			return nil, err
+		}
+		config.AuthMountPath = dockerjob.DefaultJWTAuthMount
+		config.Identity = func(ctx context.Context) ([]byte, error) {
+			token, err := minter.Mint(ctx, options.secretStoreRole, "", "", "status-probe")
+			if err != nil {
+				return nil, err
+			}
+			return []byte(token), nil
+		}
 	}
 	if options.secretStoreCACert != "" {
 		caPEM, err := readBoundedFile(options.secretStoreCACert, 4<<20)
@@ -1568,6 +1588,9 @@ func secretStoreStatus(options serveOptions) *app.SecretStoreStatus {
 	mount := options.secretStoreAuthMount
 	if mount == "" {
 		mount = secretstore.DefaultAuthMountPath
+	}
+	if options.engine == engineDocker {
+		mount = dockerjob.DefaultJWTAuthMount
 	}
 	return &app.SecretStoreStatus{
 		Configured: true,

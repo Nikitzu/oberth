@@ -9,6 +9,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"io"
 	"math/big"
 	"net/http"
@@ -40,7 +41,12 @@ func newMockVault(t *testing.T) *mockVault {
 	t.Helper()
 	mock := &mockVault{}
 	handler := http.NewServeMux()
-	handler.HandleFunc("PUT /v1/auth/kubernetes/login", func(writer http.ResponseWriter, request *http.Request) {
+	handler.HandleFunc("PUT /v1/auth/{mount}/login", func(writer http.ResponseWriter, request *http.Request) {
+		if mount := request.PathValue("mount"); mount != "kubernetes" && mount != "jwt" {
+			writer.WriteHeader(http.StatusNotFound)
+			_, _ = writer.Write([]byte(`{"errors":["no handler for route"]}`))
+			return
+		}
 		var body map[string]any
 		if err := json.NewDecoder(request.Body).Decode(&body); err != nil || body["jwt"] != testServiceJWT {
 			mock.badLogins.Add(1)
@@ -661,5 +667,51 @@ func TestVerifyLoginFailsWithTLSError(t *testing.T) {
 	}
 	if err := client.VerifyLogin(context.Background()); err == nil {
 		t.Fatal("VerifyLogin must fail with TLS certificate validation failure")
+	}
+}
+
+// The docker engine has no kubelet to project a token, so the server mints
+// its own identity and logs in at the jwt mount. The client must take that
+// identity from the caller rather than from a file that does not exist.
+func TestIdentityReplacesTheProjectedTokenFile(t *testing.T) {
+	t.Parallel()
+	mock := newMockVault(t)
+	config := mock.config()
+	config.AuthMountPath = "jwt"
+	config.ServiceAccountTokenPath = filepath.Join(t.TempDir(), "absent")
+	minted := 0
+	config.Identity = func(context.Context) ([]byte, error) {
+		minted++
+		return []byte(testServiceJWT), nil
+	}
+	client, err := New(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := client.VerifyLogin(context.Background()); err != nil {
+		t.Fatalf("VerifyLogin() with a minted identity = %v", err)
+	}
+	if minted != 1 || mock.logins.Load() != 1 {
+		t.Fatalf("minted=%d logins=%d, want 1/1", minted, mock.logins.Load())
+	}
+}
+
+func TestIdentityFailureIsReportedAsALoginFailure(t *testing.T) {
+	t.Parallel()
+	mock := newMockVault(t)
+	config := mock.config()
+	config.Identity = func(context.Context) ([]byte, error) {
+		return nil, errors.New("signing key unreadable")
+	}
+	client, err := New(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = client.VerifyLogin(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "signing key unreadable") || !strings.Contains(err.Error(), "login") {
+		t.Fatalf("VerifyLogin() = %v, want the identity failure named as a login failure", err)
+	}
+	if mock.logins.Load() != 0 {
+		t.Fatal("a login was attempted with no identity")
 	}
 }

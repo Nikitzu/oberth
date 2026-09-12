@@ -313,7 +313,7 @@ Every run would fail at the install step with an authentication error. Either
 configure a secret store and seed that path, or remove the private registry
 from the repository so no credential is needed.
 
-%s`, result.SecretPath, seedingAdvice(result.SecretPath, board.org, board.repo))
+%s`, result.SecretPath, seedingAdvice(result.SecretPath, board.org, board.repo, board.engine))
 	}
 	if probe := strings.TrimSpace(status.SecretStore.Probe); probe != "" {
 		if strings.Contains(strings.ToLower(probe), "sealed") {
@@ -324,10 +324,10 @@ from the repository so no credential is needed.
 
   needed: %s
 
-%s`, probe, result.SecretPath, seedingAdvice(result.SecretPath, board.org, board.repo))
+%s`, probe, result.SecretPath, seedingAdvice(result.SecretPath, board.org, board.repo, board.engine))
 		}
 	}
-	board.step("secret store is configured and answering")
+	board.step("secret store is configured and answering the server's login; whether %s exists is not checked here", result.SecretPath)
 	return nil
 }
 
@@ -335,17 +335,25 @@ from the repository so no credential is needed.
 //
 // The two namespaces are seeded differently and confusing them wastes a cycle.
 // An org-scoped path is what `oberth install` writes for the whole
-// organization, and it is the only path this generator ever declares. A
-// repo-scoped path only appears in a hand-written document, and seeding it is
-// deliberately an operator's step: the server holds read-only access to the
-// store and widening that so a client could seed a path would hand every
-// onboarding the ability to write credentials.
-func seedingAdvice(path, org, repo string) string {
+// organization on a cluster, and it is the only path this generator ever
+// declares. A repo-scoped path only appears in a hand-written document, and
+// seeding it is deliberately an operator's step: the server holds read-only
+// access to the store and widening that so a client could seed a path would
+// hand every onboarding the ability to write credentials.
+//
+// The engine decides the command. The clusterless install seeds nothing,
+// because a forge token there is a person's; `secretstore put` writes it.
+func seedingAdvice(path, org, repo string, engine pipelinegen.Engine) string {
 	repoScoped := "oberth/upstream/" + org + "/" + repo + "/"
 	if strings.HasPrefix(path, repoScoped) {
 		return "That is a repository-scoped path, which nothing seeds automatically. Write it into\n" +
 			"the store as an operator, or declare the organization-scoped path instead:\n" +
 			"  oberth/upstream/" + org + "/" + strings.TrimPrefix(path, repoScoped)
+	}
+	if engine == pipelinegen.EngineDocker {
+		return "That is the organization-scoped path for this org's forge token. Seed it with:\n" +
+			"  oberth secretstore put --engine=docker " + path + " token=<forge token>\n" +
+			"(add --root <install root> if the server was installed outside ~/.oberth/local)"
 	}
 	return "That is the organization-scoped path `oberth install` seeds. Re-run the install with\n" +
 		"the forge token in $GITHUB_TOKEN to write it."
