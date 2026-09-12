@@ -392,6 +392,42 @@ func (board *onboarder) ensureRemote() error {
 		}
 		board.step("remote oberth updated to %s", want)
 	}
+	return board.ensureSSHCommand()
+}
+
+// sshCommandEnv is what a clusterless install exports for pushes to its own
+// server; a cluster install leaves it unset and the checkout is not touched.
+const sshCommandEnv = "OBERTH_SSH_COMMAND"
+
+// sshCommandOwnerKey marks a core.sshCommand this tool wrote, so a later run
+// may replace it and a value a person set is never overwritten.
+const sshCommandOwnerKey = "oberth.sshCommandManaged"
+
+// ensureSSHCommand points git at the identity and host key the install
+// minted. Without it the first push offers the agent's keys and is refused,
+// and the server's host key prompts, which no one-line onboarding survives.
+func (board *onboarder) ensureSSHCommand() error {
+	want := strings.TrimSpace(os.Getenv(sshCommandEnv))
+	if want == "" {
+		return nil
+	}
+	existing, _ := board.git("config", "--local", "--get", "core.sshCommand")
+	switch {
+	case strings.TrimSpace(existing) == want:
+		return nil
+	case strings.TrimSpace(existing) != "":
+		if managed, _ := board.git("config", "--local", "--get", sshCommandOwnerKey); strings.TrimSpace(managed) != "true" {
+			board.step("core.sshCommand is already set in this checkout and was not written by oberth, so it is left alone; pushes to the oberth remote use it")
+			return nil
+		}
+	}
+	if _, err := board.git("config", "--local", "core.sshCommand", want); err != nil {
+		return fmt.Errorf("set core.sshCommand for the oberth remote: %w", err)
+	}
+	if _, err := board.git("config", "--local", sshCommandOwnerKey, "true"); err != nil {
+		return fmt.Errorf("mark core.sshCommand as oberth's: %w", err)
+	}
+	board.step("core.sshCommand set to the install's client key and host key")
 	return nil
 }
 

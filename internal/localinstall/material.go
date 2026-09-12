@@ -24,6 +24,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"golang.org/x/crypto/ssh"
@@ -44,24 +45,28 @@ type Layout struct {
 	Upstream   string
 	KnownHosts string
 	ClientKey  string
-	Logs       string
-	SigningKey string
+	// ClientKnownHosts pins this server's own host key for the client side,
+	// so a push over the oberth remote verifies without a first-use prompt.
+	ClientKnownHosts string
+	Logs             string
+	SigningKey       string
 }
 
 // NewLayout derives every path from the install root.
 func NewLayout(root string) Layout {
 	return Layout{
-		Root:       root,
-		Data:       filepath.Join(root, "data"),
-		Database:   filepath.Join(root, "data", "oberth.sqlite"),
-		TLSCert:    filepath.Join(root, "tls", "tls.crt"),
-		TLSKey:     filepath.Join(root, "tls", "tls.key"),
-		SSHHostKey: filepath.Join(root, "ssh", "ssh_host_key"),
-		Upstream:   filepath.Join(root, "ssh", "upstream_key"),
-		KnownHosts: filepath.Join(root, "ssh", "known_hosts"),
-		ClientKey:  filepath.Join(root, "ssh", "client_key"),
-		Logs:       filepath.Join(root, "server.log"),
-		SigningKey: filepath.Join(root, "jwt-signing.pem"),
+		Root:             root,
+		Data:             filepath.Join(root, "data"),
+		Database:         filepath.Join(root, "data", "oberth.sqlite"),
+		TLSCert:          filepath.Join(root, "tls", "tls.crt"),
+		TLSKey:           filepath.Join(root, "tls", "tls.key"),
+		SSHHostKey:       filepath.Join(root, "ssh", "ssh_host_key"),
+		Upstream:         filepath.Join(root, "ssh", "upstream_key"),
+		KnownHosts:       filepath.Join(root, "ssh", "known_hosts"),
+		ClientKey:        filepath.Join(root, "ssh", "client_key"),
+		ClientKnownHosts: filepath.Join(root, "ssh", "client_known_hosts"),
+		Logs:             filepath.Join(root, "server.log"),
+		SigningKey:       filepath.Join(root, "jwt-signing.pem"),
 	}
 }
 
@@ -241,4 +246,69 @@ func ensureSSHKey(path string) (bool, error) {
 		return false, fmt.Errorf("localinstall: write %s.pub: %w", path, err)
 	}
 	return true, nil
+}
+
+// WriteClientKnownHosts records the server's host key for the address clients
+// push to, derived from the host key on disk rather than scanned over the
+// network, so the client never has to answer a first-use prompt and never
+// trusts anything but the key this install generated. Rewritten on every
+// install so a changed port or key is picked up.
+func WriteClientKnownHosts(layout Layout, host string, port int) error {
+	body, err := os.ReadFile(layout.SSHHostKey) // #nosec G304 -- the host key this install manages.
+	if err != nil {
+		return fmt.Errorf("localinstall: read %s: %w", layout.SSHHostKey, err)
+	}
+	private, err := ssh.ParseRawPrivateKey(body)
+	if err != nil {
+		return fmt.Errorf("localinstall: parse %s: %w", layout.SSHHostKey, err)
+	}
+	signer, err := ssh.NewSignerFromKey(private)
+	if err != nil {
+		return fmt.Errorf("localinstall: derive the public half of %s: %w", layout.SSHHostKey, err)
+	}
+	line := fmt.Sprintf("[%s]:%d %s", host, port, strings.TrimSpace(string(ssh.MarshalAuthorizedKey(signer.PublicKey()))))
+	if err := os.WriteFile(layout.ClientKnownHosts, []byte(line+"\n"), 0o600); err != nil {
+		return fmt.Errorf("localinstall: write %s: %w", layout.ClientKnownHosts, err)
+	}
+	return nil
+}
+
+// ClientSSHCommand is the GIT_SSH_COMMAND a checkout pushes with. It is a
+// wrapper rather than a bare ssh line because core.sshCommand applies to every
+// remote in a repository: pinning the install's key and host file directly
+// would break the checkout's pushes to its forge. The wrapper applies them
+// only when the target is this server and runs plain ssh otherwise.
+func ClientSSHCommand(layout Layout) string {
+	return filepath.Join(filepath.Dir(layout.ClientKey), "git-ssh")
+}
+
+// WriteClientSSHWrapper writes the wrapper ClientSSHCommand names.
+func WriteClientSSHWrapper(layout Layout, host string) error {
+	script := fmt.Sprintf(`#!/bin/sh
+# Written by oberth install. A push to this machine's Oberth server uses the
+# key and the host file the install minted; every other host gets plain ssh.
+for argument in "$@"; do
+  case "$argument" in
+    %s|*@%s) exec ssh -i %q -o IdentitiesOnly=yes -o UserKnownHostsFile=%q "$@" ;;
+  esac
+done
+exec ssh "$@"
+`, host, host, layout.ClientKey, layout.ClientKnownHosts)
+	if err := os.WriteFile(ClientSSHCommand(layout), []byte(script), 0o700); err != nil { // #nosec G306 -- an executable the user runs.
+		return fmt.Errorf("localinstall: write %s: %w", ClientSSHCommand(layout), err)
+	}
+	return nil
+}
+
+// RenderClientSSHEnv is the block the clusterless install appends to the
+// client env: the SSH command a push to this server should run with. The
+// cluster install has no counterpart, since its clients bring their own keys
+// and the variable stays unset there, which is what onboard checks.
+func RenderClientSSHEnv(layout Layout) string {
+	return fmt.Sprintf(`
+# A push to the oberth remote authenticates with the key this install minted
+# and trusts only this server's host key. oberth onboard copies this into the
+# repository's core.sshCommand, so plain git push works too.
+export OBERTH_SSH_COMMAND=%q
+`, ClientSSHCommand(layout))
 }

@@ -407,3 +407,53 @@ func writeScopedRegistry(t *testing.T, root string) {
 		t.Fatal(err)
 	}
 }
+
+func gitConfig(t *testing.T, root, key string) string {
+	t.Helper()
+	out, _ := exec.Command("git", "-C", root, "config", "--local", "--get", key).Output()
+	return strings.TrimSpace(string(out))
+}
+
+func TestOnboardSetsTheInstallsSSHCommandOnlyWhereItOwnsIt(t *testing.T) {
+	newOnboardServer(t, "docker")
+	t.Setenv(sshCommandEnv, "/install/ssh/git-ssh")
+
+	root := onboardCheckout(t, "git@forge.example:acme/web-app.git")
+	if err := runOnboard(context.Background(), []string{root, "--dry-run"}, &bytes.Buffer{}); err != nil {
+		t.Fatalf("onboard: %v", err)
+	}
+	if got := gitConfig(t, root, "core.sshCommand"); got != "/install/ssh/git-ssh" {
+		t.Fatalf("core.sshCommand = %q, want the install's wrapper", got)
+	}
+	if gitConfig(t, root, sshCommandOwnerKey) != "true" {
+		t.Fatal("the sshCommand oberth wrote is not marked as its own")
+	}
+
+	t.Setenv(sshCommandEnv, "/install/ssh/git-ssh-v2")
+	if err := runOnboard(context.Background(), []string{root, "--dry-run"}, &bytes.Buffer{}); err != nil {
+		t.Fatalf("second onboard: %v", err)
+	}
+	if got := gitConfig(t, root, "core.sshCommand"); got != "/install/ssh/git-ssh-v2" {
+		t.Fatalf("a managed core.sshCommand was not updated: %q", got)
+	}
+
+	foreign := onboardCheckout(t, "git@forge.example:acme/other.git")
+	if err := exec.Command("git", "-C", foreign, "config", "--local", "core.sshCommand", "ssh -i /home/dev/.ssh/mine").Run(); err != nil {
+		t.Fatalf("seed a foreign sshCommand: %v", err)
+	}
+	if err := runOnboard(context.Background(), []string{foreign, "--dry-run"}, &bytes.Buffer{}); err != nil {
+		t.Fatalf("onboard foreign: %v", err)
+	}
+	if got := gitConfig(t, foreign, "core.sshCommand"); got != "ssh -i /home/dev/.ssh/mine" {
+		t.Fatalf("a person's core.sshCommand was overwritten: %q", got)
+	}
+
+	t.Setenv(sshCommandEnv, "")
+	cluster := onboardCheckout(t, "git@forge.example:acme/cluster.git")
+	if err := runOnboard(context.Background(), []string{cluster, "--dry-run"}, &bytes.Buffer{}); err != nil {
+		t.Fatalf("onboard cluster: %v", err)
+	}
+	if got := gitConfig(t, cluster, "core.sshCommand"); got != "" {
+		t.Fatalf("a checkout against a cluster install got a core.sshCommand: %q", got)
+	}
+}

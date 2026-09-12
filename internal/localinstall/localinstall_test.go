@@ -8,6 +8,7 @@ import (
 	"math/big"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -167,7 +168,7 @@ func TestPushBannerNamesTheOneCommandThatMattersAndTheSetupItNeeds(t *testing.T)
 	banner := PushBanner("https://localhost:8443", "127.0.0.1", 8022, "/root/ssh/client_key", nil)
 	for _, expected := range []string{
 		"https://localhost:8443", "ssh://127.0.0.1:8022",
-		"git push oberth HEAD", "oberth init",
+		"git push oberth HEAD", "oberth onboard", "oberth init",
 		"upstream add --engine=docker", "secretstore init --engine=docker",
 		"/root/ssh/client_key",
 	} {
@@ -257,5 +258,65 @@ func writeEd25519Certificate(t *testing.T, certPath, keyPath string) {
 	}
 	if err := os.WriteFile(keyPath, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER}), 0o600); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestClientKnownHostsPinsTheServersOwnHostKey(t *testing.T) {
+	layout := NewLayout(t.TempDir())
+	if _, err := EnsureMaterial(layout, time.Now()); err != nil {
+		t.Fatalf("EnsureMaterial: %v", err)
+	}
+	if err := WriteClientKnownHosts(layout, "127.0.0.1", 8022); err != nil {
+		t.Fatalf("WriteClientKnownHosts: %v", err)
+	}
+	line, err := os.ReadFile(layout.ClientKnownHosts)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	private, _ := os.ReadFile(layout.SSHHostKey)
+	signer, err := ssh.ParsePrivateKey(private)
+	if err != nil {
+		t.Fatalf("parse host key: %v", err)
+	}
+	_, hosts, pinned, _, _, err := ssh.ParseKnownHosts(line)
+	if err != nil {
+		t.Fatalf("parse known_hosts line %q: %v", line, err)
+	}
+	if len(hosts) != 1 || hosts[0] != "[127.0.0.1]:8022" {
+		t.Fatalf("hosts = %v, want the server's address and port", hosts)
+	}
+	if ssh.FingerprintSHA256(pinned) != ssh.FingerprintSHA256(signer.PublicKey()) {
+		t.Fatal("the pinned key is not the host key on disk")
+	}
+}
+
+func TestClientSSHWrapperAppliesTheInstallsKeyOnlyToItsServer(t *testing.T) {
+	layout := NewLayout(t.TempDir())
+	if _, err := EnsureMaterial(layout, time.Now()); err != nil {
+		t.Fatalf("EnsureMaterial: %v", err)
+	}
+	if err := WriteClientSSHWrapper(layout, "127.0.0.1"); err != nil {
+		t.Fatalf("WriteClientSSHWrapper: %v", err)
+	}
+	fake := filepath.Join(t.TempDir(), "ssh")
+	if err := os.WriteFile(fake, []byte("#!/bin/sh\necho \"$@\"\n"), 0o755); err != nil { // #nosec G306 -- a test executable.
+		t.Fatalf("write fake ssh: %v", err)
+	}
+	run := func(args ...string) string {
+		command := exec.Command(ClientSSHCommand(layout), args...) // #nosec G204 -- the wrapper under test.
+		command.Env = append(os.Environ(), "PATH="+filepath.Dir(fake)+":"+os.Getenv("PATH"))
+		out, err := command.Output()
+		if err != nil {
+			t.Fatalf("wrapper %v: %v", args, err)
+		}
+		return string(out)
+	}
+	local := run("-p", "8022", "git@127.0.0.1", "git-receive-pack 'rides'")
+	if !strings.Contains(local, "-i "+layout.ClientKey) || !strings.Contains(local, "UserKnownHostsFile="+layout.ClientKnownHosts) {
+		t.Fatalf("a push to the server did not get the install's key and host file: %s", local)
+	}
+	forge := run("git@github.com", "git-receive-pack 'acme/web-app'")
+	if strings.Contains(forge, "-i ") || strings.Contains(forge, "UserKnownHostsFile") {
+		t.Fatalf("a push to the forge was given the install's key: %s", forge)
 	}
 }

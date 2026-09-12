@@ -25,15 +25,16 @@ func PushBanner(baseURL, sshHost string, sshPort int, clientKey string, reposito
 	banner.WriteString("\nOberth is running.\n\n")
 	banner.WriteString("  dashboard   " + baseURL + "\n")
 	banner.WriteString("  git ingest  ssh://" + sshHost + ":" + fmt.Sprint(sshPort) + "\n\n")
-	banner.WriteString("Point a repository at it and push:\n\n")
+	banner.WriteString("Onboard a repository from its checkout, one line:\n\n")
 	banner.WriteString("    cd <your repository>\n")
-	banner.WriteString("    oberth init\n")
-	banner.WriteString(fmt.Sprintf("    git remote add oberth ssh://oberth@%s:%d/<name>\n", sshHost, sshPort))
-	banner.WriteString("    git push oberth HEAD\n\n")
+	banner.WriteString("    oberth onboard\n\n")
+	banner.WriteString("It registers the repository, stores a generated pipeline on the server, adds the\n")
+	banner.WriteString("oberth remote, pushes HEAD and waits for the verdict. After that, plain\n")
+	banner.WriteString("git push oberth HEAD starts a run. (oberth init writes the pipeline for editing;\n")
+	banner.WriteString(fmt.Sprintf("the remote by hand is ssh://git@%s:%d/<name>.)\n\n", sshHost, sshPort))
 	if clientKey != "" {
-		banner.WriteString("The push identity is " + clientKey + ". If it is not the key your SSH agent\n")
-		banner.WriteString("offers, name it for this remote:\n\n")
-		banner.WriteString("    git config --local core.sshCommand 'ssh -i " + clientKey + "'\n\n")
+		banner.WriteString("The push identity is " + clientKey + ", and onboard points the\n")
+		banner.WriteString("checkout's core.sshCommand at a wrapper that uses it only for this server.\n\n")
 	}
 	if len(repositories) != 0 {
 		banner.WriteString("Registered repositories: " + strings.Join(repositories, ", ") + "\n\n")

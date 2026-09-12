@@ -85,6 +85,12 @@ func runInstallDocker(ctx context.Context, arguments []string, output io.Writer)
 	if err != nil {
 		return err
 	}
+	if err := localinstall.WriteClientKnownHosts(layout, "127.0.0.1", *sshPort); err != nil {
+		return err
+	}
+	if err := localinstall.WriteClientSSHWrapper(layout, "127.0.0.1"); err != nil {
+		return err
+	}
 	if len(created) == 0 {
 		say(output, "material   reusing the existing TLS and SSH material under %s", installer.DisplayPath(installRoot))
 	}
@@ -411,7 +417,7 @@ func writeClientAccess(ctx context.Context, output io.Writer, baseURL string,
 	}
 	envPath := filepath.Join(root, "env")
 	if err := installer.AtomicWriteFile(envPath,
-		[]byte(installer.RenderClientEnv(baseURL, caPath, tokenCommand)), 0o600); err != nil {
+		[]byte(installer.RenderClientEnv(baseURL, caPath, tokenCommand)+localinstall.RenderClientSSHEnv(layout)), 0o600); err != nil {
 		return fmt.Errorf("write %s: %w", envPath, err)
 	}
 	say(output, "client     %s", installer.DisplayPath(envPath))
