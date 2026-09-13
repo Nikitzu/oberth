@@ -87,6 +87,7 @@ type Request struct {
 	// is told, so that admission and execution cannot disagree.
 	Credentialed bool
 	SecretPaths  []string
+	Files        map[argoworkflow.FileRef]argoworkflow.SeededFile
 }
 
 // StepResult is one executed step in Oberth's vocabulary.
@@ -240,6 +241,8 @@ func (controller *Controller) cacheVolumeName(trigger periapsis.Trigger, repo, o
 func (controller *Controller) networkName(name string) string     { return name + "-net" }
 func (controller *Controller) identityVolumeName(n string) string { return n + "-identity" }
 
+func (controller *Controller) filesVolumeName(n string) string { return n + "-files" }
+
 // Wait runs the whole pipeline and streams its logs and progress markers into
 // destination, returning when the run reaches a terminal state.
 func (controller *Controller) Wait(ctx context.Context, name, runID string, destination io.Writer) (Completion, error) {
@@ -298,6 +301,12 @@ func (controller *Controller) execute(ctx context.Context, current *job, destina
 			return completion, err
 		}
 		if err := controller.deliverIdentity(ctx, current); err != nil {
+			completion.Reason = err.Error()
+			return completion, err
+		}
+	}
+	if len(current.request.Files) > 0 {
+		if err := controller.deliverFiles(ctx, current); err != nil {
 			completion.Reason = err.Error()
 			return completion, err
 		}
@@ -366,6 +375,12 @@ func (controller *Controller) provision(ctx context.Context, request Request) er
 		if _, err := controller.client.run(ctx, append(append([]string{"volume", "create"}, labels...),
 			controller.identityVolumeName(request.Name))...); err != nil {
 			return fmt.Errorf("dockerjob: create the run identity volume: %w", err)
+		}
+	}
+	if len(request.Files) > 0 {
+		if _, err := controller.client.run(ctx, append(append([]string{"volume", "create"}, labels...),
+			controller.filesVolumeName(request.Name))...); err != nil {
+			return fmt.Errorf("dockerjob: create the file dependency volume: %w", err)
 		}
 	}
 	cache := controller.cacheVolumeName(request.Trigger, request.Repo, request.Org)
@@ -509,6 +524,61 @@ func (controller *Controller) createContainer(ctx context.Context, request Reque
 	return container, nil
 }
 
+func (controller *Controller) deliverFiles(ctx context.Context, current *job) error {
+	if len(current.plan.Steps) == 0 {
+		return errors.New("dockerjob: a run with file dependencies has no step to seed them from")
+	}
+	name := current.request.Name + "-files-seed"
+	_, _ = controller.client.run(ctx, "rm", "--force", name)
+	container, err := controller.client.run(ctx, "create", "--name", name,
+		"--label", labelJob+"="+current.request.Name,
+		"--label", labelRun+"="+current.request.RunID,
+		"--volume", controller.filesVolumeName(current.request.Name)+":"+FilesMountPath,
+		"--", current.plan.Steps[0].Image, "true")
+	if err != nil {
+		return fmt.Errorf("dockerjob: stage the file dependencies: %w", err)
+	}
+	defer func() { _, _ = controller.client.run(ctx, "rm", "--force", container) }()
+	refs := make([]argoworkflow.FileRef, 0, len(current.request.Files))
+	for ref := range current.request.Files {
+		refs = append(refs, ref)
+	}
+	sort.Slice(refs, func(i, j int) bool { return refs[i].String() < refs[j].String() })
+	err = seedTree(ctx, controller.client.binary, container, FilesMountPath, func(writer *tar.Writer) error {
+		written := map[string]bool{}
+		for _, ref := range refs {
+			relative := ref.Repo + "/" + ref.Path
+			parts := strings.Split(relative, "/")
+			for depth := 1; depth < len(parts); depth++ {
+				directory := strings.Join(parts[:depth], "/")
+				if written[directory] {
+					continue
+				}
+				written[directory] = true
+				header := &tar.Header{Typeflag: tar.TypeDir, Name: directory + "/", Mode: 0o555}
+				rootOwned(header)
+				if err := writer.WriteHeader(header); err != nil {
+					return err
+				}
+			}
+			body := current.request.Files[ref].Bytes
+			header := &tar.Header{Typeflag: tar.TypeReg, Name: relative, Mode: 0o444, Size: int64(len(body))}
+			rootOwned(header)
+			if err := writer.WriteHeader(header); err != nil {
+				return err
+			}
+			if _, err := writer.Write(body); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("dockerjob: deliver the file dependencies: %w", err)
+	}
+	return nil
+}
+
 // createArguments is the full docker argv for one step attempt. It is separate
 // from the call so the argv itself can be asserted without a daemon: what this
 // engine hands the CLI is a security boundary, not an implementation detail.
@@ -522,6 +592,9 @@ func (controller *Controller) createArguments(request Request, step Step, attemp
 		// wins, so /work/cache is the repository's persistent cache and
 		// everything else under /work stays per-run.
 		"--volume", controller.cacheVolumeName(request.Trigger, request.Repo, request.Org) + ":" + CacheMountPath,
+	}
+	if len(request.Files) > 0 {
+		arguments = append(arguments, "--volume", controller.filesVolumeName(request.Name)+":"+FilesMountPath+":ro")
 	}
 	if request.Credentialed {
 		// The minted identity, read-only, at the path the in-cluster projected
@@ -950,6 +1023,7 @@ func (controller *Controller) cleanup(ctx context.Context, name string) {
 	_, _ = controller.client.run(ctx, "volume", "rm", "--force", controller.volumeName(name))
 	// The identity volume holds the run's minted token. It goes with the run.
 	_, _ = controller.client.run(ctx, "volume", "rm", "--force", controller.identityVolumeName(name))
+	_, _ = controller.client.run(ctx, "volume", "rm", "--force", controller.filesVolumeName(name))
 }
 
 func (controller *Controller) forget(name, runID string) {

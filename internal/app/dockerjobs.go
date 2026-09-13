@@ -59,6 +59,7 @@ type DockerJobs struct {
 	secretAllowlist []string
 
 	pipelines pipelineResolver
+	files     FileLoader
 
 	mu               sync.Mutex
 	runs             map[string]string // job name -> run ID
@@ -89,6 +90,10 @@ func (jobs *DockerJobs) SetSecretStore(configured bool, systemAllowlist []string
 // same rule, so a repository that moves between them runs the same bytes.
 func (jobs *DockerJobs) SetPipelines(held PipelineHolder, recorder PipelineRecorder) {
 	jobs.pipelines = pipelineResolver{held: held, recorder: recorder}
+}
+
+func (jobs *DockerJobs) SetFiles(loader FileLoader) {
+	jobs.files = loader
 }
 
 // SetArtifacts wires artifact persistence, mirroring ArgoJobs.SetArtifacts.
@@ -148,11 +153,16 @@ func (jobs *DockerJobs) create(ctx context.Context, request service.JobRequest, 
 	if testedSHA == "" {
 		testedSHA = request.Run.SHA
 	}
+	files, err := loadFiles(ctx, jobs.files, source)
+	if err != nil {
+		return fmt.Errorf("app: resolve file dependencies for %s: %w", request.Repository.Name, err)
+	}
 	submission := dockerjob.Request{
 		RunID: request.Run.ID, Name: request.JobName, Repo: request.Repository.Name, Org: request.UpstreamOrg,
 		Ref: request.Run.Ref, SHA: testedSHA, Trigger: trigger,
 		Source: source, SourceDir: request.SourceDir,
 		Credentialed: len(paths) > 0, SecretPaths: paths,
+		Files: files,
 	}
 	if err := jobs.auditSubmission(ctx, request, submission); err != nil {
 		return err

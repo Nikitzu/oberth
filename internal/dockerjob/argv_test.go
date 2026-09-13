@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/oberthci/oberth/pkg/argoworkflow"
 	"github.com/oberthci/oberth/pkg/periapsis"
 )
 
@@ -93,5 +94,30 @@ func TestStepEnvironmentPutsServerValuesLast(t *testing.T) {
 	}
 	if last["MY_VAR"] != "mine" {
 		t.Fatalf("a repository declaration was dropped: %q", last["MY_VAR"])
+	}
+}
+
+func TestCreateArgumentsMountFileDependenciesReadOnly(t *testing.T) {
+	controller := newTestController(t)
+	step := Step{Burn: "memory", Step: "memory", Image: "node"}
+	files := map[argoworkflow.FileRef]argoworkflow.SeededFile{
+		{Repo: "tzmem", Version: "bundle-v1", Path: "bundle/cli.cjs"}: {SHA: "abc", Bytes: []byte("js")},
+	}
+	arguments := controller.createArguments(Request{Name: "job", RunID: "run", Files: files}, step, 0)
+	want := "job-files:" + FilesMountPath + ":ro"
+	found := false
+	for index := 0; index+1 < len(arguments); index++ {
+		if arguments[index] == "--volume" && arguments[index+1] == want {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("file dependency volume %q not mounted: %v", want, arguments)
+	}
+	without := controller.createArguments(Request{Name: "job", RunID: "run"}, step, 0)
+	for _, value := range without {
+		if strings.Contains(value, "job-files:") {
+			t.Fatalf("a run with no file dependencies mounts a files volume: %v", without)
+		}
 	}
 }
