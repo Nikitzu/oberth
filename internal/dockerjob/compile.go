@@ -51,7 +51,7 @@ const (
 	// separate named volume is mounted over it, so it survives the run.
 	CacheMountPath     = "/work/cache"
 	ArtifactsMountPath = "/work/artifacts"
-	FilesMountPath     = "/work/files"
+	FilesMountPath     = "/run/oberth/files"
 )
 
 // ErrUnsupported is the class of every refusal this compiler makes. It is a
