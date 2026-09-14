@@ -2203,6 +2203,7 @@ func loadKubeConfigForContext(contextName, k3sFallbackPath string, output io.Wri
 func loadKubeConfigWithRules(rules *clientcmd.ClientConfigLoadingRules, contextName, k3sFallbackPath string, output io.Writer) (kubernetes.Interface, *rest.Config, string, error) {
 	client, restConfig, selectedContext, err := loadFromRules(rules, contextName)
 	if err == nil {
+		exportKubeconfigForSubprocesses(rules)
 		return client, restConfig, selectedContext, nil
 	}
 	// Standard kubeconfig load failed. Fall back to the k3s path only when
@@ -2227,10 +2228,23 @@ func loadKubeConfigWithRules(rules *clientcmd.ClientConfigLoadingRules, contextN
 	if k3sErr != nil {
 		return nil, nil, "", k3sErr
 	}
+	exportKubeconfigForSubprocesses(k3sRules)
 	if output != nil {
 		_, _ = fmt.Fprintf(output, "Using k3s kubeconfig at %s\n", k3sFallbackPath)
 	}
 	return client, restConfig, selectedContext, nil
+}
+
+func exportKubeconfigForSubprocesses(rules *clientcmd.ClientConfigLoadingRules) {
+	if os.Getenv("KUBECONFIG") != "" {
+		return
+	}
+	for _, path := range rules.GetLoadingPrecedence() {
+		if _, err := os.Stat(path); err == nil {
+			_ = os.Setenv("KUBECONFIG", path)
+			return
+		}
+	}
 }
 
 func loadFromRules(rules *clientcmd.ClientConfigLoadingRules, contextName string) (kubernetes.Interface, *rest.Config, string, error) {
