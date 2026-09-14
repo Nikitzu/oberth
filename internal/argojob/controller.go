@@ -181,6 +181,14 @@ func (controller *Controller) Create(ctx context.Context, request Request) (stri
 		controller.seeder.DeleteClaim(context.WithoutCancel(ctx), volume.ClaimName)
 		return "", err
 	}
+	// Fail fast when the built Workflow's ServiceAccount does not exist in the
+	// pipeline namespace. Without this, a missing per-repo SA (issue #272) only
+	// surfaces as a Kubernetes "forbidden: error looking up service account"
+	// after the Workflow is created, with no actionable message.
+	if saErr := controller.verifyServiceAccount(ctx, intended.Namespace, intended.Spec.ServiceAccountName); saErr != nil {
+		controller.seeder.DeleteClaim(context.WithoutCancel(ctx), volume.ClaimName)
+		return "", saErr
+	}
 	created, createErr := controller.workflows.Create(ctx, intended, metav1.CreateOptions{})
 	if createErr == nil {
 		controller.adoptClaimBestEffort(ctx, volume.ClaimName, created.Name, string(created.UID))
@@ -224,6 +232,45 @@ func (controller *Controller) Create(ctx context.Context, request Request) (stri
 // claim for SweepOrphanedSourceClaims rather than breaking a live run.
 func (controller *Controller) adoptClaimBestEffort(ctx context.Context, claimName, workflowName, workflowUID string) {
 	_ = controller.seeder.AdoptClaim(ctx, claimName, workflowName, workflowUID)
+}
+
+// verifyServiceAccount checks that a per-repo ServiceAccount exists in the
+// pipeline namespace before the Workflow is created. Shared SAs (pipeline,
+// credentialed, ci-secrets, executor) are chart-managed and always present;
+// per-repo SAs are selected dynamically but only materialized by install
+// --upgrade --install-secretstore, so they can be missing for newly granted
+// repos (issue #272). Without this check, the failure manifests only as an
+// opaque "forbidden: error looking up service account" from the kubelet after
+// the Workflow is created, with no actionable message.
+func (controller *Controller) verifyServiceAccount(ctx context.Context, namespace, name string) error {
+	if controller.kube == nil || name == "" {
+		return nil
+	}
+	// Only verify per-repo SAs. Shared SAs are chart-managed and do not
+	// suffer the materialization gap this check targets.
+	if controller.isSharedServiceAccount(name) {
+		return nil
+	}
+	_, err := controller.kube.CoreV1().ServiceAccounts(namespace).Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			return fmt.Errorf("argojob: ServiceAccount %q does not exist in namespace %q — "+
+				"run `oberth install --upgrade --install-secretstore` to materialize per-repo identities "+
+				"for newly granted repositories", name, namespace)
+		}
+		return fmt.Errorf("argojob: verify ServiceAccount %q in %q: %w", name, namespace, err)
+	}
+	return nil
+}
+
+// isSharedServiceAccount returns true when the name matches one of the four
+// chart-managed shared identities. These are always present and do not need
+// the per-repo materialization check.
+func (controller *Controller) isSharedServiceAccount(name string) bool {
+	return name == controller.config.PipelineServiceAccount ||
+		name == controller.config.CredentialedServiceAccount ||
+		name == controller.config.CISecretsServiceAccount ||
+		name == controller.config.ExecutorServiceAccount
 }
 
 func sameSubmission(existing, intended *wfv1.Workflow) error {

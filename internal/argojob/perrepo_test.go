@@ -1,7 +1,12 @@
 package argojob
 
 import (
+	"strings"
 	"testing"
+
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes/fake"
 
 	"github.com/oberthci/oberth/pkg/periapsis"
 )
@@ -250,5 +255,51 @@ func TestCrossRepoReadRefusedByPerRepoRole(t *testing.T) {
 
 	if wfA.Spec.ServiceAccountName == wfB.Spec.ServiceAccountName {
 		t.Fatalf("repos a and b got the same SA %q; per-repo isolation violated", wfA.Spec.ServiceAccountName)
+	}
+}
+
+// TestVerifyServiceAccountFailsWhenMissing proves that the controller rejects
+// a submission when the per-repo ServiceAccount does not exist in the cluster,
+// with an actionable error message (issue #272).
+func TestVerifyServiceAccountFailsWhenMissing(t *testing.T) {
+	t.Parallel()
+	client := fake.NewClientset()
+	controller := &Controller{kube: client}
+	err := controller.verifyServiceAccount(t.Context(), "oberth-argo", "oberth-argo-missing-repo-abcdef012345")
+	if err == nil {
+		t.Fatal("expected error for missing ServiceAccount")
+	}
+	if !strings.Contains(err.Error(), "does not exist") {
+		t.Fatalf("error should mention SA does not exist, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "install --upgrade --install-secretstore") {
+		t.Fatalf("error should include remediation command, got: %v", err)
+	}
+}
+
+// TestVerifyServiceAccountSucceedsWhenPresent proves that the check passes
+// when the ServiceAccount exists.
+func TestVerifyServiceAccountSucceedsWhenPresent(t *testing.T) {
+	t.Parallel()
+	sa := &corev1.ServiceAccount{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "oberth-argo-test-repo-abcdef012345",
+			Namespace: "oberth-argo",
+		},
+	}
+	client := fake.NewClientset(sa)
+	controller := &Controller{kube: client}
+	if err := controller.verifyServiceAccount(t.Context(), "oberth-argo", sa.Name); err != nil {
+		t.Fatalf("unexpected error for existing ServiceAccount: %v", err)
+	}
+}
+
+// TestVerifyServiceAccountSkipsWhenNoClient proves the check is a no-op when
+// the Kubernetes client is nil (test scenarios, Build-only paths).
+func TestVerifyServiceAccountSkipsWhenNoClient(t *testing.T) {
+	t.Parallel()
+	controller := &Controller{kube: nil}
+	if err := controller.verifyServiceAccount(t.Context(), "oberth-argo", "any-sa"); err != nil {
+		t.Fatalf("nil client should skip verification, got: %v", err)
 	}
 }
