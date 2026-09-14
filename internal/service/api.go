@@ -64,6 +64,7 @@ type APIConfig struct {
 	Pipelines             PipelineStore
 	PipelineGit           PipelineGit
 	Upstreams             UpstreamReader
+	PipelineFragments     FragmentInliner
 	PipelineImagePrefixes []string
 	// RepositoryRegistrar, UpstreamCatalog and UpstreamProbe are the
 	// registration surface. Absent, POST /api/repos reports itself
@@ -104,6 +105,7 @@ type API struct {
 	upstreamCatalog        UpstreamCatalog
 	upstreamProbe          UpstreamProbe
 	pipelineImagePrefixes  []string
+	pipelineFragments      FragmentInliner
 }
 
 func NewAPI(config APIConfig) (*API, error) {
@@ -146,6 +148,7 @@ func NewAPI(config APIConfig) (*API, error) {
 		repositoryRemover: config.RepositoryRemover, removeGitCache: config.RemoveGitCache,
 		pipelines: config.Pipelines, pipelineGit: config.PipelineGit, upstreams: config.Upstreams,
 		pipelineImagePrefixes: append([]string(nil), config.PipelineImagePrefixes...),
+		pipelineFragments:     config.PipelineFragments,
 		repositoryRegistrar:   config.RepositoryRegistrar,
 		upstreamCatalog:       config.UpstreamCatalog,
 		upstreamProbe:         config.UpstreamProbe,

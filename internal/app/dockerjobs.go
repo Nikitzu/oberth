@@ -19,7 +19,6 @@ import (
 	"github.com/oberthci/oberth/internal/service"
 	"github.com/oberthci/oberth/pkg/argoworkflow"
 	"github.com/oberthci/oberth/pkg/periapsis"
-	"sigs.k8s.io/yaml"
 )
 
 // dockerControl is the engine seam, narrowed exactly as argoControl narrows
@@ -103,23 +102,9 @@ func (jobs *DockerJobs) SetFragments(loader FragmentLoader) {
 }
 
 func (jobs *DockerJobs) inlineFragments(ctx context.Context, source []byte, repo string) ([]byte, error) {
-	fragments, err := loadFragments(ctx, jobs.fragments, source)
+	flat, err := NewFragmentInliner(jobs.fragments).Inline(ctx, source)
 	if err != nil {
 		return nil, fmt.Errorf("app: resolve fragments for %s: %w", repo, err)
-	}
-	if len(fragments) == 0 {
-		return source, nil
-	}
-	workflow, err := argoworkflow.Decode(source)
-	if err != nil {
-		return nil, err
-	}
-	if _, err := argoworkflow.Resolve(workflow, fragments); err != nil {
-		return nil, fmt.Errorf("app: inline fragments for %s: %w", repo, err)
-	}
-	flat, err := yaml.Marshal(workflow)
-	if err != nil {
-		return nil, fmt.Errorf("app: encode the inlined pipeline for %s: %w", repo, err)
 	}
 	return flat, nil
 }

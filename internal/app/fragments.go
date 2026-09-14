@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sigs.k8s.io/yaml"
 
 	"github.com/oberthci/oberth/internal/gitcache"
 	"github.com/oberthci/oberth/pkg/argoworkflow"
@@ -117,4 +118,30 @@ func loadFragments(ctx context.Context, loader FragmentLoader, source []byte) (m
 		fragments[key] = fragment
 	}
 	return fragments, nil
+}
+
+type FragmentInliner struct {
+	loader FragmentLoader
+}
+
+func NewFragmentInliner(loader FragmentLoader) *FragmentInliner {
+	return &FragmentInliner{loader: loader}
+}
+
+func (inliner *FragmentInliner) Inline(ctx context.Context, source []byte) ([]byte, error) {
+	fragments, err := loadFragments(ctx, inliner.loader, source)
+	if err != nil {
+		return nil, err
+	}
+	if len(fragments) == 0 {
+		return source, nil
+	}
+	workflow, err := argoworkflow.Decode(source)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := argoworkflow.Resolve(workflow, fragments); err != nil {
+		return nil, err
+	}
+	return yaml.Marshal(workflow)
 }

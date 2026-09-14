@@ -920,6 +920,7 @@ func serve(ctx context.Context, options serveOptions, logger *log.Logger) (resul
 		PipelineGit:            git,
 		Upstreams:              database,
 		PipelineImagePrefixes:  splitRunnerImagePrefixes(options.runnerImagePrefixes),
+		PipelineFragments:      app.NewFragmentInliner(fragmentLoader),
 		// Registration over the API. The in-pod admin verb still works; this
 		// is what lets `oberth onboard` do it from a checkout without a
 		// kubectl exec into this pod.

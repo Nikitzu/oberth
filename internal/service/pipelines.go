@@ -158,7 +158,7 @@ func (service *API) pipelineSet(ctx context.Context, actor, repoName, trigger st
 	if int64(len(document)) > argoworkflow.MaxSourceBytes {
 		return PipelineResponse{}, fmt.Errorf("%w: the pipeline document exceeds the source-size limit", ErrInvalidInput)
 	}
-	if err := service.admitPipelineDocument(document); err != nil {
+	if err := service.admitPipelineDocument(ctx, document); err != nil {
 		return PipelineResponse{}, err
 	}
 
@@ -271,7 +271,7 @@ func (service *API) pipelineCheck(ctx context.Context, actor, repoName, trigger,
 		Version: current.Version,
 	}
 	if restore && response.Drifted {
-		if err := service.admitPipelineDocument([]byte(regenerated)); err != nil {
+		if err := service.admitPipelineDocument(ctx, []byte(regenerated)); err != nil {
 			return PipelineCheckResponse{}, err
 		}
 		stored, storeErr := service.pipelines.StoreRepoPipeline(ctx, model.RepoPipelineSpec{
@@ -289,7 +289,18 @@ func (service *API) pipelineCheck(ctx context.Context, actor, repoName, trigger,
 
 // admitPipelineDocument is the whole gate on stored bytes: the same strict
 // decode and the same admission policy a pushed document meets.
-func (service *API) admitPipelineDocument(document []byte) error {
+type FragmentInliner interface {
+	Inline(ctx context.Context, source []byte) ([]byte, error)
+}
+
+func (service *API) admitPipelineDocument(ctx context.Context, document []byte) error {
+	if service.pipelineFragments != nil {
+		flat, err := service.pipelineFragments.Inline(ctx, document)
+		if err != nil {
+			return fmt.Errorf("%w: resolve fragments: %w", ErrInvalidInput, err)
+		}
+		document = flat
+	}
 	workflow, err := argoworkflow.Decode(document)
 	if err != nil {
 		return fmt.Errorf("%w: decode pipeline document: %w", ErrInvalidInput, err)
