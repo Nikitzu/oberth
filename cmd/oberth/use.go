@@ -123,10 +123,11 @@ func switchCheckout(ctx context.Context, output io.Writer, root string, profile 
 		if err != nil {
 			return err
 		}
-		home, _ := os.UserHomeDir()
-		sshCommand = "ssh -o 'UserKnownHostsFile=" + known + " " + home + "/.ssh/known_hosts'"
+		sshCommand = knownHostsSSHCommand(known)
 	}
-	if err := ensureSSHCommandIn(root, sshCommand, func(string, ...any) {}); err != nil {
+	if err := ensureSSHCommandIn(root, sshCommand, func(format string, arguments ...any) {
+		fmt.Fprintf(output, "  "+format+"\n", arguments...)
+	}); err != nil {
 		return err
 	}
 	if err := clientprofile.Pin(root, profile.Name); err != nil {
@@ -142,6 +143,26 @@ func switchCheckout(ctx context.Context, output io.Writer, root string, profile 
 	}
 	fmt.Fprintln(output, "next: git push oberth HEAD:refs/heads/<branch>, or oberth onboard if this server does not know the repository yet")
 	return nil
+}
+
+func knownHostsSSHCommand(known string) string {
+	home, _ := os.UserHomeDir()
+	return "ssh -o 'UserKnownHostsFile=" + known + " " + home + "/.ssh/known_hosts'"
+}
+
+func profileSSHCommand(profile clientprofile.Profile) string {
+	if strings.TrimSpace(profile.SSHCommand) != "" {
+		return strings.TrimSpace(profile.SSHCommand)
+	}
+	dir, err := clientprofile.Dir(profile.Name)
+	if err != nil {
+		return ""
+	}
+	known := dir + "/known_hosts"
+	if _, err := os.Stat(known); err != nil {
+		return ""
+	}
+	return knownHostsSSHCommand(known)
 }
 
 func repositoryName(root string) string {

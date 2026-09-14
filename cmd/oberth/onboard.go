@@ -422,7 +422,7 @@ func (board *onboarder) ensureSSHCommand() error {
 	want := strings.TrimSpace(os.Getenv(sshCommandEnv))
 	if name := clientprofile.ForCheckout(board.options.root); name != "" {
 		if profile, err := clientprofile.Load(name); err == nil {
-			want = strings.TrimSpace(profile.SSHCommand)
+			want = profileSSHCommand(profile)
 		}
 	}
 	return ensureSSHCommandIn(board.options.root, want, board.step)
