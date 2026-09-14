@@ -1,6 +1,9 @@
 package vmrunner
 
 import (
+	"crypto/sha256"
+	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"regexp"
@@ -24,6 +27,12 @@ var hexSHA1Pattern = regexp.MustCompile(`^[0-9a-f]{40}$`)
 
 // ociDigestPattern matches an OCI content-addressable digest (sha256:hex64).
 var ociDigestPattern = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
+
+// ociRefRepoPattern matches valid characters in the repository portion of an
+// OCI image reference (before the @digest). Rejects control characters, NUL
+// bytes, spaces, and metacharacters that could cause identity collisions or
+// injection in downstream consumers (issue #410).
+var ociRefRepoPattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._:/-]*$`)
 
 // ValidateVMRunSpec validates every field of a VM run specification before
 // any VMI is created. Every rejection names the exact field and the reason.
@@ -101,11 +110,18 @@ func validateGuestImageRef(ref string) []error {
 		return problems
 	}
 
-	// Repository part before @ must be non-empty
+	// Repository part before @ must be non-empty and contain only valid
+	// OCI reference characters. Control characters (including NUL) are
+	// rejected to prevent SpecIdentity collision via embedded delimiters.
 	repository := ref[:atIndex]
 	if strings.TrimSpace(repository) == "" {
 		problems = append(problems, fmt.Errorf(
 			"vmrunner: GuestImageRef %q has no repository before the digest", ref))
+		return problems
+	}
+	if !ociRefRepoPattern.MatchString(repository) {
+		problems = append(problems, fmt.Errorf(
+			"vmrunner: GuestImageRef repository %q contains invalid characters; only [a-zA-Z0-9._:/-] are permitted", repository))
 		return problems
 	}
 
@@ -153,23 +169,29 @@ func validateResources(resources VMResources) []error {
 	return problems
 }
 
-// SpecIdentity returns a deterministic digest of the VM run specification.
-// Two specs with the same identity produce the same VMI. This is used to
-// detect whether a retried submission matches the original.
+// SpecIdentity returns a deterministic hex-encoded SHA-256 digest of the VM
+// run specification. Two specs with the same identity produce the same VMI.
+// This is used to detect whether a retried submission matches the original.
+//
+// Each field is length-prefixed (4-byte big-endian length + value) before
+// hashing, so embedded delimiters in any field cannot shift a boundary and
+// cause two distinct specs to collide (issue #410).
 func SpecIdentity(spec VMRunSpec) string {
-	// Stable string representation: all fields in a fixed order.
-	// We intentionally do NOT use JSON encoding here to avoid any
-	// marshaling ambiguity (field order, escaping).
-	parts := []string{
-		spec.RunID,
-		spec.Repo,
-		spec.CandidateSHA,
-		spec.SuiteRevision,
-		spec.GuestImageRef,
-		fmt.Sprintf("cpu=%d", spec.Resources.CPUCores),
-		fmt.Sprintf("mem=%d", spec.Resources.MemoryMiB),
-		fmt.Sprintf("disk=%d", spec.Resources.DiskGiB),
-		fmt.Sprintf("deadline=%s", spec.Deadline),
+	h := sha256.New()
+	writeField := func(s string) {
+		var buf [4]byte
+		binary.BigEndian.PutUint32(buf[:], uint32(len(s))) //nolint:gosec // spec fields are validated; none exceed uint32
+		h.Write(buf[:])
+		h.Write([]byte(s))
 	}
-	return strings.Join(parts, "\x00")
+	writeField(spec.RunID)
+	writeField(spec.Repo)
+	writeField(spec.CandidateSHA)
+	writeField(spec.SuiteRevision)
+	writeField(spec.GuestImageRef)
+	writeField(fmt.Sprintf("%d", spec.Resources.CPUCores))
+	writeField(fmt.Sprintf("%d", spec.Resources.MemoryMiB))
+	writeField(fmt.Sprintf("%d", spec.Resources.DiskGiB))
+	writeField(spec.Deadline.String())
+	return hex.EncodeToString(h.Sum(nil))
 }

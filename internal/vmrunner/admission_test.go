@@ -166,6 +166,24 @@ func TestValidateVMRunSpec_MD5Digest(t *testing.T) {
 	}
 }
 
+func TestValidateVMRunSpec_ControlCharsInGuestImageRef(t *testing.T) {
+	spec := validSpec()
+	spec.GuestImageRef = "registry.example.com/guest\x00evil@sha256:abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+	err := ValidateVMRunSpec(spec)
+	if err == nil || !strings.Contains(err.Error(), "invalid characters") {
+		t.Fatalf("expected rejection of control characters in GuestImageRef, got: %v", err)
+	}
+}
+
+func TestValidateVMRunSpec_SpaceInGuestImageRef(t *testing.T) {
+	spec := validSpec()
+	spec.GuestImageRef = "registry.example.com/guest image@sha256:abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+	err := ValidateVMRunSpec(spec)
+	if err == nil || !strings.Contains(err.Error(), "invalid characters") {
+		t.Fatalf("expected rejection of space in GuestImageRef, got: %v", err)
+	}
+}
+
 // --- Resource bounds ---
 
 func TestValidateVMRunSpec_ZeroCPU(t *testing.T) {
@@ -341,5 +359,42 @@ func TestSpecIdentity_DiffersOnResourceChange(t *testing.T) {
 	id2 := SpecIdentity(spec)
 	if id1 == id2 {
 		t.Fatal("SpecIdentity should differ when Resources change")
+	}
+}
+
+func TestSpecIdentity_NulCollisionResistance(t *testing.T) {
+	// Under the old \x00-joined scheme, these two specs produce identical
+	// identity strings because an embedded NUL shifts a field boundary:
+	//   A: "run\x00extra" + \x00 + "repo"  = "run\x00extra\x00repo"
+	//   B: "run"          + \x00 + "extra\x00repo" = "run\x00extra\x00repo"
+	// Length-prefixed hashing makes them distinct because the per-field
+	// lengths differ ([3]"run" + [5]"extra" vs [3]"run" + [10]"extra\x00repo").
+	specA := validSpec()
+	specA.RunID = "run\x00extra"
+	specA.Repo = "repo"
+
+	specB := validSpec()
+	specB.RunID = "run"
+	specB.Repo = "extra\x00repo"
+
+	idA := SpecIdentity(specA)
+	idB := SpecIdentity(specB)
+	if idA == idB {
+		t.Fatalf("SpecIdentity must produce distinct digests for specs whose "+
+			"fields differ only by embedded NUL boundaries; both produced %s", idA)
+	}
+}
+
+func TestSpecIdentity_IsHexSHA256(t *testing.T) {
+	spec := validSpec()
+	id := SpecIdentity(spec)
+	if len(id) != 64 {
+		t.Fatalf("SpecIdentity should return a 64-char hex SHA-256 digest, got %d chars: %s", len(id), id)
+	}
+	for _, c := range id {
+		isHex := (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')
+		if !isHex {
+			t.Fatalf("SpecIdentity contains non-hex character %q in %s", c, id)
+		}
 	}
 }
