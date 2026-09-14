@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -765,11 +766,19 @@ func ConfigureSecretStore(ctx context.Context, cfg Config, deps Deps, store open
 
 	// --- Credentialed tier: templates with approved secrets ---
 
+	// Derive upstream orgs from per-repo identities so the shared policies
+	// enumerate exactly the registered upstream subtrees instead of a static
+	// "upstream/*" wildcard (issue #246 design revision). Repos with active
+	// grants always have per-repo identities, so their upstream orgs are
+	// present. Fresh installs (no identities) produce zero orgs — fail
+	// closed, correct because no grants exist either.
+	upstreamOrgs := upstreamOrgsFromIdentities(cfg.PerRepoIdentities)
+
 	credentialedGrantPaths, err := credentialedPolicyPaths(defaultKVPrefix, cfg.CredentialedSecretPaths)
 	if err != nil {
 		return result, err
 	}
-	wantCredentialedPolicy := OberthCredentialedPolicyWithGrants(defaultKVPrefix, credentialedGrantPaths)
+	wantCredentialedPolicy := OberthCredentialedPolicyWithGrants(defaultKVPrefix, upstreamOrgs, credentialedGrantPaths)
 	haveCredentialedPolicy, credentialedPolicyExists, err := store.policyRead(ctx, rootToken, defaultCredentialedPolicy)
 	if err != nil {
 		return result, err
@@ -815,7 +824,7 @@ func ConfigureSecretStore(ctx context.Context, cfg Config, deps Deps, store open
 	// unlike the credentialed policy there is nothing approval-driven to sync
 	// — drift from the managed shape is always rewritten back.
 
-	wantCISecretsPolicy := OberthCISecretsPolicy(defaultKVPrefix)
+	wantCISecretsPolicy := OberthCISecretsPolicy(defaultKVPrefix, upstreamOrgs)
 	haveCISecretsPolicy, ciSecretsPolicyExists, err := store.policyRead(ctx, rootToken, defaultCISecretsPolicy)
 	if err != nil {
 		return result, err
@@ -985,33 +994,39 @@ func credentialedPolicyPaths(kvPrefix string, paths []string) ([]string, error) 
 }
 
 // OberthCredentialedPolicy returns the HCL policy for credentialed pipeline
-// templates. It grants read access to the upstream subtree only; the
+// templates. It grants read access to registered upstream subtrees only; the
 // approval table in Oberth's database is the fine-grained admission gate,
 // and any non-upstream paths (e.g. release secrets) require explicit
 // approval-table entries that are synced to the policy via
 // OberthCredentialedPolicyWithGrants. The release/* wildcard was removed
 // to close a trust-tier collapse where any CI pipeline declaring an
 // upstream path received credentials that could read all release secrets.
-func OberthCredentialedPolicy(kvPrefix string) string {
-	return OberthCredentialedPolicyWithGrants(kvPrefix, nil)
+func OberthCredentialedPolicy(kvPrefix string, upstreamOrgs []string) string {
+	return OberthCredentialedPolicyWithGrants(kvPrefix, upstreamOrgs, nil)
 }
 
 // OberthCredentialedPolicyWithGrants returns the credentialed HCL policy
 // with exact-path entries for each approved secret from the approval table.
-// The upstream/* wildcard is always present; the approvedPaths entries add
-// exact grants for paths outside that subtree (typically release secrets).
+// When upstreamOrgs is non-empty, per-org path rules replace the former
+// static path "oberth/data/upstream/*" wildcard — the policy grants read
+// access only to the enumerated registered upstream subtrees (issue #246
+// design revision). When upstreamOrgs is empty (fresh install, no
+// registered upstreams with grants), no upstream access is granted — fail
+// closed — because there are no repos to serve and no grants to carry.
+// The approvedPaths entries add exact grants for paths outside the
+// upstream subtree (typically release secrets).
 //
-// The installer calls this with the active grants so the Vault policy
-// matches the approval table. After running `oberth access allow`, re-run
-// `oberth install --install-secretstore --upgrade` to sync.
-func OberthCredentialedPolicyWithGrants(kvPrefix string, approvedPaths []string) string {
+// The installer calls this with the active grants and the registered
+// upstream orgs so the Vault policy matches both the approval table and
+// the upstream registry. After running `oberth access allow` or
+// `oberth upstream add`, re-run `oberth install --install-secretstore
+// --upgrade` to sync.
+func OberthCredentialedPolicyWithGrants(kvPrefix string, upstreamOrgs []string, approvedPaths []string) string {
 	var builder strings.Builder
-	fmt.Fprintf(&builder, `# Credentialed pipeline templates: read-only, upstream subtree only. The
-# approval table in the Oberth database is the fine-grained gate; this policy
-# is the coarse Vault-level boundary. Managed by oberth install.
-path "%s/data/upstream/*" {
-  capabilities = ["read"]
-}`, kvPrefix)
+	builder.WriteString("# Credentialed pipeline templates: read-only, per-upstream subtrees. The\n")
+	builder.WriteString("# approval table in the Oberth database is the fine-grained gate; this policy\n")
+	builder.WriteString("# is the coarse Vault-level boundary. Managed by oberth install.\n")
+	writeUpstreamOrgRules(&builder, kvPrefix, upstreamOrgs)
 
 	seen := make(map[string]struct{}, len(approvedPaths))
 	for _, p := range approvedPaths {
@@ -1027,24 +1042,52 @@ path "%s/data/upstream/*" {
 }
 
 // OberthCISecretsPolicy returns the HCL policy for CI-trigger credentialed
-// pipelines: the upstream subtree and token self-revocation, nothing else.
+// pipelines: registered upstream subtrees and token self-revocation,
+// nothing else.
 //
 // It deliberately takes no grants parameter. The credentialed (release-tier)
 // policy is synced with approval-table grants; this one is structurally
 // incapable of carrying them, so no reconciliation input — however
 // misconfigured — can put a release secret within reach of a branch push.
-func OberthCISecretsPolicy(kvPrefix string) string {
-	return fmt.Sprintf(`# CI-trigger credentialed pipelines: read-only, upstream subtree only. This
-# policy never carries approval-table grants; release secrets are reachable
-# only through the release-tier credentialed role. Managed by oberth install.
-path "%s/data/upstream/*" {
-  capabilities = ["read"]
+//
+// When upstreamOrgs is non-empty, per-org path rules replace the former
+// static path "oberth/data/upstream/*" wildcard, narrowing the CI tier's
+// outer boundary to exactly the registered upstream subtrees (issue #246
+// design revision). When upstreamOrgs is empty, no upstream access is
+// granted — fail closed.
+func OberthCISecretsPolicy(kvPrefix string, upstreamOrgs []string) string {
+	var builder strings.Builder
+	builder.WriteString("# CI-trigger credentialed pipelines: read-only, per-upstream subtrees. This\n")
+	builder.WriteString("# policy never carries approval-table grants; release secrets are reachable\n")
+	builder.WriteString("# only through the release-tier credentialed role. Managed by oberth install.\n")
+	writeUpstreamOrgRules(&builder, kvPrefix, upstreamOrgs)
+	builder.WriteString("\n\n# Allow the fetch client to revoke its own short-lived login token.\npath \"auth/token/revoke-self\" {\n  capabilities = [\"update\"]\n}")
+	return builder.String()
 }
 
-# Allow the fetch client to revoke its own short-lived login token.
-path "auth/token/revoke-self" {
-  capabilities = ["update"]
-}`, kvPrefix)
+// writeUpstreamOrgRules appends per-org Vault policy path stanzas. Each
+// registered upstream org gets its own exact rule scoped to that org's
+// subtree, replacing the former static "upstream/*" wildcard. The
+// enumeration is sorted for deterministic output.
+func writeUpstreamOrgRules(builder *strings.Builder, kvPrefix string, upstreamOrgs []string) {
+	sorted := make([]string, len(upstreamOrgs))
+	copy(sorted, upstreamOrgs)
+	sort.Strings(sorted)
+	seen := make(map[string]struct{}, len(sorted))
+	first := true
+	for _, org := range sorted {
+		if _, dup := seen[org]; dup || org == "" {
+			continue
+		}
+		seen[org] = struct{}{}
+		if !first {
+			builder.WriteString("\n\n")
+		}
+		fmt.Fprintf(builder, `path "%s/data/upstream/%s/*" {
+  capabilities = ["read"]
+}`, kvPrefix, org)
+		first = false
+	}
 }
 
 // OberthProductionPolicy adds exactly the two Transit data operations needed

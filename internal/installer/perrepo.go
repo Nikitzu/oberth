@@ -205,3 +205,26 @@ func PerRepoIdentityNames(identities []PerRepoIdentity) []string {
 	sort.Strings(names)
 	return names
 }
+
+// upstreamOrgsFromIdentities extracts a sorted, deduplicated list of upstream
+// org names from the per-repo identity set. This is used by the shared
+// credentialed and CI-secrets policies to enumerate exactly the registered
+// upstream subtrees instead of a static "upstream/*" wildcard (issue #246
+// design revision). Repos with active grants always have per-repo identities,
+// so their orgs are present; a fresh install with no identities produces an
+// empty list — fail closed.
+func upstreamOrgsFromIdentities(identities []PerRepoIdentity) []string {
+	seen := make(map[string]struct{}, len(identities))
+	var orgs []string
+	for _, id := range identities {
+		if id.Org == "" {
+			continue
+		}
+		if _, dup := seen[id.Org]; !dup {
+			seen[id.Org] = struct{}{}
+			orgs = append(orgs, id.Org)
+		}
+	}
+	sort.Strings(orgs)
+	return orgs
+}
