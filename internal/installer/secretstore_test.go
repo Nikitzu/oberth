@@ -148,4 +148,49 @@ func TestSetupProductionSecretStoreNonInteractiveTokenPromptNotShown(t *testing.
 	}
 }
 
+// --- Org name validation tests (issue #411) ---
+
+func TestValidateOrgNameRejectsHCLInjection(t *testing.T) {
+	// An org name containing HCL injection characters must be rejected
+	// before it reaches writeUpstreamOrgRules, where it would be
+	// interpolated unescaped into a Vault policy path string.
+	malicious := `evil" { capabilities = ["sudo"] } path "secret/*`
+	err := ValidateOrgName(malicious)
+	if err == nil {
+		t.Fatal("expected rejection of malicious org name with HCL injection characters")
+	}
+	if !strings.Contains(err.Error(), "characters outside") {
+		t.Fatalf("unexpected error message: %v", err)
+	}
+}
+
+func TestValidateOrgNameRejectsControlChars(t *testing.T) {
+	for _, name := range []string{"org\x00evil", "org\nevil", "org\tevil"} {
+		if err := ValidateOrgName(name); err == nil {
+			t.Errorf("ValidateOrgName(%q) = nil; want error for control character", name)
+		}
+	}
+}
+
+func TestValidateOrgNameAcceptsValid(t *testing.T) {
+	for _, name := range []string{"oberthci", "skip-ops", "my.org", "org_name", "MixedCase123", "a"} {
+		if err := ValidateOrgName(name); err != nil {
+			t.Errorf("ValidateOrgName(%q) = %v; want nil", name, err)
+		}
+	}
+}
+
+func TestValidateOrgNameRejectsEmpty(t *testing.T) {
+	if err := ValidateOrgName(""); err == nil {
+		t.Fatal("ValidateOrgName(\"\") = nil; want error for empty string")
+	}
+}
+
+func TestValidateOrgNameRejectsSlash(t *testing.T) {
+	// A slash would allow path traversal in the Vault policy.
+	if err := ValidateOrgName("org/evil"); err == nil {
+		t.Fatal("ValidateOrgName(\"org/evil\") = nil; want error for slash")
+	}
+}
+
 // productionOpenBaoResult is defined in installer_test.go (same package).
