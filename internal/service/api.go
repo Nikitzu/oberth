@@ -988,7 +988,7 @@ func (service *API) waitRun(ctx context.Context, repositoryName, selector, trigg
 	if !validSHASelector(selector) {
 		return WaitResponse{}, fmt.Errorf("%w: full or short SHA is required", ErrInvalidInput)
 	}
-	trigger = strings.TrimSpace(trigger)
+	trigger = normalizeTrigger(strings.TrimSpace(trigger))
 	duration, err := service.waitDuration(requestedSeconds)
 	if err != nil {
 		return WaitResponse{}, err
@@ -1024,10 +1024,24 @@ func (service *API) waitRun(ctx context.Context, repositoryName, selector, trigg
 		case <-ctx.Done():
 			return WaitResponse{}, ctx.Err()
 		case <-timer.C:
-			return WaitResponse{StatusResponse: status, StillRunning: true}, nil
+			// Derive still_running from the actual run state so the flag
+			// and the reported status are always consistent. A resolved run
+			// that is terminal should never be reported as still running,
+			// even when the trigger filter did not match.
+			return WaitResponse{StatusResponse: status, StillRunning: !status.Run.Status.Terminal()}, nil
 		case <-changed:
 		}
 	}
+}
+
+// normalizeTrigger maps accepted trigger aliases to their persisted form.
+// The MCP schema historically documented 'ci' for branch runs, but the
+// stored trigger is 'branch'. Accept both to avoid silent filter misses.
+func normalizeTrigger(trigger string) string {
+	if trigger == "ci" {
+		return "branch"
+	}
+	return trigger
 }
 
 func validSHASelector(value string) bool {

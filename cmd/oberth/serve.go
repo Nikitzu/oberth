@@ -1627,6 +1627,10 @@ func classifyViewError(err error) (int, string) {
 	case errors.Is(err, store.ErrAmbiguous),
 		errors.Is(err, service.ErrAmbiguousRepository):
 		return http.StatusConflict, err.Error()
+	case errors.Is(err, store.ErrLockHeld):
+		return http.StatusConflict, "issue lock held by another identity"
+	case errors.Is(err, store.ErrLockNotOwned):
+		return http.StatusConflict, "issue lock is expired or not owned by this identity"
 	case errors.Is(err, store.ErrInvalidState):
 		// State-based refusals (in-flight runs, immutable history, terminal
 		// records) are actionable answers, not server faults: keep the message
