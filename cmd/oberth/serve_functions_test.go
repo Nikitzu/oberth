@@ -81,6 +81,14 @@ func TestClassifyViewErrorMapsSentinelsAndMasksUnknown(t *testing.T) {
 			wantCode: http.StatusServiceUnavailable, wantMessage: "service unavailable",
 		},
 		{
+			name: "lock held returns conflict", err: fmt.Errorf("issue lock: %w", store.ErrLockHeld),
+			wantCode: http.StatusConflict, wantMessage: "issue lock held by another identity",
+		},
+		{
+			name: "lock not owned returns conflict", err: fmt.Errorf("issue lock: %w", store.ErrLockNotOwned),
+			wantCode: http.StatusConflict, wantMessage: "issue lock is expired or not owned by this identity",
+		},
+		{
 			// Unknown errors must never carry internals (paths, SQL state)
 			// to the client; they collapse to a generic internal error.
 			name: "unknown collapses to internal", err: errors.New("sqlite: disk I/O error at /data/oberth.sqlite"),

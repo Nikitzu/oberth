@@ -1085,7 +1085,7 @@ async function renderStatus(seq) {
   const store = s.secret_store;
   const chain = s.audit_chain;
   const storeMood = !store || !store.configured ? "warn" : store.transport === "insecure-http" ? "warn" : store.probe && store.probe !== "ready" ? "bad" : "ok";
-  const storeValue = !store || !store.configured ? "not configured" : store.transport === "insecure-http" ? "insecure http" : store.probe === "ready" ? "healthy" : store.probe ? "unhealthy" : "configured";
+  const storeValue = !store || !store.configured ? "not configured" : store.transport === "insecure-http" ? "insecure http" : store.probe === "ready" ? "healthy" : store.probe === "sealed" ? "sealed" : store.probe ? "unhealthy" : "configured";
   replaceApp(`
   <section class="screen">
     <div class="bar"><h1>Status</h1><span class="meta">FAB control plane health</span></div>

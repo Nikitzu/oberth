@@ -46,6 +46,7 @@ type controlGit struct {
 	checkoutFiles            map[string][]byte
 	syncedBranches           []string
 	syncedTags               []string
+	preparedRepos            []string
 	promotions               []string
 	events                   *[]string
 }
@@ -305,7 +306,10 @@ func (git *controlGit) SyncTag(_ context.Context, repo, tag, sha string) error {
 	return git.applyThenErr
 }
 
-func (git *controlGit) PreparePromotion(ctx context.Context, _, _, target string, _ string) (gitcache.MergeCandidate, error) {
+func (git *controlGit) PreparePromotion(ctx context.Context, repo, _, target string, _ string) (gitcache.MergeCandidate, error) {
+	git.mu.Lock()
+	git.preparedRepos = append(git.preparedRepos, repo)
+	git.mu.Unlock()
 	if git.prepareStarted != nil {
 		git.prepareOnce.Do(func() { close(git.prepareStarted) })
 	}
@@ -1444,7 +1448,7 @@ func TestSchedulerUpdatesOneCIIssueAcrossRedRedGreen(t *testing.T) {
 			t.Fatalf("status leaked internal model: %s", encoded)
 		}
 	}
-	if len(fixture.git.syncedBranches) != 1 || fixture.git.syncedBranches[0] != "oberth:feature/red-green:"+shas[2] {
+	if len(fixture.git.syncedBranches) != 1 || fixture.git.syncedBranches[0] != "codeberg/acme/oberth:feature/red-green:"+shas[2] {
 		t.Fatalf("green branch syncs = %#v", fixture.git.syncedBranches)
 	}
 }
@@ -1452,8 +1456,10 @@ func TestSchedulerUpdatesOneCIIssueAcrossRedRedGreen(t *testing.T) {
 func TestStatusReturnsRefWithoutRunWhenBranchExists(t *testing.T) {
 	const branchSHA = "dddddddddddddddddddddddddddddddddddddddd"
 	fixture := newControlFixture(t)
+	// Ref resolution reaches the git cache with the fully-qualified input
+	// (issue #264): the fixture upstream is codeberg (org acme).
 	fixture.refs = stubRefResolver{branches: map[string]map[string]string{
-		"oberth": {"feature/no-runs": branchSHA},
+		"codeberg/acme/oberth": {"feature/no-runs": branchSHA},
 	}}
 	ctx := context.Background()
 
@@ -1512,8 +1518,9 @@ func TestStatusReturnsRefWithoutRunWhenBranchExists(t *testing.T) {
 func TestStatusRefWithoutRunRespectsRepoDisambiguator(t *testing.T) {
 	const branchSHA = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
 	fixture := newControlFixture(t)
+	// Qualified cache input, as above (issue #264).
 	fixture.refs = stubRefResolver{branches: map[string]map[string]string{
-		"oberth": {"shared-branch": branchSHA},
+		"codeberg/acme/oberth": {"shared-branch": branchSHA},
 	}}
 	ctx := context.Background()
 
@@ -1775,14 +1782,14 @@ func TestDefaultBranchUsesOrdinaryCIPublicationAndSync(t *testing.T) {
 	if finished.Status != model.RunPassed || finished.Phase != "passed" || finished.Error != "" {
 		t.Fatalf("default branch run = %#v", finished)
 	}
-	if len(fixture.git.syncedBranches) != 1 || fixture.git.syncedBranches[0] != "oberth:main:"+sha {
+	if len(fixture.git.syncedBranches) != 1 || fixture.git.syncedBranches[0] != "codeberg/acme/oberth:main:"+sha {
 		t.Fatalf("default branch publication = %#v", fixture.git.syncedBranches)
 	}
 	_, err = fixture.api(t).CallTool(ctx, api.Actor{Identity: "agent@host"}, "sync", json.RawMessage(`{"sha":"`+sha+`"}`))
 	if err != nil {
 		t.Fatalf("default branch sync: %v", err)
 	}
-	if len(fixture.git.syncedBranches) != 2 || fixture.git.syncedBranches[1] != "oberth:main:"+sha {
+	if len(fixture.git.syncedBranches) != 2 || fixture.git.syncedBranches[1] != "codeberg/acme/oberth:main:"+sha {
 		t.Fatalf("default branch sync = %#v", fixture.git.syncedBranches)
 	}
 }
@@ -2194,20 +2201,35 @@ func TestSchedulerShutdownCancelsAndJoinsWorkers(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("scheduler did not join its canceled worker")
 	}
+	// Shutdown must NOT delete the Job inline any more: the requeue records
+	// a durable obligation the successor's cancellation pass executes
+	// (issue #270).
 	select {
 	case deleted := <-jobs.deleted:
-		if deleted != jobName {
-			t.Fatalf("deleted Job = %q, want %q", deleted, jobName)
-		}
+		t.Fatalf("shutdown deleted Job %q inline, want deletion owned by the durable obligation", deleted)
 	default:
-		t.Fatal("scheduler did not delete the canceled Job")
 	}
 	finished, err := fixture.store.Run(context.Background(), enqueued.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if finished.Status != model.RunInterrupted {
-		t.Fatalf("shutdown run status = %q", finished.Status)
+	if finished.Status != model.RunInterrupted || finished.SupersededBy == "" {
+		t.Fatalf("shutdown run = %#v, want interrupted and superseded by its requeue", finished)
+	}
+	requeued, err := fixture.store.Run(context.Background(), finished.SupersededBy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if requeued.Status != model.RunQueued || requeued.Ref != finished.Ref || requeued.SHA != finished.SHA {
+		t.Fatalf("requeued run = %#v, want queued copy of the shutdown run", requeued)
+	}
+	pending, err := fixture.store.PendingRunCancellations(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pending) != 1 || pending[0].RunID != enqueued.ID || pending[0].JobName != jobName ||
+		pending[0].SupersededBy != requeued.ID {
+		t.Fatalf("pending obligations = %#v, want the canceled Job %q owned by the requeue", pending, jobName)
 	}
 }
 
@@ -2274,7 +2296,7 @@ func TestReleaseChecksOutCommitButPublishesRawTagObject(t *testing.T) {
 	if len(fixture.git.checkouts) != 1 || fixture.git.checkouts[0] != commitSHA {
 		t.Fatalf("release checkouts = %#v", fixture.git.checkouts)
 	}
-	if len(fixture.git.syncedTags) != 1 || fixture.git.syncedTags[0] != "oberth:v1.2.3:"+objectSHA {
+	if len(fixture.git.syncedTags) != 1 || fixture.git.syncedTags[0] != "codeberg/acme/oberth:v1.2.3:"+objectSHA {
 		t.Fatalf("release tag syncs = %#v", fixture.git.syncedTags)
 	}
 	if len(fixture.jobs.createdReleases) != 1 || len(fixture.jobs.createdCI) != 0 {
@@ -2565,6 +2587,49 @@ func TestPromotionFastForwardDivergentAndNonFastForwardFailure(t *testing.T) {
 		promotion := requireToolPromotion(t, fixture, value)
 		if promotion.Status != model.PromotionPassed || promotion.RunID != "" || len(fixture.git.promotions) != 1 {
 			t.Fatalf("fast-forward promotion = %#v pushes=%#v", promotion, fixture.git.promotions)
+		}
+		// The merge plan must be prepared against the fully-qualified cache
+		// input; a bare repository name is ambiguous once the same name
+		// exists under several upstreams (issue #264).
+		if len(fixture.git.preparedRepos) != 1 || fixture.git.preparedRepos[0] != "codeberg/acme/oberth" {
+			t.Fatalf("prepared promotion repos = %#v, want [codeberg/acme/oberth]", fixture.git.preparedRepos)
+		}
+	})
+
+	t.Run("unborn target creates branch from tested source", func(t *testing.T) {
+		// Promotion side of the empty-upstream bootstrap (issue #264): a
+		// brand-new repository's first promotion targets a branch that does
+		// not exist upstream. The plan carries TargetUnborn with an empty
+		// base; publication uses creation semantics (known empty previous).
+		fixture := newControlFixture(t)
+		seedGreen(t, fixture)
+		fixture.git.plan = gitcache.MergeCandidate{MergedSHA: sourceSHA, FastForward: true, TargetUnborn: true}
+		value, err := fixture.api(t).CallTool(context.Background(), api.Actor{Identity: "agent@host"}, "promote", json.RawMessage(`{"sha":"`+sourceSHA+`","branch":"main"}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		promotion := requireToolPromotion(t, fixture, value)
+		if promotion.Status != model.PromotionPassed || promotion.PreviousSHA != zeroOID || promotion.ResultSHA != sourceSHA || len(fixture.git.promotions) != 1 {
+			t.Fatalf("unborn-target promotion = %#v pushes=%#v", promotion, fixture.git.promotions)
+		}
+	})
+
+	t.Run("unborn plan with a base or without fast-forward is invalid", func(t *testing.T) {
+		for _, plan := range []gitcache.MergeCandidate{
+			{BaseSHA: baseSHA, MergedSHA: sourceSHA, FastForward: true, TargetUnborn: true},
+			{MergedSHA: sourceSHA, TargetUnborn: true},
+		} {
+			fixture := newControlFixture(t)
+			seedGreen(t, fixture)
+			fixture.git.plan = plan
+			value, err := fixture.api(t).CallTool(context.Background(), api.Actor{Identity: "agent@host"}, "promote", json.RawMessage(`{"sha":"`+sourceSHA+`","branch":"main"}`))
+			if err != nil {
+				t.Fatal(err)
+			}
+			promotion := requireToolPromotion(t, fixture, value)
+			if promotion.Status != model.PromotionFailed || !strings.Contains(promotion.Error, "invalid object IDs") {
+				t.Fatalf("contradictory unborn plan %+v -> %#v, want failed invalid-object-IDs", plan, promotion)
+			}
 		}
 	})
 

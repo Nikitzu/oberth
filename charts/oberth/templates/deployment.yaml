@@ -82,7 +82,7 @@ spec:
         - name: prepare-caches
           image: {{ .Values.image.ref | quote }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
-          command: ["/bin/sh", "-c", "exec install -d -m 0750 -o 65534 -g 65534 \"$@\"", "prepare-caches"]
+          command: ["/bin/sh", "-c", "for dir; do if [ -L \"$dir\" ]; then echo \"prepare-caches: refusing symlink at $dir\" >&2; exit 1; fi; if [ -e \"$dir\" ] && ! [ -d \"$dir\" ]; then echo \"prepare-caches: $dir exists and is not a directory\" >&2; exit 1; fi; done; exec install -d -m 0750 -o 65534 -g 65534 \"$@\"", "prepare-caches"]
           args:
             - {{ .Values.cache.ciRoot | quote }}
             - {{ .Values.cache.releaseRoot | quote }}
@@ -212,6 +212,12 @@ spec:
             {{- end }}
             {{- end }}
             - --argo-namespace={{ required "argo.namespace is required" .Values.argo.namespace }}
+            {{- if .Values.argo.controllerProfile }}
+            {{- if ne .Values.argo.controllerProfile "nonroot-static-v1" }}
+            {{- fail "argo.controllerProfile must be empty or nonroot-static-v1" }}
+            {{- end }}
+            - --argo-controller-profile={{ .Values.argo.controllerProfile }}
+            {{- end }}
             - --argo-pipeline-serviceaccount={{ .Values.argo.pipelineServiceAccount | default .Values.argo.ciServiceAccount | default "oberth-argo-pipeline" }}
             - --argo-credentialed-serviceaccount={{ .Values.argo.credentialedServiceAccount | default "oberth-argo-credentialed" }}
             - --argo-ci-secrets-serviceaccount={{ (.Values.argo.ciSecrets).serviceAccount | default "oberth-argo-ci-secrets" }}

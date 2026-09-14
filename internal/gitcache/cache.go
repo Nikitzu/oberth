@@ -224,6 +224,7 @@ type Cache struct {
 	outboxRoot      string
 	globalConfig    string
 	upstream        func(string) (string, error)
+	qualify         func(string) (RepoQualification, error)
 	gitBinary       string
 	timeout         time.Duration
 	env             map[string]string
@@ -276,6 +277,7 @@ func New(config Config) (*Cache, error) {
 		outboxRoot:      outboxRoot,
 		globalConfig:    globalConfig,
 		upstream:        config.Upstream,
+		qualify:         config.RepoQualifier,
 		gitBinary:       gitBinary,
 		timeout:         defaultTimeout(config.CommandTimeout),
 		env:             cloneMap(config.Env),
@@ -294,7 +296,7 @@ func (c *Cache) Ensure(ctx context.Context, input string) (Repository, error) {
 	if err != nil {
 		return Repository{}, err
 	}
-	lock := c.repoLock(repo)
+	lock := c.repoLock(path)
 	lock.Lock()
 	defer lock.Unlock()
 	return c.ensureLocked(ctx, input, repo, path)
@@ -418,6 +420,11 @@ func (c *Cache) ensureLockedMayRecover(ctx context.Context, input, repo, path st
 	if err := installReceiveHooks(temporary); err != nil {
 		return Repository{}, fmt.Errorf("install receive policy for %s: %w", repo, err)
 	}
+	// The qualified layout nests caches under <upstream>/<org>/; the parent
+	// directories must exist before the atomic rename publishes the cache.
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return Repository{}, fmt.Errorf("create cache parent for %s: %w", repo, err)
+	}
 	if err := os.Rename(temporary, path); err != nil {
 		return Repository{}, fmt.Errorf("publish cache for %s: %w", repo, err)
 	}
@@ -483,6 +490,19 @@ func (c *Cache) prepareReleaseAdmissionLocked(ctx context.Context, path string, 
 		return ReleaseAdmission{}, c.deleteRef(ctx, path, admissionRef, "")
 	}
 	upstreamRef := upstreamRefPrefix + "heads/" + defaultBranch
+	// A brand-new empty upstream has an unborn default branch, so no
+	// tracking ref exists yet (issue #264 bootstrap). That is not an error:
+	// it means there is NO admission anchor — the empty admission below
+	// keeps every release tag refused (a tag must be reachable from the
+	// fresh upstream default branch, and nothing is reachable from an
+	// unborn branch) while branch receives proceed. The check is
+	// existence-based, never a guess: any OTHER rev-parse failure still
+	// refuses the receive.
+	if _, refErr := c.capture(ctx, path, "show-ref", "--verify", "--quiet", upstreamRef); refErr != nil {
+		if refs, listErr := c.capture(ctx, path, "for-each-ref", "--count=1", upstreamRefPrefix); listErr == nil && strings.TrimSpace(refs) == "" {
+			return ReleaseAdmission{}, c.deleteRef(ctx, path, admissionRef, "")
+		}
+	}
 	sha, err := c.capture(ctx, path, "rev-parse", "--verify", upstreamRef)
 	if err != nil {
 		return ReleaseAdmission{}, fmt.Errorf("resolve fresh upstream default branch: %w", err)
@@ -850,20 +870,44 @@ func (c *Cache) writeMaterializeManifest(path string, tracking, owned map[string
 }
 
 func (c *Cache) discoverDefaultBranch(ctx context.Context, path string) (string, error) {
-	output, err := c.capture(ctx, path, "ls-remote", "--symref", "upstream", "HEAD")
+	symrefOutput, err := c.capture(ctx, path, "ls-remote", "--symref", "upstream", "HEAD")
 	if err != nil {
 		return "", err
 	}
-	return parseSymrefHead(output)
+	branch, err := defaultBranchFromSymref(symrefOutput)
+	if err == nil {
+		return branch, nil
+	}
+	if !errors.Is(err, errNoSymbolicDefaultBranch) {
+		return "", err
+	}
+	// No symbolic HEAD in the advertisement. Distinguish a brand-new EMPTY
+	// upstream (repository provisioned on the forge with zero commits —
+	// e.g. github.com/oberthci/terraform at bootstrap; some servers do not
+	// advertise the unborn-HEAD symref over ls-remote) from an upstream
+	// that HAS refs but no symbolic HEAD. The empty case has nothing to
+	// guess between and falls back to "main", the same default `repo add`
+	// records until the first push confirms it; the populated case stays a
+	// hard error because choosing among existing branches would guess the
+	// promotion target and the release reachability anchor.
+	refsOutput, refsErr := c.capture(ctx, path, "ls-remote", "upstream")
+	if refsErr != nil {
+		return "", errors.Join(err, refsErr)
+	}
+	if strings.TrimSpace(refsOutput) == "" {
+		return "main", nil
+	}
+	return "", err
 }
 
-// parseSymrefHead reads the branch out of `git ls-remote --symref <remote> HEAD`.
-//
-// The advertisement is the only place a forge states which branch it calls
-// default. Everything else is a guess, and the guess that used to be made here
-// was the constant "main", which is wrong for every repository still on
-// master.
-func parseSymrefHead(output string) (string, error) {
+// errNoSymbolicDefaultBranch reports an upstream advertisement that carries
+// no symbolic HEAD; discoverDefaultBranch decides whether that is the empty
+// bootstrap case or a hard error.
+var errNoSymbolicDefaultBranch = errors.New("upstream did not advertise a symbolic default branch")
+
+// defaultBranchFromSymref extracts the default branch from
+// `ls-remote --symref <remote> HEAD` output.
+func defaultBranchFromSymref(output string) (string, error) {
 	for _, line := range strings.Split(output, "\n") {
 		fields := strings.Fields(line)
 		if len(fields) != 3 || fields[0] != "ref:" || fields[2] != "HEAD" || !strings.HasPrefix(fields[1], "refs/heads/") {
@@ -875,7 +919,7 @@ func parseSymrefHead(output string) (string, error) {
 		}
 		return branch, nil
 	}
-	return "", errors.New("upstream did not advertise a symbolic default branch")
+	return "", errNoSymbolicDefaultBranch
 }
 
 func (c *Cache) currentDefaultBranch(ctx context.Context, path string) (string, error) {
@@ -899,7 +943,14 @@ func (c *Cache) setHead(ctx context.Context, path, branch string) error {
 	}
 	ref := "refs/heads/" + branch
 	if _, err := c.capture(ctx, path, "show-ref", "--verify", "--quiet", ref); err != nil {
-		return fmt.Errorf("upstream default branch %s was not fetched: %w", branch, err)
+		// Unborn-branch bootstrap: an EMPTY upstream fetched zero refs, so
+		// its default branch cannot exist in the cache yet. Point HEAD at
+		// the unborn branch only when the cache holds no refs at all — a
+		// missing branch in a populated cache still means the fetch failed.
+		refs, listErr := c.capture(ctx, path, "for-each-ref", "--count=1")
+		if listErr != nil || strings.TrimSpace(refs) != "" {
+			return fmt.Errorf("upstream default branch %s was not fetched: %w", branch, err)
+		}
 	}
 	return c.run(ctx, commandSpec{dir: path, args: []string{"symbolic-ref", "HEAD", ref}})
 }
@@ -914,6 +965,18 @@ func (c *Cache) path(input string) (string, string, error) {
 	if err != nil {
 		return "", "", err
 	}
+	if c.qualify != nil {
+		qualification, qualifyErr := c.qualify(input)
+		if qualifyErr != nil {
+			return "", "", fmt.Errorf("resolve cache identity for %q: %w", input, qualifyErr)
+		}
+		// The catalog's canonical spellings win over the client-cased
+		// segments: org matching upstream is case-insensitive for operator
+		// convenience, but the on-disk path must be byte-stable. A true
+		// identity mismatch (wrong org for a registered repo) is refused by
+		// the resolver itself before any disk path is derived.
+		upstream, org = qualification.UpstreamName, qualification.Org
+	}
 	cachePath := c.qualifiedCachePath(upstream, org, repo)
 	relative, err := filepath.Rel(c.root, cachePath)
 	if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
@@ -924,21 +987,32 @@ func (c *Cache) path(input string) (string, string, error) {
 
 // qualifiedCachePath resolves the on-disk path for a repository's bare cache.
 //
-// Currently the cache uses a flat layout (<root>/<repo>.git) regardless of
-// input form. The upstream and org from a 3-segment push are validated by
-// ParseRepoPath but do not influence the on-disk path. This ensures that
-// "codeberg/oberthci/oberth" and "oberth" resolve to the same cache
-// directory, preserving the "one repo, one cache" invariant without
-// requiring a startup migration or a RepoQualifier callback.
+// With a full qualification the layout is <root>/<upstream>/<org>/<repo>.git,
+// which lets same-named repositories under different upstreams coexist with
+// strictly disjoint caches (issue #264): "codeberg/cloudtaser/terraform" and
+// "github/oberthci/terraform" resolve to different directories, and every
+// input form of ONE repository resolves to the same directory because the
+// RepoQualifier returns catalog-canonical segments regardless of input form.
 //
-// A future qualified layout (<root>/<upstream>/<org>/<repo>.git) may be
-// introduced with an explicit migration step.
-func (c *Cache) qualifiedCachePath(_, _, repo string) string {
+// Without a qualification (nil RepoQualifier in tests, or a legacy caller)
+// the flat layout (<root>/<repo>.git) is preserved. Existing flat caches are
+// moved to the qualified layout by MigrateToQualifiedLayout at server
+// startup — see migrate_cache.go.
+func (c *Cache) qualifiedCachePath(upstream, org, repo string) string {
+	if upstream != "" && org != "" &&
+		!strings.ContainsAny(upstream, "/\\") && !strings.ContainsAny(org, "/\\") &&
+		upstream != "." && upstream != ".." && org != "." && org != ".." {
+		return filepath.Join(c.root, upstream, org, repo+".git")
+	}
 	return filepath.Join(c.root, repo+".git")
 }
 
-func (c *Cache) repoLock(repo string) *sync.Mutex {
-	value, _ := c.locks.LoadOrStore(repo, &sync.Mutex{})
+// repoLock returns the mutex guarding one cache directory. Locks are keyed
+// by the resolved cache path — never by the bare name — so every spelling of
+// one repository shares a lock and same-named repositories under different
+// upstreams do not contend or alias (issue #264).
+func (c *Cache) repoLock(cachePath string) *sync.Mutex {
+	value, _ := c.locks.LoadOrStore(cachePath, &sync.Mutex{})
 	return value.(*sync.Mutex)
 }
 
@@ -960,14 +1034,14 @@ func (c *Cache) receiveLock(repo string) *sync.Mutex {
 // missing directory is success: removal is idempotent, and the next push's
 // Ensure recreates the cache from the upstream.
 func (c *Cache) RemoveRepository(input string) error {
-	repo, path, err := c.path(input)
+	_, path, err := c.path(input)
 	if err != nil {
 		return err
 	}
-	receiveLock := c.receiveLock(repo)
+	receiveLock := c.receiveLock(path)
 	receiveLock.Lock()
 	defer receiveLock.Unlock()
-	lock := c.repoLock(repo)
+	lock := c.repoLock(path)
 	lock.Lock()
 	defer lock.Unlock()
 	if err := os.RemoveAll(path); err != nil {
@@ -987,7 +1061,7 @@ func (c *Cache) RefSHA(ctx context.Context, input string, branch string) (string
 	if err != nil {
 		return "", err
 	}
-	lock := c.repoLock(repo)
+	lock := c.repoLock(path)
 	lock.Lock()
 	defer lock.Unlock()
 	if !c.isBare(ctx, path) {
@@ -1006,11 +1080,11 @@ func (c *Cache) RefSHA(ctx context.Context, input string, branch string) (string
 
 // SnapshotRefs returns only client-owned public branch and tag refs.
 func (c *Cache) SnapshotRefs(ctx context.Context, input string) (map[string]string, error) {
-	repo, path, err := c.path(input)
+	_, path, err := c.path(input)
 	if err != nil {
 		return nil, err
 	}
-	lock := c.repoLock(repo)
+	lock := c.repoLock(path)
 	lock.Lock()
 	defer lock.Unlock()
 	return c.listRefsAtMost(ctx, path, maximumReceiveSnapshotRefs, "refs/heads/", "refs/tags/")
@@ -1088,7 +1162,7 @@ func (c *Cache) Serve(ctx context.Context, input string, service Service, protoc
 	if err != nil {
 		return err
 	}
-	lock := c.repoLock(repo)
+	lock := c.repoLock(path)
 	lock.Lock()
 	defer lock.Unlock()
 	if !c.isBare(ctx, path) {

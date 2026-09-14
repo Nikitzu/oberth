@@ -703,6 +703,27 @@ func (service *API) status(ctx context.Context, repositoryName, selector, actor 
 	return response, nil
 }
 
+// upstreamResolver is the optional store capability statusRefWithoutRun uses
+// to compose fully-qualified cache inputs. The production store implements
+// it; fixtures without upstream wiring fall back to the bare name, which
+// resolves for every uniquely-named repository (issue #264).
+type upstreamResolver interface {
+	Upstream(context.Context, int64) (model.Upstream, error)
+}
+
+// cacheInputFor returns the repository input used for git-cache reads:
+// fully qualified when the upstream is resolvable, bare otherwise. A bare
+// name that is ambiguous across upstreams makes the cache read fail closed
+// rather than guess.
+func (service *API) cacheInputFor(ctx context.Context, repository model.Repository) string {
+	if resolver, ok := service.runs.(upstreamResolver); ok {
+		if upstream, err := resolver.Upstream(ctx, repository.UpstreamID); err == nil {
+			return upstream.QualifiedRepo(repository.Name)
+		}
+	}
+	return repository.Name
+}
+
 // statusRefWithoutRun resolves a selector as a branch name in the bare Git
 // cache when no run exists for that ref name. After resolving the SHA it also
 // tries a SHA-based run lookup, which catches promotion runs whose ref is
@@ -713,7 +734,7 @@ func (service *API) statusRefWithoutRun(ctx context.Context, repositoryName, sel
 		if err != nil {
 			return StatusResponse{}, err
 		}
-		sha, err := service.refs.RefSHA(ctx, repository.Name, selector)
+		sha, err := service.refs.RefSHA(ctx, service.cacheInputFor(ctx, repository), selector)
 		if err != nil {
 			return StatusResponse{}, fmt.Errorf("%w: run selector %q", store.ErrNotFound, selector)
 		}
@@ -736,7 +757,7 @@ func (service *API) statusRefWithoutRun(ctx context.Context, repositoryName, sel
 	var matched model.Repository
 	var matchedSHA string
 	for _, repository := range repositories {
-		sha, refErr := service.refs.RefSHA(ctx, repository.Name, selector)
+		sha, refErr := service.refs.RefSHA(ctx, service.cacheInputFor(ctx, repository), selector)
 		if refErr != nil {
 			continue
 		}
@@ -1036,7 +1057,7 @@ func (service *API) waitRun(ctx context.Context, repositoryName, selector, trigg
 	if !validSHASelector(selector) {
 		return WaitResponse{}, fmt.Errorf("%w: full or short SHA is required", ErrInvalidInput)
 	}
-	trigger = strings.TrimSpace(trigger)
+	trigger = normalizeTrigger(strings.TrimSpace(trigger))
 	duration, err := service.waitDuration(requestedSeconds)
 	if err != nil {
 		return WaitResponse{}, err
@@ -1072,10 +1093,24 @@ func (service *API) waitRun(ctx context.Context, repositoryName, selector, trigg
 		case <-ctx.Done():
 			return WaitResponse{}, ctx.Err()
 		case <-timer.C:
-			return WaitResponse{StatusResponse: status, StillRunning: true}, nil
+			// Derive still_running from the actual run state so the flag
+			// and the reported status are always consistent. A resolved run
+			// that is terminal should never be reported as still running,
+			// even when the trigger filter did not match.
+			return WaitResponse{StatusResponse: status, StillRunning: !status.Run.Status.Terminal()}, nil
 		case <-changed:
 		}
 	}
+}
+
+// normalizeTrigger maps accepted trigger aliases to their persisted form.
+// The MCP schema historically documented 'ci' for branch runs, but the
+// stored trigger is 'branch'. Accept both to avoid silent filter misses.
+func normalizeTrigger(trigger string) string {
+	if trigger == "ci" {
+		return "branch"
+	}
+	return trigger
 }
 
 func validSHASelector(value string) bool {
@@ -1150,7 +1185,9 @@ func (service *API) sync(ctx context.Context, actor api.Actor, repositoryName, s
 	}
 	if err := auditedGitMutation(ctx, service.auditor, actor.Identity, "sync.branch", "run", run.ID,
 		map[string]any{"repo": repository.Name, "branch": run.Ref, "sha": run.SHA},
-		func() error { return service.git.SyncBranch(ctx, repository.Name, run.Ref, run.SHA) }); err != nil {
+		func() error {
+			return service.git.SyncBranch(ctx, service.cacheInputFor(ctx, repository), run.Ref, run.SHA)
+		}); err != nil {
 		return model.Run{}, fmt.Errorf("sync branch: %w", err)
 	}
 	return run, nil
@@ -1196,14 +1233,25 @@ func (service *API) promote(ctx context.Context, actor api.Actor, repositoryName
 		defer cancelCleanup()
 		result = service.cleanupTerminalPromotionWorkspace(cleanupCtx, result)
 	}()
-	plan, err := service.git.PreparePromotion(ctx, repository.Name, candidate.SHA, target, workspaceSource)
+	plan, err := service.git.PreparePromotion(ctx, service.cacheInputFor(ctx, repository), candidate.SHA, target, workspaceSource)
 	if err != nil {
 		return service.failAdmittedPromotion(ctx, promotion, "prepare promotion: "+err.Error(), "")
 	}
-	if !validOID(plan.BaseSHA) || !validOID(plan.MergedSHA) {
+	if !validOID(plan.MergedSHA) ||
+		(plan.TargetUnborn && (plan.BaseSHA != "" || !plan.FastForward)) ||
+		(!plan.TargetUnborn && !validOID(plan.BaseSHA)) {
 		return service.failAdmittedPromotion(ctx, promotion, "promotion plan contains invalid object IDs", "")
 	}
-	planned, err := service.promotions.PlanPromotion(ctx, promotion.ID, plan.BaseSHA, plan.MergedSHA)
+	// An unborn target (brand-new repository, issue #264) has no base
+	// commit. The promotion row records Git's canonical zero OID — the
+	// receive-pack representation of a created ref — because the store
+	// schema requires a concrete planned base; the publication keeps the
+	// empty previous, which is the delivery layer's creation contract.
+	planBase := plan.BaseSHA
+	if plan.TargetUnborn {
+		planBase = zeroOID
+	}
+	planned, err := service.promotions.PlanPromotion(ctx, promotion.ID, planBase, plan.MergedSHA)
 	if err != nil {
 		return service.failAdmittedPromotion(ctx, promotion, "record promotion plan: "+err.Error(), "")
 	}
@@ -1216,7 +1264,7 @@ func (service *API) promote(ctx context.Context, actor api.Actor, repositoryName
 	if plan.FastForward {
 		publication, err := service.promotions.BeginPublication(ctx, model.PublicationSpec{
 			RepoID: repository.ID, PromotionID: promotion.ID, RefKind: model.RefBranch, Ref: target,
-			PreviousSHA: plan.BaseSHA, PreviousKnown: true,
+			PreviousSHA: planBase, PreviousKnown: true,
 			ResultSHA: plan.MergedSHA, Actor: actor.Identity,
 		})
 		if err != nil {

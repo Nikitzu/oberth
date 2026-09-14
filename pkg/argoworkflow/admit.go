@@ -67,6 +67,9 @@ func Admit(workflow *wfv1.Workflow, policy Policy) error {
 	problems = append(problems, admitMetadata(workflow)...)
 	problems = append(problems, admitSpec(&workflow.Spec)...)
 	problems = append(problems, admitTemplates(workflow, policy)...)
+	if _, err := DeclaredNonrootTemplates(workflow); err != nil {
+		problems = append(problems, err)
+	}
 	return errors.Join(problems...)
 }
 
@@ -406,6 +409,24 @@ func admitNestedTemplates(location string, template wfv1.Template, policy Policy
 		if len(template.DAG.Tasks) > MaxDAGTasks {
 			problems = append(problems, fmt.Errorf("argoworkflow: %s.dag declares %d tasks, maximum is %d",
 				location, len(template.DAG.Tasks), MaxDAGTasks))
+		}
+		// Argo rejects a DAG template that mixes enhanced depends (string
+		// expressions) with legacy dependencies (string lists). Catch the
+		// same combination at admission so `oberth validate` reports it
+		// before a push creates a red run.
+		hasDepends, hasDependencies := false, false
+		for _, task := range template.DAG.Tasks {
+			if strings.TrimSpace(task.Depends) != "" {
+				hasDepends = true
+			}
+			if len(task.Dependencies) != 0 {
+				hasDependencies = true
+			}
+		}
+		if hasDepends && hasDependencies {
+			problems = append(problems, fmt.Errorf(
+				"argoworkflow: %s.dag cannot use both 'depends' and 'dependencies' in the same DAG template",
+				location))
 		}
 		for index, task := range template.DAG.Tasks {
 			where := fmt.Sprintf("%s.dag.tasks[%d]", location, index)

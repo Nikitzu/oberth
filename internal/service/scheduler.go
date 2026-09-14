@@ -416,7 +416,13 @@ func (scheduler *Scheduler) execute(ctx context.Context, run model.Run, require 
 	if !pathWithin(scheduler.workspaceRoot, sourceDir) {
 		return scheduler.finishInfrastructureFailure(ctx, run, repository, errors.New("workspace path escaped root"))
 	}
-	if err := scheduler.git.Checkout(ctx, repository.Name, checkoutSHA, sourceDir); err != nil {
+	// The cache input is fully qualified so same-named repositories under
+	// different upstreams check out from their own caches (issue #264).
+	upstream, err := scheduler.store.Upstream(ctx, repository.UpstreamID)
+	if err != nil {
+		return scheduler.finishInfrastructureFailure(ctx, run, repository, fmt.Errorf("load run repository upstream: %w", err))
+	}
+	if err := scheduler.git.Checkout(ctx, upstream.QualifiedRepo(repository.Name), checkoutSHA, sourceDir); err != nil {
 		return scheduler.finishInfrastructureFailure(ctx, run, repository, fmt.Errorf("checkout run workspace: %w", err))
 	}
 	logFile, err := scheduler.logs.Create(run.ID)
@@ -571,7 +577,22 @@ func (scheduler *Scheduler) execute(ctx context.Context, run model.Run, require 
 			jobResult = reconciled
 			waitErr = nil
 		} else {
-			// Job not terminal, absent, or state unreadable — delete and interrupt.
+			// Job not terminal, absent, or state unreadable at shutdown.
+			// Requeue-with-supersede when eligible (issue #270): the durable
+			// obligation owns the Job deletion, and whichever process next
+			// runs a cancellation pass — the successor's startup in the
+			// upgrade case — executes it before the replacement is claimed.
+			if requeued, requeueErr := scheduler.store.RequeueStrandedRun(finalizeCtx, run.ID); requeueErr == nil {
+				_ = logFile.Close()
+				scheduler.signals.NotifyRun(run.ID)
+				scheduler.signals.NotifyRun(requeued.ID)
+				return nil
+			} else if !errors.Is(requeueErr, store.ErrRequeueIneligible) {
+				_ = logFile.Close()
+				return fmt.Errorf("requeue run %s during scheduler shutdown: %w", run.ID, requeueErr)
+			}
+			// Ineligible work keeps the conservative contract: delete, then
+			// terminalize as interrupted.
 			if deleteErr := scheduler.jobs.Delete(finalizeCtx, jobName, run.ID); deleteErr != nil {
 				_ = logFile.Close()
 				return fmt.Errorf("cancel Job %s during scheduler shutdown: %w", jobName, deleteErr)
@@ -920,7 +941,11 @@ func (scheduler *Scheduler) deliverPublicationWithGate(
 	if err := require(ctx); err != nil {
 		return model.PublicationFinalization{}, err
 	}
-	finalization, err := deliverPublication(ctx, scheduler.store, scheduler.git, scheduler.auditor, repository, publication)
+	publicationInput := repository.Name
+	if upstream, upstreamErr := scheduler.store.Upstream(ctx, repository.UpstreamID); upstreamErr == nil {
+		publicationInput = upstream.QualifiedRepo(repository.Name)
+	}
+	finalization, err := deliverPublication(ctx, scheduler.store, scheduler.git, scheduler.auditor, repository, publicationInput, publication)
 	if err != nil {
 		return model.PublicationFinalization{}, err
 	}
@@ -1002,6 +1027,24 @@ func (scheduler *Scheduler) reconcileStrandedRunsWithGate(ctx context.Context, r
 				return err
 			}
 		} else {
+			requeued, requeueErr := scheduler.store.RequeueStrandedRun(ctx, run.ID)
+			if requeueErr == nil {
+				// The stranded Job's deletion is now owned by the durable
+				// supersede obligation the requeue recorded; the cancellation
+				// pass that runs immediately after reconciliation executes it
+				// before any new claim can start the replacement run
+				// (issue #270). The obligation must stay pending here, so the
+				// loop tail's CompleteRunCancellation is skipped.
+				scheduler.signals.NotifyRun(run.ID)
+				scheduler.signals.NotifyRun(requeued.ID)
+				cleanupCtx, cancelCleanup := boundedWorkspaceCleanupContext(ctx)
+				_ = scheduler.workspaces.cleanupRun(cleanupCtx, run.ID)
+				cancelCleanup()
+				continue
+			}
+			if !errors.Is(requeueErr, store.ErrRequeueIneligible) {
+				return fmt.Errorf("requeue stranded run %s: %w", run.ID, requeueErr)
+			}
 			deleteCtx, cancelDelete := boundedWorkspaceCleanupContext(ctx)
 			deleteErr := scheduler.jobs.Delete(deleteCtx, run.JobName, run.ID)
 			cancelDelete()

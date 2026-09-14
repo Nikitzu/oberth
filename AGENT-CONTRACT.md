@@ -327,12 +327,19 @@ implementation detail disagree.
   `<repo>[.git]`, `<org>/<repo>[.git]`, and
   `<upstream-name>/<org>/<repo>[.git]`. All spellings of one repository
   resolve to the same identity — so one repository has exactly one cache
-  directory (flat `<root>/<repo>.git`; a qualified on-disk layout requires
-  its own explicit migration design), one lock, and one durable receive
-  reservation regardless of spelling. For a registered repository, a
-  supplied upstream name must equal the registered upstream's name and a
-  supplied org must equal that upstream's org identity; mismatches fail
-  closed. Nested paths beyond three segments are rejected.
+  directory, one lock, and one durable receive reservation regardless of
+  spelling. The on-disk layout is org-qualified
+  (`<root>/<upstream>/<org>/<repo>.git`, issue #264): the server derives it
+  from the catalog's canonical identity via the cache's RepoQualifier, so
+  same-named repositories under different upstreams hold strictly disjoint
+  caches, and pre-#264 flat directories (`<root>/<repo>.git`) are moved by
+  an idempotent, crash-safe startup migration before any listener exists.
+  A supplied upstream name must name a registered upstream and a supplied
+  org must equal that upstream's org identity; an org-qualified path always
+  addresses that org's OWN namespace (never another org's same-named
+  repository), and a bare name that exists under multiple upstreams is
+  refused with disambiguation guidance — nothing guesses. Nested paths
+  beyond three segments are rejected.
 - Canonical persistence (#245 G3, schema v11/v12): `repositories` enforces
   compound `UNIQUE(upstream_id, name)`, so the same bare name may exist
   under different upstreams. Store lookups by name accept all three
@@ -510,6 +517,20 @@ implementation detail disagree.
   and branch marks the older run `interrupted`, records which newer run
   superseded it, and creates a durable cancellation obligation for any in-flight
   Kubernetes Job.
+- A server stop or restart re-fires stranded ordinary branch runs through
+  the same supersede mechanism (issue #270), on all three termination paths:
+  graceful-shutdown compensation in the stopping process, owner startup
+  recovery for claimed runs without a Job, and startup reconciliation for
+  Jobs that cannot report a terminal result. The stranded run is interrupted
+  with a link to a fresh queued copy of the same commit, and the stranded
+  Job's deletion obligation executes before the replacement can be claimed
+  (in the upgrade case, by the successor's startup cancellation pass). Jobs
+  that finished while the server was away keep their real result. Branch
+  runs that mounted ci-secrets are re-fired like any other branch run — the
+  copy starts uncredentialed and re-earns delivery through normal admission.
+  Promotion CI, tag/release, and publication-owning runs are never re-fired
+  automatically; they terminalize conservatively exactly as before, and a
+  branch that already has newer active work keeps only that newest run.
 - Green branch runs force-sync that same branch to the upstream forge. Red runs
   create or update one open CI issue per repository and branch with the new SHA,
   bounded failure tail, and full burn-log command hint; green closes it.
@@ -517,6 +538,11 @@ implementation detail disagree.
   fetched target fast-forwards to that exact candidate. Divergent merges and a
   fetched target that already contains the candidate receive target-tree CI.
   The chosen target is pushed without force; a moved target fails the promotion.
+  An unborn target (brand-new repository whose upstream lacks the branch —
+  confirmed by a successful, empty ls-remote, never inferred from a failed
+  fetch) is a fast-forward creation of the tested source; the promotion row
+  records the zero OID as its planned base and delivery expects the ref to be
+  absent, failing closed if the target appeared concurrently.
 - A reachable tag runs the release burn with the release-only cache and
   store-sourced credentials; an unreachable tag receives no release credentials
   and is not synced.
@@ -714,9 +740,24 @@ implementation detail disagree.
   `pods/exec` create for the in-memory secret delivery. Job pods receive no
   service-account token, run as UID/GID 0 with all Linux capabilities dropped
   (`Capabilities.Drop: ["ALL"]`), have bounded resources and deadlines, never
-  retry, and are garbage-collected after completion. Moving to non-root
-  UID 65534 is a separate follow-up requiring toolchain and PVC ownership
-  validation.
+  retry, and are garbage-collected after completion. Argo-authored workflows
+  may select named plain container/script leaves with the static annotation
+  `oberth.ci/nonroot-templates: test-one,test-two`. In this initial mode the
+  entire workflow must be uncredentialed, with no templateDefaults, and selected
+  leaves cannot add init containers, sidecars, plugins, artifacts or nested Pod
+  shapes. The fixed main and Argo init/wait UID/GID is65534, with RuntimeDefault,
+  dropALL, no escalation and a read-only root. Repository security contexts and
+  Pod patches remain forbidden. One server-owned UID0 initializer, using the
+  pinned source-seed image with the same restrictions and no token, prepares
+  only named fresh per-Pod EmptyDirs. It cannot mount source, PVCs or host paths.
+  No chown or fsGroup change is made. Main remains tokenless; Argo's existing
+  executor token remains scoped to its init/wait. Source and shared tool inputs,
+  including their executor mirrors, remain read-only; the selected leaf has no
+  host cache mount. TMPDIR/GOTMPDIR are `/tmp` and Go/tool caches are ephemeral
+  within that bounded private Pod volume. Collected artifacts retain their
+  separate existing run-owned mount. Actual PostgreSQL startup and Chromium's
+  namespace/seccomp sandbox require separate execution proof; this interface
+  alone does not establish either test suite's coverage.
 - Security-backported runner tools are rebuilt from immutable upstream release
   source, identify themselves as Oberth derivatives, and are bound to their
   patched module versions and exact binary digests by the image contract.

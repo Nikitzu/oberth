@@ -1028,3 +1028,64 @@ spec:
 `
 	mustAdmit(t, document, Policy{})
 }
+
+// TestAdmitRefusesMixedDependsAndDependencies checks that a DAG template
+// mixing enhanced-depends (string expressions) with legacy dependencies
+// (string arrays) is rejected at admission, matching the executor's own check.
+func TestAdmitRefusesMixedDependsAndDependencies(t *testing.T) {
+	t.Parallel()
+	const document = `
+apiVersion: argoproj.io/v1alpha1
+kind: Workflow
+spec:
+  entrypoint: pipeline
+  activeDeadlineSeconds: 3600
+  templates:
+    - name: pipeline
+      dag:
+        tasks:
+          - name: setup
+            template: work
+          - name: lint
+            depends: setup
+            template: work
+          - name: test
+            dependencies: [setup]
+            template: work
+    - name: work
+      container:
+        image: golang:1.26-alpine@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+        command: [/bin/true]
+`
+	refuse(t, document, Policy{}, "cannot use both 'depends' and 'dependencies'")
+}
+
+// TestAdmitAcceptsConsistentDependsOnly verifies that a DAG using only the
+// enhanced depends syntax passes admission.
+func TestAdmitAcceptsConsistentDependsOnly(t *testing.T) {
+	t.Parallel()
+	const document = `
+apiVersion: argoproj.io/v1alpha1
+kind: Workflow
+spec:
+  entrypoint: pipeline
+  activeDeadlineSeconds: 3600
+  templates:
+    - name: pipeline
+      dag:
+        tasks:
+          - name: setup
+            template: work
+          - name: lint
+            depends: setup
+            template: work
+          - name: test
+            depends: setup
+            template: work
+    - name: work
+      container:
+        image: golang:1.26-alpine@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+        command: [/bin/true]
+`
+	mustAdmit(t, document, Policy{})
+}

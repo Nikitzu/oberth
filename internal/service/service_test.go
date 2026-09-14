@@ -355,6 +355,56 @@ func TestWaitRejectsTimeoutAboveAdvertisedMaximum(t *testing.T) {
 	}
 }
 
+func TestNormalizeTriggerMapsCIToBranch(t *testing.T) {
+	t.Parallel()
+	if got := normalizeTrigger("ci"); got != "branch" {
+		t.Fatalf("normalizeTrigger(ci) = %q, want branch", got)
+	}
+	if got := normalizeTrigger("branch"); got != "branch" {
+		t.Fatalf("normalizeTrigger(branch) = %q, want branch", got)
+	}
+	if got := normalizeTrigger("release"); got != "release" {
+		t.Fatalf("normalizeTrigger(release) = %q, want release", got)
+	}
+	if got := normalizeTrigger(""); got != "" {
+		t.Fatalf("normalizeTrigger('') = %q, want empty", got)
+	}
+}
+
+// TestWaitTerminalRunTimeoutNotStillRunning verifies that when a timeout fires
+// and the resolved run is already terminal, still_running is false. This
+// prevents the inconsistency where status=delivered and still_running=true.
+func TestWaitTerminalRunTimeoutNotStillRunning(t *testing.T) {
+	t.Parallel()
+	store := timeoutRunStore{
+		repo: model.Repository{ID: 1, Name: "oberth"},
+		run: model.Run{
+			ID: "run-1", RepoID: 1, Ref: "feature/a", Trigger: "branch",
+			SHA: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Status: model.RunPassed,
+		},
+	}
+	svc, err := NewAPI(APIConfig{Runs: store, Signals: NewSignals(), MaximumWait: 30 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Trigger filter "release" does not match the stored "branch" trigger,
+	// so the terminal check is skipped and the wait times out. The response
+	// must still report still_running=false because the resolved run IS
+	// terminal.
+	value, err := svc.CallTool(context.Background(), api.Actor{Identity: "agent@host"}, "wait",
+		json.RawMessage(`{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","trigger":"release"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, ok := value.(WaitResponse)
+	if !ok {
+		t.Fatalf("wait response type = %T", value)
+	}
+	if response.StillRunning {
+		t.Fatal("still_running is true for a terminal run; want false")
+	}
+}
+
 func TestAuditGateBlocksMCPMutationAndSchedulerClaim(t *testing.T) {
 	t.Parallel()
 	gate := func(context.Context) error { return errors.New("external witness unavailable") }

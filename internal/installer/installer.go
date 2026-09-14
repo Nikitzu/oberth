@@ -151,6 +151,7 @@ type Config struct {
 	OpenBaoChartVersion       string
 	RekorChartVersion         string
 	ArgoChartVersion          string
+	ArgoControllerProfile     string
 	ArgoVaultAddress          string
 	ArgoVaultCredentialedRole string
 	// CredentialedSecretPaths are exact secret paths approved through the
@@ -715,11 +716,21 @@ func Run(ctx context.Context, cfg Config, deps Deps) error {
 		if ns == "" {
 			ns = DefaultNamespace
 		}
-		produced, produceErr := ProducePerRepoIdentities(ctx, deps.KubeClient, deps.RunCommand, deps.ContextName, ns)
+		produced, produceWarnings, produceErr := ProducePerRepoIdentities(ctx, deps.KubeClient, deps.RunCommand, deps.ContextName, ns)
+		for _, warn := range produceWarnings {
+			_, _ = fmt.Fprintf(deps.Output, "WARNING: %s\n", warn)
+		}
 		if produceErr != nil {
 			_, _ = fmt.Fprintf(deps.Output, "WARNING: could not read per-repo identities: %v\n", produceErr)
 		} else if len(produced) > 0 {
 			cfg.PerRepoIdentities = produced
+		}
+		// Warn loudly when producing zero identities but the live release
+		// carries non-empty argo.perRepoIdentities — existing ServiceAccounts
+		// persist only via --reuse-values and new grants will not be
+		// provisioned. (#260 gap 6)
+		if len(cfg.PerRepoIdentities) == 0 {
+			warnPerRepoIdentityDelta(ctx, deps, ns)
 		}
 	}
 
@@ -2164,6 +2175,7 @@ func DefaultRunHelm(ctx context.Context, args []string) ([]byte, error) {
 	// constructed by this package from validated flags (no shell, no
 	// caller-controlled command word).
 	cmd := exec.CommandContext(ctx, "helm", args...)
+	cmd.Env = subprocessEnvironment()
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -2203,7 +2215,6 @@ func loadKubeConfigForContext(contextName, k3sFallbackPath string, output io.Wri
 func loadKubeConfigWithRules(rules *clientcmd.ClientConfigLoadingRules, contextName, k3sFallbackPath string, output io.Writer) (kubernetes.Interface, *rest.Config, string, error) {
 	client, restConfig, selectedContext, err := loadFromRules(rules, contextName)
 	if err == nil {
-		exportKubeconfigForSubprocesses(rules)
 		return client, restConfig, selectedContext, nil
 	}
 	// Standard kubeconfig load failed. Fall back to the k3s path only when
@@ -2228,23 +2239,24 @@ func loadKubeConfigWithRules(rules *clientcmd.ClientConfigLoadingRules, contextN
 	if k3sErr != nil {
 		return nil, nil, "", k3sErr
 	}
-	exportKubeconfigForSubprocesses(k3sRules)
 	if output != nil {
 		_, _ = fmt.Fprintf(output, "Using k3s kubeconfig at %s\n", k3sFallbackPath)
 	}
 	return client, restConfig, selectedContext, nil
 }
 
-func exportKubeconfigForSubprocesses(rules *clientcmd.ClientConfigLoadingRules) {
+func subprocessEnvironment() []string {
+	environment := os.Environ()
 	if os.Getenv("KUBECONFIG") != "" {
-		return
+		return environment
 	}
-	for _, path := range rules.GetLoadingPrecedence() {
+	candidates := append(clientcmd.NewDefaultClientConfigLoadingRules().GetLoadingPrecedence(), k3sKubeconfigPath)
+	for _, path := range candidates {
 		if _, err := os.Stat(path); err == nil {
-			_ = os.Setenv("KUBECONFIG", path)
-			return
+			return append(environment, "KUBECONFIG="+path)
 		}
 	}
+	return environment
 }
 
 func loadFromRules(rules *clientcmd.ClientConfigLoadingRules, contextName string) (kubernetes.Interface, *rest.Config, string, error) {
@@ -2282,4 +2294,33 @@ func (cfg Config) advertisedHost() string {
 		}
 	}
 	return "localhost"
+}
+
+// warnPerRepoIdentityDelta checks the live Helm release's argo.perRepoIdentities
+// and warns loudly when it is non-empty but the produce returned zero. Existing
+// ServiceAccounts persist only via --reuse-values; grants added since the last
+// successful produce will not be provisioned and those releases will fail at
+// pod admission. (#260 gap 6)
+func warnPerRepoIdentityDelta(ctx context.Context, deps Deps, namespace string) {
+	if deps.RunHelm == nil {
+		return
+	}
+	out, err := deps.RunHelm(ctx, []string{"get", "values", "oberth", "-n", namespace, "-o", "json"})
+	if err != nil {
+		// No release yet (fresh install) or helm error — skip silently.
+		return
+	}
+	var values struct {
+		Argo struct {
+			PerRepoIdentities []string `json:"perRepoIdentities"`
+		} `json:"argo"`
+	}
+	if err := json.Unmarshal(out, &values); err != nil {
+		return
+	}
+	if len(values.Argo.PerRepoIdentities) == 0 {
+		return
+	}
+	_, _ = fmt.Fprintf(deps.Output, "WARNING: per-repo identity produce returned 0 identities, but the live release carries %d (argo.perRepoIdentities).\n", len(values.Argo.PerRepoIdentities))
+	_, _ = fmt.Fprintf(deps.Output, "WARNING: existing per-repo ServiceAccounts persist only via --reuse-values; grants added since the last successful produce will NOT be provisioned and those releases will fail at pod admission.\n")
 }

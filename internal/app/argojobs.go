@@ -303,6 +303,14 @@ func (jobs *ArgoJobs) create(ctx context.Context, request service.JobRequest, tr
 		SourceDir: request.SourceDir, ApprovedSecrets: approvedSecrets,
 		Fragments: fragments, Files: files,
 	}
+	if preparer, ok := jobs.controller.(interface {
+		PrepareNonroot(context.Context, argojob.Request) (argojob.Request, error)
+	}); ok {
+		submission, err = preparer.PrepareNonroot(ctx, submission)
+		if err != nil {
+			return err
+		}
+	}
 	if err := jobs.auditSubmission(ctx, request, submission); err != nil {
 		return err
 	}
@@ -392,6 +400,10 @@ func (jobs *ArgoJobs) auditSubmission(ctx context.Context, request service.JobRe
 		"declared_secret_paths":           declared,
 		"fragments":                       fragments,
 		"files":                           files,
+	}
+	if binding := workflow.Annotations["oberth.ci/verified-controller-profile"]; binding != "" {
+		details["controller_profile"] = binding
+		details["nonroot_templates"] = workflow.Annotations[argoworkflow.NonrootTemplatesAnnotation]
 	}
 	encoded, err := json.Marshal(details)
 	if err != nil {
