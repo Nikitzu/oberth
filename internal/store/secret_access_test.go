@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -457,5 +458,53 @@ func TestSecretAccessCheckValidation(t *testing.T) {
 	}
 	if _, err := s.SecretAccessCheck(ctx, "terraform", "plan", ""); err == nil {
 		t.Fatal("expected error for empty secret")
+	}
+}
+
+// --- Grant charset validation tests (issue #414) ---
+
+func TestGrantRejectsHCLInjectionInSecret(t *testing.T) {
+	now := time.Date(2026, 9, 15, 12, 0, 0, 0, time.UTC)
+	s := testStore(t, &now)
+	ctx := context.Background()
+
+	// A secret name containing HCL metacharacters must be rejected at
+	// persistence time so hostile values never reach the Vault policy
+	// interpolation in the installer.
+	hostile := `x" { capabilities = ["sudo"] } path "y`
+	_, err := s.Grant(ctx, "terraform", "plan", hostile, "admin@localhost")
+	if err == nil {
+		t.Fatal("expected rejection of secret containing HCL injection characters")
+	}
+	if !errors.Is(err, ErrInvalid) {
+		t.Fatalf("expected ErrInvalid, got: %v", err)
+	}
+}
+
+func TestGrantRejectsControlCharsInSecret(t *testing.T) {
+	now := time.Date(2026, 9, 15, 12, 0, 0, 0, time.UTC)
+	s := testStore(t, &now)
+	ctx := context.Background()
+
+	for _, secret := range []string{"path\x00evil", "path\nevil", "path\tevil", `path\evil`} {
+		if _, err := s.Grant(ctx, "terraform", "plan", secret, "admin@localhost"); err == nil {
+			t.Errorf("Grant(secret=%q) = nil; want error for unsafe characters", secret)
+		}
+	}
+}
+
+func TestGrantAcceptsValidSecret(t *testing.T) {
+	now := time.Date(2026, 9, 15, 12, 0, 0, 0, time.UTC)
+	s := testStore(t, &now)
+	ctx := context.Background()
+
+	for _, secret := range []string{
+		"terraform/credentials",
+		"release/cosign-secret",
+		"upstream/org/repo/my.secret_name",
+	} {
+		if _, err := s.Grant(ctx, "terraform", "plan", secret, "admin@localhost"); err != nil {
+			t.Errorf("Grant(secret=%q) = %v; want nil", secret, err)
+		}
 	}
 }

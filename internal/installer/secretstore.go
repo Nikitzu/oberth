@@ -994,6 +994,9 @@ func credentialedPolicyPaths(kvPrefix string, paths []string) ([]string, error) 
 			return nil, fmt.Errorf(
 				"credentialed secret path %q must be one exact path, not a pattern", trimmed)
 		}
+		if err := validateSecretPath(rest); err != nil {
+			return nil, err
+		}
 		out = append(out, rest)
 	}
 	return out, nil
@@ -1071,6 +1074,14 @@ func OberthCISecretsPolicy(kvPrefix string, upstreamOrgs []string) string {
 	return builder.String()
 }
 
+// secretPathPattern matches valid characters for a credentialed secret path
+// segment that will be interpolated into Vault policy HCL. The charset is the
+// same as orgNamePattern plus forward-slash (paths contain hierarchy). Quotes,
+// backslashes, newlines, and control characters are rejected because they
+// escape the HCL path string literal and inject arbitrary policy rules
+// (issue #414, same class as #411).
+var secretPathPattern = regexp.MustCompile(`^[A-Za-z0-9._/-]+$`)
+
 // orgNamePattern matches valid characters for an org name that will be
 // interpolated into Vault policy HCL. Anything outside this set could escape
 // the HCL path string and inject arbitrary policy rules (issue #411).
@@ -1082,6 +1093,18 @@ var orgNamePattern = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
 func ValidateOrgName(name string) error {
 	if !orgNamePattern.MatchString(name) {
 		return fmt.Errorf("org name %q contains characters outside [A-Za-z0-9._-]; refusing to interpolate into Vault policy HCL", name)
+	}
+	return nil
+}
+
+// validateSecretPath checks that a post-prefix secret path remainder contains
+// only characters safe for Vault policy HCL interpolation. Paths are
+// interpolated via fmt.Fprintf into path "..." HCL strings; quotes,
+// backslashes, newlines, and control characters would escape the string
+// boundary and inject arbitrary policy rules.
+func validateSecretPath(path string) error {
+	if !secretPathPattern.MatchString(path) {
+		return fmt.Errorf("credentialed secret path %q contains characters outside [A-Za-z0-9._/-]; refusing to interpolate into Vault policy HCL", path)
 	}
 	return nil
 }

@@ -193,4 +193,54 @@ func TestValidateOrgNameRejectsSlash(t *testing.T) {
 	}
 }
 
+// --- Credentialed secret path validation tests (issue #414) ---
+
+func TestCredentialedPolicyPathsRejectsHCLInjection(t *testing.T) {
+	// A path containing HCL metacharacters must be rejected before it
+	// reaches OberthCredentialedPolicyWithGrants, where it would be
+	// interpolated unescaped into a Vault policy path string.
+	hostile := `oberth/data/x" { capabilities = ["sudo"] } path "y`
+	_, err := credentialedPolicyPaths("oberth", []string{hostile})
+	if err == nil {
+		t.Fatal("expected rejection of hostile path with HCL injection characters")
+	}
+	if !strings.Contains(err.Error(), "characters outside") {
+		t.Fatalf("unexpected error message: %v", err)
+	}
+}
+
+func TestCredentialedPolicyPathsRejectsBackslash(t *testing.T) {
+	_, err := credentialedPolicyPaths("oberth", []string{`oberth/data/release/path\nevil`})
+	if err == nil {
+		t.Fatal("expected rejection of path containing backslash")
+	}
+}
+
+func TestCredentialedPolicyPathsRejectsControlChars(t *testing.T) {
+	for _, path := range []string{
+		"oberth/data/release/x\x00y",
+		"oberth/data/release/x\ny",
+		"oberth/data/release/x\ty",
+	} {
+		if _, err := credentialedPolicyPaths("oberth", []string{path}); err == nil {
+			t.Errorf("credentialedPolicyPaths(%q) = nil; want error for control character", path)
+		}
+	}
+}
+
+func TestCredentialedPolicyPathsAcceptsValid(t *testing.T) {
+	valid := []string{
+		"oberth/data/release/cosign-secret",
+		"oberth/upstream/oberthci/oberth/secret_name",
+		"oberth/data/release/my.dotted.path",
+	}
+	out, err := credentialedPolicyPaths("oberth", valid)
+	if err != nil {
+		t.Fatalf("credentialedPolicyPaths(valid) = %v; want nil", err)
+	}
+	if len(out) != len(valid) {
+		t.Fatalf("got %d paths, want %d", len(out), len(valid))
+	}
+}
+
 // productionOpenBaoResult is defined in installer_test.go (same package).

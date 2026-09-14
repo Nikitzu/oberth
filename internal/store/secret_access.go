@@ -6,11 +6,19 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
 	"github.com/oberthci/oberth/internal/model"
 )
+
+// grantSecretPattern matches valid characters for the secret field of a grant.
+// Grant secrets are eventually interpolated into Vault policy HCL path strings
+// by the installer; quotes, backslashes, newlines, and control characters
+// would escape the HCL string boundary and inject arbitrary policy rules
+// (issue #414).
+var grantSecretPattern = regexp.MustCompile(`^[A-Za-z0-9._/-]+$`)
 
 // SecretAccessGrant records an approval for a (repo, step, secret) triple. If
 // a revoked grant already exists for the same triple, a new active row is
@@ -77,6 +85,9 @@ func (s *Store) SecretAccessList(ctx context.Context, repo string, includeRevoke
 func (s *Store) Grant(ctx context.Context, repo, step, secret, actor string) (SecretAccessGrant, error) {
 	if strings.TrimSpace(repo) == "" || strings.TrimSpace(step) == "" || strings.TrimSpace(secret) == "" || strings.TrimSpace(actor) == "" {
 		return SecretAccessGrant{}, fmt.Errorf("%w: repo, step, secret, and actor are required", ErrInvalid)
+	}
+	if !grantSecretPattern.MatchString(secret) {
+		return SecretAccessGrant{}, fmt.Errorf("%w: secret %q contains characters outside [A-Za-z0-9._/-]; refusing to persist (HCL injection risk)", ErrInvalid, secret)
 	}
 	now := unixNano(s.now())
 	tx, err := s.db.BeginTx(ctx, nil)
