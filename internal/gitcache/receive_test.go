@@ -721,7 +721,7 @@ func TestReceiveReplaysReservedCrashBeforeRefreshingUpstream(t *testing.T) {
 func pushWithReceivePack(dir, remote, receivePack, refspec string) (string, error) {
 	command := exec.Command("git", "push", "--receive-pack="+receivePack, remote, refspec)
 	command.Dir = dir
-	command.Env = append(os.Environ(), "GIT_CONFIG_NOSYSTEM=1", "GIT_TERMINAL_PROMPT=0")
+	command.Env = append(os.Environ(), "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_TERMINAL_PROMPT=0")
 	output, err := command.CombinedOutput()
 	return string(output), err
 }
@@ -745,7 +745,7 @@ func runGitOptional(t *testing.T, dir string, args ...string) string {
 	t.Helper()
 	command := exec.Command("git", args...)
 	command.Dir = dir
-	command.Env = append(os.Environ(), "GIT_CONFIG_NOSYSTEM=1", "GIT_TERMINAL_PROMPT=0")
+	command.Env = append(os.Environ(), "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_TERMINAL_PROMPT=0")
 	output, err := command.CombinedOutput()
 	if err != nil {
 		return ""
@@ -1393,7 +1393,7 @@ func seedRefs(t *testing.T, path, prefix string, count int, sha string) []string
 	}
 	command := exec.Command("git", "update-ref", "--stdin")
 	command.Dir = path
-	command.Env = append(os.Environ(), "GIT_CONFIG_NOSYSTEM=1", "GIT_TERMINAL_PROMPT=0")
+	command.Env = append(os.Environ(), "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_TERMINAL_PROMPT=0")
 	command.Stdin = strings.NewReader(input.String())
 	if output, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("seed %d refs below %s: %v\n%s", count, prefix, err, output)

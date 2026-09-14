@@ -11,7 +11,7 @@ import (
 
 func TestBootstrapOpenBaoTLSCreatesPrivatePVCBundleAndReusesIt(t *testing.T) {
 	t.Parallel()
-	directory := filepath.Join(t.TempDir(), "oberth-tls")
+	directory := filepath.Join(realTempDir(t), "oberth-tls")
 
 	caPEM, err := BootstrapOpenBaoTLS(directory, "openbao")
 	if err != nil {
@@ -88,7 +88,7 @@ func TestBootstrapOpenBaoTLSCreatesPrivatePVCBundleAndReusesIt(t *testing.T) {
 
 func TestBootstrapOpenBaoTLSRejectsUnsafeExistingMaterial(t *testing.T) {
 	t.Parallel()
-	directory := filepath.Join(t.TempDir(), "oberth-tls")
+	directory := filepath.Join(realTempDir(t), "oberth-tls")
 	if err := os.Mkdir(directory, 0o750); err != nil {
 		t.Fatal(err)
 	}
@@ -111,4 +111,13 @@ func parseCertificateForTest(t *testing.T, encoded []byte) *x509.Certificate {
 		t.Fatal(err)
 	}
 	return certificate
+}
+
+func realTempDir(t *testing.T) string {
+	t.Helper()
+	resolved, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return resolved
 }

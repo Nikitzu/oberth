@@ -178,7 +178,7 @@ func TestEnsureOpenBaoTLSOrdersPVCPodAndPublicCAExtraction(t *testing.T) {
 		actions = append(actions, "bootstrap-deleted")
 		return false, nil, nil
 	})
-	caPEMBytes, err := secretstore.BootstrapOpenBaoTLS(filepath.Join(t.TempDir(), "tls"), "openbao")
+	caPEMBytes, err := secretstore.BootstrapOpenBaoTLS(filepath.Join(realTempDir(t), "tls"), "openbao")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -228,7 +228,7 @@ func TestInstallOpenBaoProductionBootstrapsTLSBeforeHelm(t *testing.T) {
 		actions = append(actions, "bootstrap-deleted")
 		return false, nil, nil
 	})
-	caPEM, err := secretstore.BootstrapOpenBaoTLS(filepath.Join(t.TempDir(), "tls"), "openbao")
+	caPEM, err := secretstore.BootstrapOpenBaoTLS(filepath.Join(realTempDir(t), "tls"), "openbao")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -331,7 +331,7 @@ func TestInstallOpenBaoMigratesExistingHTTPListenerBeforeReturning(t *testing.T)
 		}
 		return true, nil, nil
 	})
-	caPEM, err := secretstore.BootstrapOpenBaoTLS(filepath.Join(t.TempDir(), "tls"), "openbao")
+	caPEM, err := secretstore.BootstrapOpenBaoTLS(filepath.Join(realTempDir(t), "tls"), "openbao")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -375,4 +375,13 @@ func TestInstallOpenBaoMigratesExistingHTTPListenerBeforeReturning(t *testing.T)
 	if helm, roll := slices.Index(actions, "helm-tls"), slices.Index(actions, "roll-openbao"); helm < 0 || roll <= helm {
 		t.Fatalf("OnDelete pod must roll only after TLS Helm config is published: %v", actions)
 	}
+}
+
+func realTempDir(t *testing.T) string {
+	t.Helper()
+	resolved, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return resolved
 }

@@ -453,7 +453,7 @@ func TestRunCLIRoutesSecretStore(t *testing.T) {
 
 func TestSecretStoreBootstrapTLSWritesOnlyPublicCA(t *testing.T) {
 	t.Parallel()
-	directory := filepath.Join(t.TempDir(), "oberth-tls")
+	directory := filepath.Join(realTempDir(t), "oberth-tls")
 	var output bytes.Buffer
 	err := runSecretStore(context.Background(), []string{
 		"bootstrap-tls",
@@ -1031,4 +1031,13 @@ func TestSecretStoreVerifyExpectImpliesKeysMode(t *testing.T) {
 	if !strings.Contains(output.String(), "field names match expectations") {
 		t.Fatalf("output misses success message:\n%s", output.String())
 	}
+}
+
+func realTempDir(t *testing.T) string {
+	t.Helper()
+	resolved, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return resolved
 }

@@ -19,7 +19,7 @@ func runGitStdin(t *testing.T, dir, stdin string, args ...string) string {
 	command := exec.Command("git", args...)
 	command.Dir = dir
 	command.Stdin = strings.NewReader(stdin)
-	command.Env = append(os.Environ(), "GIT_CONFIG_NOSYSTEM=1", "GIT_TERMINAL_PROMPT=0")
+	command.Env = append(os.Environ(), "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_TERMINAL_PROMPT=0")
 	output, err := command.CombinedOutput()
 	if err != nil {
 		t.Fatalf("git %q failed: %v\n%s", args, err, output)

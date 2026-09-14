@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -375,6 +376,9 @@ func TestReleaseHeartbeatWaitDelayTerminatesBackgroundDescendant(t *testing.T) {
 }
 
 func TestReleaseHeartbeatNonzeroExitRetiresBackgroundDescendant(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("descendant containment reads /proc, which only Linux has")
+	}
 	t.Setenv(runnerOwnsGroupEnv, "")
 	output := newNotifyingBuffer()
 	command := exec.Command("/bin/sh", "-c", "sleep 30 & child=$!; printf 'child-pid=%s\\n' \"$child\"; exit 37")

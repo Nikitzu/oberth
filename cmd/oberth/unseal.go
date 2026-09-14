@@ -6,8 +6,10 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"strings"
 	"time"
 
+	"github.com/oberthci/oberth/internal/client"
 	"github.com/oberthci/oberth/internal/installer"
 )
 
@@ -18,6 +20,7 @@ func runUnseal(ctx context.Context, arguments []string, input io.Reader, output 
 	var cfg installer.Config
 	flags.StringVar(&cfg.OpenBaoNamespace, "openbao-namespace", "", "OpenBao namespace (default: openbao)")
 	timeout := flags.Duration("timeout", time.Minute, "wait timeout for the OpenBao pod to answer bao status")
+	engine := flags.String("engine", "", "docker or kube (default: whatever the client's server reports, else kube)")
 
 	if err := flags.Parse(arguments); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -34,8 +37,37 @@ func runUnseal(ctx context.Context, arguments []string, input io.Reader, output 
 	cfg.Timeout = *timeout
 	cfg.BinaryVersion = version
 
+	switch strings.TrimSpace(*engine) {
+	case "docker":
+		return runSecretStoreUnseal(ctx, []string{"--engine=docker"}, output)
+	case "kube", "argo":
+	case "":
+		if detectEngine(ctx) == "docker" {
+			fmt.Fprintln(output, "the client's server runs the docker engine; unsealing the local store")
+			return runSecretStoreUnseal(ctx, []string{"--engine=docker"}, output)
+		}
+	default:
+		return fmt.Errorf("%w: --engine must be docker or kube", errUsage)
+	}
+
 	return installer.Unseal(ctx, cfg, installer.InstallDeps{
 		Output: output,
 		Input:  input,
 	})
+}
+
+func detectEngine(ctx context.Context) string {
+	probe, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	api, err := client.New(probe, clientConfig())
+	if err != nil {
+		return ""
+	}
+	var status struct {
+		Engine string `json:"engine"`
+	}
+	if err := api.Get(probe, "/api/status", nil, &status); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(status.Engine)
 }

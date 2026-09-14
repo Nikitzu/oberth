@@ -928,7 +928,7 @@ func TestSecretStoreSetupRejectsPositionalArgs(t *testing.T) {
 func TestSecretStoreBootstrapTLSWithDirectory(t *testing.T) {
 	t.Parallel()
 	// The directory must NOT exist yet; BootstrapOpenBaoTLS creates it.
-	dir := filepath.Join(t.TempDir(), "tls")
+	dir := filepath.Join(realTempDir(t), "tls")
 	var output bytes.Buffer
 	err := runSecretStoreBootstrapTLS([]string{"--output-dir", dir, "--namespace", "openbao"}, &output)
 	if err != nil {
