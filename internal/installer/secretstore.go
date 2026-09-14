@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -773,6 +774,11 @@ func ConfigureSecretStore(ctx context.Context, cfg Config, deps Deps, store open
 	// present. Fresh installs (no identities) produce zero orgs — fail
 	// closed, correct because no grants exist either.
 	upstreamOrgs := upstreamOrgsFromIdentities(cfg.PerRepoIdentities)
+	for _, org := range upstreamOrgs {
+		if err := ValidateOrgName(org); err != nil {
+			return result, fmt.Errorf("upstream org validation: %w", err)
+		}
+	}
 
 	credentialedGrantPaths, err := credentialedPolicyPaths(defaultKVPrefix, cfg.CredentialedSecretPaths)
 	if err != nil {
@@ -1065,10 +1071,29 @@ func OberthCISecretsPolicy(kvPrefix string, upstreamOrgs []string) string {
 	return builder.String()
 }
 
+// orgNamePattern matches valid characters for an org name that will be
+// interpolated into Vault policy HCL. Anything outside this set could escape
+// the HCL path string and inject arbitrary policy rules (issue #411).
+var orgNamePattern = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
+
+// ValidateOrgName checks that an org name contains only characters safe for
+// Vault policy HCL interpolation. Callers must validate before any org name
+// reaches writeUpstreamOrgRules.
+func ValidateOrgName(name string) error {
+	if !orgNamePattern.MatchString(name) {
+		return fmt.Errorf("org name %q contains characters outside [A-Za-z0-9._-]; refusing to interpolate into Vault policy HCL", name)
+	}
+	return nil
+}
+
 // writeUpstreamOrgRules appends per-org Vault policy path stanzas. Each
 // registered upstream org gets its own exact rule scoped to that org's
 // subtree, replacing the former static "upstream/*" wildcard. The
 // enumeration is sorted for deterministic output.
+//
+// Callers must validate org names with ValidateOrgName before calling this
+// function; unvalidated names interpolated into fmt.Fprintf are an HCL
+// injection vector (issue #411).
 func writeUpstreamOrgRules(builder *strings.Builder, kvPrefix string, upstreamOrgs []string) {
 	sorted := make([]string, len(upstreamOrgs))
 	copy(sorted, upstreamOrgs)
