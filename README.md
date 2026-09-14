@@ -79,6 +79,11 @@ through a ConfigMap, and never starts a plaintext listener.
 
 ## Quick start
 
+Developer on a laptop? Read [docs/getting-started.md](docs/getting-started.md):
+`brew install nikitzu/oberth/oberth`, `oberth install`, answer one question,
+`oberth onboard` in a checkout. The rest of this section is the cluster path.
+
+
 Five commands from a laptop to gated releases:
 
 ```bash

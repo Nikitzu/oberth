@@ -89,3 +89,33 @@ func escapeXML(value string) (string, error) {
 	}
 	return escaped.String(), nil
 }
+
+const SystemdUnit = "oberth.service"
+
+func RenderSystemdUnit(binary string, arguments []string, layout Layout, path string) []byte {
+	quoted := make([]string, 0, len(arguments)+1)
+	quoted = append(quoted, systemdQuote(binary))
+	for _, argument := range arguments {
+		quoted = append(quoted, systemdQuote(argument))
+	}
+	var out strings.Builder
+	out.WriteString("[Unit]\n")
+	out.WriteString("Description=Oberth CI server (docker engine)\n")
+	out.WriteString("After=network-online.target docker.service\n\n")
+	out.WriteString("[Service]\n")
+	out.WriteString("ExecStart=" + strings.Join(quoted, " ") + "\n")
+	out.WriteString("WorkingDirectory=" + layout.Root + "\n")
+	out.WriteString("Environment=PATH=" + path + "\n")
+	out.WriteString("StandardOutput=append:" + layout.Logs + "\n")
+	out.WriteString("StandardError=append:" + layout.Logs + "\n")
+	out.WriteString("Restart=always\nRestartSec=5\n\n")
+	out.WriteString("[Install]\nWantedBy=default.target\n")
+	return []byte(out.String())
+}
+
+func systemdQuote(value string) string {
+	if !strings.ContainsAny(value, " \t\"'\\") {
+		return value
+	}
+	return "\"" + strings.ReplaceAll(strings.ReplaceAll(value, "\\", "\\\\"), "\"", "\\\"") + "\""
+}

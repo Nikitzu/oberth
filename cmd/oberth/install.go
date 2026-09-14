@@ -21,6 +21,16 @@ func runInstall(ctx context.Context, arguments []string, input io.Reader, output
 	if dockerEngineArguments(arguments) {
 		return runInstallDocker(ctx, arguments, output)
 	}
+	if !engineArgumentPresent(arguments) && installer.StdinIsTerminal() {
+		chosen, docker, err := askInstallChoices(ctx, input, output)
+		if err != nil {
+			return err
+		}
+		if docker {
+			return runInstallDocker(ctx, append(chosen, arguments...), output)
+		}
+	}
+	arguments = stripEngineKube(arguments)
 	flags := flag.NewFlagSet("install", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 

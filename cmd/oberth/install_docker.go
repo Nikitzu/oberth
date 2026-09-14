@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -50,7 +51,8 @@ func runInstallDocker(ctx context.Context, arguments []string, output io.Writer)
 	root := flags.String("root", "", "install root holding the data directory, TLS material and SSH keys (default ~/.oberth/local)")
 	httpsPort := flags.Int("https-port", defaultLocalHTTPSPort, "loopback port for the dashboard and the API")
 	sshPort := flags.Int("ssh-port", defaultLocalSSHPort, "loopback port for the Git ingest")
-	launchd := flags.Bool("launchd", false, "install a launchd agent that keeps the server running across logins, instead of running it in the foreground")
+	service := flags.Bool("service", false, "keep the server running across logins: a launchd agent on macOS, a systemd user unit on Linux")
+	launchd := flags.Bool("launchd", false, "same as --service (kept for older instructions)")
 	shellProfile := flags.String("shell-profile", "", "add the client environment line to your shell profile: yes (the login shell's own file), no, or a path such as ~/.zshrc; empty prints the line instead")
 	secretStore := flags.Bool("secretstore", false, "also run `secretstore init --engine=docker`, so credentialed pipelines work from the first push")
 	publishOnGreen := flags.Bool("publish-on-green", false, "publish a green run to the upstream automatically")
@@ -157,6 +159,7 @@ func runInstallDocker(ctx context.Context, arguments []string, output io.Writer)
 	// The server has to be running before an uplink can be minted: the admin
 	// path talks to the live process's audit gate, which is exactly the point
 	// of that gate.
+	*launchd = *launchd || *service
 	stop, err := startLocalServer(ctx, output, binary, serveArguments, layout, *launchd)
 	if err != nil {
 		return err
@@ -182,11 +185,16 @@ func runInstallDocker(ctx context.Context, arguments []string, output io.Writer)
 		return err
 	}
 	if *launchd {
-		say(output, "The server runs under launchd as %s. Its log is %s.",
-			localinstall.LaunchdLabel, installer.DisplayPath(layout.Logs))
+		if runtime.GOOS == "linux" {
+			say(output, "The server runs as the systemd user unit %s. Its log is %s.",
+				localinstall.SystemdUnit, installer.DisplayPath(layout.Logs))
+		} else {
+			say(output, "The server runs under launchd as %s. Its log is %s.",
+				localinstall.LaunchdLabel, installer.DisplayPath(layout.Logs))
+		}
 		return nil
 	}
-	say(output, "Running in the foreground. Press Ctrl-C to stop, or re-run with --launchd to keep it running.")
+	say(output, "Running in the foreground. Press Ctrl-C to stop, or re-run with --service to keep it running.")
 	<-ctx.Done()
 	return nil
 }
@@ -271,6 +279,9 @@ func localServeArguments(layout localinstall.Layout, httpsPort, sshPort int, pub
 func startLocalServer(ctx context.Context, output io.Writer, binary string, arguments []string,
 	layout localinstall.Layout, launchd bool) (func(), error) {
 	if launchd {
+		if runtime.GOOS == "linux" {
+			return nil, installSystemdUnit(ctx, output, binary, arguments, layout)
+		}
 		return nil, installLaunchdAgent(ctx, output, binary, arguments, layout)
 	}
 	command := exec.CommandContext(ctx, binary, arguments...)
@@ -291,6 +302,34 @@ func startLocalServer(ctx context.Context, output io.Writer, binary string, argu
 		_ = command.Wait()
 		_ = logFile.Close()
 	}, nil
+}
+
+func installSystemdUnit(ctx context.Context, output io.Writer, binary string, arguments []string,
+	layout localinstall.Layout) error {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("resolve the home directory: %w", err)
+	}
+	units := filepath.Join(home, ".config", "systemd", "user")
+	if err := os.MkdirAll(units, 0o700); err != nil {
+		return fmt.Errorf("create %s: %w", units, err)
+	}
+	path := filepath.Join(units, localinstall.SystemdUnit)
+	if err := installer.AtomicWriteFile(path, localinstall.RenderSystemdUnit(binary, arguments, layout, os.Getenv("PATH")), 0o600); err != nil {
+		return fmt.Errorf("write %s: %w", path, err)
+	}
+	if out, err := exec.CommandContext(ctx, "systemctl", "--user", "daemon-reload").CombinedOutput(); err != nil {
+		return fmt.Errorf("systemctl --user daemon-reload: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	if out, err := exec.CommandContext(ctx, "systemctl", "--user", "enable", "--now", localinstall.SystemdUnit).CombinedOutput(); err != nil {
+		return fmt.Errorf("enable the systemd unit %s: %w: %s", localinstall.SystemdUnit, err, strings.TrimSpace(string(out)))
+	}
+	_ = exec.CommandContext(ctx, "systemctl", "--user", "restart", localinstall.SystemdUnit).Run()
+	if out, err := exec.CommandContext(ctx, "loginctl", "enable-linger").CombinedOutput(); err != nil {
+		say(output, "server     note: loginctl enable-linger failed (%s); the unit stops when you log out until an admin runs it", strings.TrimSpace(string(out)))
+	}
+	say(output, "server     systemd user unit %s installed at %s", localinstall.SystemdUnit, installer.DisplayPath(path))
+	return nil
 }
 
 func installLaunchdAgent(ctx context.Context, output io.Writer, binary string, arguments []string,
