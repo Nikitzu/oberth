@@ -87,6 +87,14 @@ func TestClassifyViewErrorMapsSentinelsAndMasksUnknown(t *testing.T) {
 			wantCode: http.StatusConflict, wantMessage: "issue lock is expired or not owned by this identity",
 		},
 		{
+			name: "context canceled returns service unavailable", err: fmt.Errorf("read log: %w", context.Canceled),
+			wantCode: http.StatusServiceUnavailable, wantMessage: "request canceled",
+		},
+		{
+			name: "context deadline exceeded returns gateway timeout", err: fmt.Errorf("query: %w", context.DeadlineExceeded),
+			wantCode: http.StatusGatewayTimeout, wantMessage: "request timed out",
+		},
+		{
 			// Unknown errors must never carry internals (paths, SQL state)
 			// to the client; they collapse to a generic internal error.
 			name: "unknown collapses to internal", err: errors.New("sqlite: disk I/O error at /data/oberth.sqlite"),

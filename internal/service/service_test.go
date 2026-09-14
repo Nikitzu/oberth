@@ -11,6 +11,7 @@ import (
 	"github.com/oberthci/oberth/internal/api"
 	"github.com/oberthci/oberth/internal/gitcache"
 	"github.com/oberthci/oberth/internal/model"
+	"github.com/oberthci/oberth/internal/store"
 )
 
 type stubUplinkAuthenticator struct {
@@ -310,6 +311,8 @@ func TestSelectLogRangeRequiresOneUnambiguousNamedStep(t *testing.T) {
 	}
 	if _, _, err := selectLogRange(steps, "missing"); err == nil {
 		t.Fatal("unknown step selection unexpectedly succeeded")
+	} else if !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("unknown step error = %v, want store.ErrNotFound", err)
 	}
 }
 

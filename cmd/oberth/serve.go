@@ -1640,6 +1640,13 @@ func classifyViewError(err error) (int, string) {
 		return http.StatusConflict, err.Error()
 	case errors.Is(err, service.ErrUnavailable):
 		return http.StatusServiceUnavailable, "service unavailable"
+	case errors.Is(err, context.Canceled):
+		// A canceled context (client disconnect, MCP timeout) is not a server
+		// fault. Classify it so the MCP handler returns an actionable message
+		// instead of an opaque internal-error correlation ID.
+		return http.StatusServiceUnavailable, "request canceled"
+	case errors.Is(err, context.DeadlineExceeded):
+		return http.StatusGatewayTimeout, "request timed out"
 	default:
 		return http.StatusInternalServerError, "internal error"
 	}

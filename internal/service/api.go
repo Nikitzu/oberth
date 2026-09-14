@@ -497,7 +497,7 @@ func (service *API) RunLogFiltered(ctx context.Context, _ api.Actor, id, burn, s
 		}
 	}
 	if !recorded {
-		return nil, fmt.Errorf("service: no log range for burn %q step %q", burn, step)
+		return nil, fmt.Errorf("no log range for burn %q step %q: %w", burn, step, store.ErrNotFound)
 	}
 	body, meta, err := service.readStepLogFiltered(run, burn, step, filter)
 	if err != nil {
@@ -979,7 +979,7 @@ func selectLogRange(results []model.StepResult, wanted string) (string, string, 
 		selectedBurn = result.Burn
 	}
 	if selectedBurn == "" {
-		return "", "", fmt.Errorf("service: no log range for step %q", wanted)
+		return "", "", fmt.Errorf("no log range for step %q: %w", wanted, store.ErrNotFound)
 	}
 	return selectedBurn, wanted, nil
 }
