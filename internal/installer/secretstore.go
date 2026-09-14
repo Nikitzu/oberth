@@ -1097,6 +1097,24 @@ func ValidateOrgName(name string) error {
 	return nil
 }
 
+// repoNamePattern matches valid characters for a bare repository name that
+// will be interpolated into Vault policy HCL (PerRepoPolicy). The charset is
+// the same as orgNamePattern — no slashes, because repo names are single path
+// segments. Quotes, backslashes, newlines, and control characters would escape
+// the HCL path string boundary and inject arbitrary policy rules (issue #416,
+// same class as #411 and #414).
+var repoNamePattern = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
+
+// ValidateRepoName checks that a bare repository name contains only characters
+// safe for Vault policy HCL interpolation. Callers must validate before any
+// repo name reaches PerRepoPolicy or any other HCL template.
+func ValidateRepoName(name string) error {
+	if !repoNamePattern.MatchString(name) {
+		return fmt.Errorf("repo name %q contains characters outside [A-Za-z0-9._-]; refusing to interpolate into Vault policy HCL", name)
+	}
+	return nil
+}
+
 // validateSecretPath checks that a post-prefix secret path remainder contains
 // only characters safe for Vault policy HCL interpolation. Paths are
 // interpolated via fmt.Fprintf into path "..." HCL strings; quotes,

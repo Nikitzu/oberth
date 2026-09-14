@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -371,6 +372,13 @@ func (r *AccessReconciler) UpdateConfigMap(ctx context.Context, actor string, mo
 	return r.reconcileLocked(ctx, actor)
 }
 
+// grantEntryRepoPattern matches valid characters for the repo field of a grant
+// entry. Repo names are qualified (upstream/org/repo) and are eventually
+// interpolated into Vault policy HCL; quotes, backslashes, newlines, braces,
+// and control characters would escape the HCL path string boundary and inject
+// arbitrary policy rules (issue #416, same class as #411 and #414).
+var grantEntryRepoPattern = regexp.MustCompile(`^[A-Za-z0-9._/-]+$`)
+
 // ValidateGrantEntry checks one grant entry for validity. It is shared by
 // ParseGrants (ConfigMap reconciliation) and the API (before any ConfigMap
 // mutation), so a malformed entry is rejected before it can trigger a
@@ -379,8 +387,8 @@ func ValidateGrantEntry(index int, entry SecretAccessGrantEntry) error {
 	if strings.TrimSpace(entry.Repo) == "" || strings.TrimSpace(entry.Step) == "" || strings.TrimSpace(entry.Secret) == "" {
 		return fmt.Errorf("entry %d: repo, step, and secret are required", index)
 	}
-	if strings.ContainsAny(entry.Repo, "*?[]") {
-		return fmt.Errorf("entry %d: wildcard and glob characters are not allowed in repo", index)
+	if !grantEntryRepoPattern.MatchString(entry.Repo) {
+		return fmt.Errorf("entry %d: repo %q contains characters outside [A-Za-z0-9._/-]; refusing to persist (HCL injection risk)", index, entry.Repo)
 	}
 	if strings.ContainsAny(entry.Secret, "*?[]") {
 		return fmt.Errorf("entry %d: wildcard and glob characters are not allowed in secret", index)

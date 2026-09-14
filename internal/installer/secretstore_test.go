@@ -193,6 +193,63 @@ func TestValidateOrgNameRejectsSlash(t *testing.T) {
 	}
 }
 
+// --- Repo name validation tests (issue #416) ---
+
+func TestValidateRepoNameRejectsHCLInjection(t *testing.T) {
+	// A repo name containing HCL injection characters must be rejected
+	// before it reaches PerRepoPolicy, where it would be interpolated
+	// unescaped into a Vault policy path string.
+	malicious := `evil" { capabilities = ["sudo"] } path "secret/*`
+	err := ValidateRepoName(malicious)
+	if err == nil {
+		t.Fatal("expected rejection of malicious repo name with HCL injection characters")
+	}
+	if !strings.Contains(err.Error(), "characters outside") {
+		t.Fatalf("unexpected error message: %v", err)
+	}
+}
+
+func TestValidateRepoNameRejectsControlChars(t *testing.T) {
+	for _, name := range []string{"repo\x00evil", "repo\nevil", "repo\tevil"} {
+		if err := ValidateRepoName(name); err == nil {
+			t.Errorf("ValidateRepoName(%q) = nil; want error for control character", name)
+		}
+	}
+}
+
+func TestValidateRepoNameRejectsBackslash(t *testing.T) {
+	if err := ValidateRepoName(`repo\nevil`); err == nil {
+		t.Fatal(`ValidateRepoName("repo\nevil") = nil; want error for backslash`)
+	}
+}
+
+func TestValidateRepoNameRejectsBraces(t *testing.T) {
+	if err := ValidateRepoName("repo{evil}"); err == nil {
+		t.Fatal("ValidateRepoName(\"repo{evil}\") = nil; want error for braces")
+	}
+}
+
+func TestValidateRepoNameAcceptsValid(t *testing.T) {
+	for _, name := range []string{"oberth", "cloudtaser-operator", "my.repo", "repo_name", "MixedCase123", "a"} {
+		if err := ValidateRepoName(name); err != nil {
+			t.Errorf("ValidateRepoName(%q) = %v; want nil", name, err)
+		}
+	}
+}
+
+func TestValidateRepoNameRejectsEmpty(t *testing.T) {
+	if err := ValidateRepoName(""); err == nil {
+		t.Fatal("ValidateRepoName(\"\") = nil; want error for empty string")
+	}
+}
+
+func TestValidateRepoNameRejectsSlash(t *testing.T) {
+	// A slash would allow path traversal in the Vault policy.
+	if err := ValidateRepoName("repo/evil"); err == nil {
+		t.Fatal("ValidateRepoName(\"repo/evil\") = nil; want error for slash")
+	}
+}
+
 // --- Credentialed secret path validation tests (issue #414) ---
 
 func TestCredentialedPolicyPathsRejectsHCLInjection(t *testing.T) {

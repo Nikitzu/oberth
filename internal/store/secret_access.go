@@ -13,6 +13,13 @@ import (
 	"github.com/oberthci/oberth/internal/model"
 )
 
+// grantRepoPattern matches valid characters for the repo field of a grant.
+// Grant repos are qualified names (upstream/org/repo) that flow into per-repo
+// Vault policy HCL construction; quotes, backslashes, newlines, and control
+// characters would escape the HCL string boundary and inject arbitrary policy
+// rules (issue #416, same class as #411 and #414).
+var grantRepoPattern = regexp.MustCompile(`^[A-Za-z0-9._/-]+$`)
+
 // grantSecretPattern matches valid characters for the secret field of a grant.
 // Grant secrets are eventually interpolated into Vault policy HCL path strings
 // by the installer; quotes, backslashes, newlines, and control characters
@@ -85,6 +92,9 @@ func (s *Store) SecretAccessList(ctx context.Context, repo string, includeRevoke
 func (s *Store) Grant(ctx context.Context, repo, step, secret, actor string) (SecretAccessGrant, error) {
 	if strings.TrimSpace(repo) == "" || strings.TrimSpace(step) == "" || strings.TrimSpace(secret) == "" || strings.TrimSpace(actor) == "" {
 		return SecretAccessGrant{}, fmt.Errorf("%w: repo, step, secret, and actor are required", ErrInvalid)
+	}
+	if !grantRepoPattern.MatchString(repo) {
+		return SecretAccessGrant{}, fmt.Errorf("%w: repo %q contains characters outside [A-Za-z0-9._/-]; refusing to persist (HCL injection risk)", ErrInvalid, repo)
 	}
 	if !grantSecretPattern.MatchString(secret) {
 		return SecretAccessGrant{}, fmt.Errorf("%w: secret %q contains characters outside [A-Za-z0-9._/-]; refusing to persist (HCL injection risk)", ErrInvalid, secret)

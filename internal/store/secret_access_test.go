@@ -508,3 +508,51 @@ func TestGrantAcceptsValidSecret(t *testing.T) {
 		}
 	}
 }
+
+// --- Grant repo charset validation tests (issue #416) ---
+
+func TestGrantRejectsHCLInjectionInRepo(t *testing.T) {
+	now := time.Date(2026, 9, 15, 12, 0, 0, 0, time.UTC)
+	s := testStore(t, &now)
+	ctx := context.Background()
+
+	// A repo name containing HCL metacharacters must be rejected at
+	// persistence time so hostile values never reach the Vault policy
+	// interpolation in the installer.
+	hostile := `x" { capabilities = ["sudo"] } path "y`
+	_, err := s.Grant(ctx, hostile, "plan", "terraform/credentials", "admin@localhost")
+	if err == nil {
+		t.Fatal("expected rejection of repo containing HCL injection characters")
+	}
+	if !errors.Is(err, ErrInvalid) {
+		t.Fatalf("expected ErrInvalid, got: %v", err)
+	}
+}
+
+func TestGrantRejectsControlCharsInRepo(t *testing.T) {
+	now := time.Date(2026, 9, 15, 12, 0, 0, 0, time.UTC)
+	s := testStore(t, &now)
+	ctx := context.Background()
+
+	for _, repo := range []string{"repo\x00evil", "repo\nevil", "repo\tevil", `repo\evil`} {
+		if _, err := s.Grant(ctx, repo, "plan", "terraform/credentials", "admin@localhost"); err == nil {
+			t.Errorf("Grant(repo=%q) = nil; want error for unsafe characters", repo)
+		}
+	}
+}
+
+func TestGrantAcceptsValidRepo(t *testing.T) {
+	now := time.Date(2026, 9, 15, 12, 0, 0, 0, time.UTC)
+	s := testStore(t, &now)
+	ctx := context.Background()
+
+	for _, repo := range []string{
+		"terraform",
+		"codeberg/oberthci/oberth",
+		"my.upstream/my-org/repo_name",
+	} {
+		if _, err := s.Grant(ctx, repo, "plan", "terraform/credentials", "admin@localhost"); err != nil {
+			t.Errorf("Grant(repo=%q) = %v; want nil", repo, err)
+		}
+	}
+}

@@ -330,6 +330,71 @@ func TestPerRepoIdentityNamesDeduplicates(t *testing.T) {
 	}
 }
 
+// --- Per-repo identity repo name validation tests (issue #416) ---
+
+func TestConfigurePerRepoIdentitiesRejectsHCLInjectionInRepo(t *testing.T) {
+	t.Parallel()
+
+	responses := map[string]fakeBaoResponse{}
+	runner := &fakeBaoRunner{t: t, responses: responses}
+	store := openBaoExec{run: runner.run, namespace: "openbao", pod: "openbao-0"}
+
+	identities := []PerRepoIdentity{{
+		Upstream: "codeberg",
+		Org:      "oberthci",
+		Repo:     `evil" { capabilities = ["sudo"] } path "secret/*`,
+	}}
+
+	_, err := ConfigurePerRepoIdentities(context.Background(), store, "root", identities, "oberth-argo")
+	if err == nil {
+		t.Fatal("expected rejection of repo name with HCL injection characters")
+	}
+	if !strings.Contains(err.Error(), "characters outside") {
+		t.Fatalf("unexpected error message: %v", err)
+	}
+}
+
+func TestConfigurePerRepoIdentitiesRejectsControlCharsInRepo(t *testing.T) {
+	t.Parallel()
+
+	responses := map[string]fakeBaoResponse{}
+	runner := &fakeBaoRunner{t: t, responses: responses}
+	store := openBaoExec{run: runner.run, namespace: "openbao", pod: "openbao-0"}
+
+	for _, repo := range []string{"repo\x00evil", "repo\nevil", "repo\tevil"} {
+		identities := []PerRepoIdentity{{
+			Upstream: "codeberg",
+			Org:      "oberthci",
+			Repo:     repo,
+		}}
+		if _, err := ConfigurePerRepoIdentities(context.Background(), store, "root", identities, "oberth-argo"); err == nil {
+			t.Errorf("ConfigurePerRepoIdentities(repo=%q) = nil; want error for control character", repo)
+		}
+	}
+}
+
+func TestConfigurePerRepoIdentitiesRejectsHCLInjectionInOrg(t *testing.T) {
+	t.Parallel()
+
+	responses := map[string]fakeBaoResponse{}
+	runner := &fakeBaoRunner{t: t, responses: responses}
+	store := openBaoExec{run: runner.run, namespace: "openbao", pod: "openbao-0"}
+
+	identities := []PerRepoIdentity{{
+		Upstream: "codeberg",
+		Org:      `evil" { capabilities = ["sudo"] }`,
+		Repo:     "oberth",
+	}}
+
+	_, err := ConfigurePerRepoIdentities(context.Background(), store, "root", identities, "oberth-argo")
+	if err == nil {
+		t.Fatal("expected rejection of org name with HCL injection characters")
+	}
+	if !strings.Contains(err.Error(), "characters outside") {
+		t.Fatalf("unexpected error message: %v", err)
+	}
+}
+
 func TestGrantlessRepoGetsNoPerRepoSA(t *testing.T) {
 	t.Parallel()
 	// A repo with no grants and no declared secret-store paths should not

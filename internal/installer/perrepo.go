@@ -140,6 +140,17 @@ func ConfigurePerRepoIdentities(ctx context.Context, store openBaoExec, rootToke
 	var items []configItem
 
 	for _, id := range identities {
+		// Validate org and repo before any HCL interpolation. The org is also
+		// validated upstream for shared policies, but defense-in-depth here
+		// catches per-repo-only paths. The repo field had no validation at all
+		// prior to issue #416.
+		if err := ValidateOrgName(id.Org); err != nil {
+			return items, fmt.Errorf("per-repo identity org: %w", err)
+		}
+		if err := ValidateRepoName(id.Repo); err != nil {
+			return items, fmt.Errorf("per-repo identity repo: %w", err)
+		}
+
 		name := PerRepoName(id.Upstream, id.Org, id.Repo)
 
 		// --- Policy ---
