@@ -692,6 +692,7 @@ func serve(ctx context.Context, options serveOptions, logger *log.Logger) (resul
 		}
 		dockerJobs.SetPipelines(database, database)
 		dockerJobs.SetFiles(fileLoader)
+		dockerJobs.SetFragments(fragmentLoader)
 		ciJobs, releaseJobs = dockerJobs, dockerJobs
 		if strings.TrimSpace(options.secretStoreAddress) != "" {
 			logger.Printf("docker execution engine: steps run as containers on the local daemon; "+
