@@ -283,3 +283,42 @@ func TestADisagreementWithTheOriginIsSaidInTheFile(t *testing.T) {
 		t.Fatalf("the header does not name both orgs:\n%s", document)
 	}
 }
+
+func TestGeneratedPipelineConsumesAFragmentAndDeclaresWhatItNeeds(t *testing.T) {
+	t.Parallel()
+	root := materialize(t, "npm-actions-inputs")
+	project := DetectProject(root)
+	if workflow, ok := FindBuildWorkflow(root); ok {
+		Apply(workflow, &project)
+	}
+	project.Org = project.OriginOrg
+	project.Fragments = []FragmentUse{{
+		Ref:         "acme/shared@steps-v1",
+		Steps:       []string{"memory", "notion"},
+		Files:       []string{"shared@bundle-v1:bundle/cli.cjs", "shared@bundle-v1:graph/repos.yml"},
+		SecretPaths: []string{"oberth/upstream/acme/notion-token", "oberth/upstream/acme/github-token"},
+	}}
+	result := Generate(project)
+
+	for _, want := range []string{
+		"    - - name: memory\n        templateRef:\n          name: acme/shared@steps-v1\n          template: memory\n",
+		"    - - name: notion\n        templateRef:\n          name: acme/shared@steps-v1\n          template: notion\n",
+		"oberth.ci/secret-paths: oberth/upstream/acme/github-token,oberth/upstream/acme/notion-token\n",
+		"oberth.ci/files: |\n      shared@bundle-v1:bundle/cli.cjs\n      shared@bundle-v1:graph/repos.yml\n",
+	} {
+		if !strings.Contains(result.YAML, want) {
+			t.Fatalf("missing %q in:\n%s", want, result.YAML)
+		}
+	}
+	if got := strings.Join(result.Steps[len(result.Steps)-2:], ","); got != "memory,notion" {
+		t.Fatalf("fragment steps must close the chain, got %q", got)
+	}
+	workflow, err := argoworkflow.Decode([]byte(result.YAML))
+	if err != nil {
+		t.Fatal(err)
+	}
+	refs, err := argoworkflow.FragmentRefs(workflow)
+	if err != nil || len(refs) != 1 {
+		t.Fatalf("FragmentRefs = %v, %v", refs, err)
+	}
+}

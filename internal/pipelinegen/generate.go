@@ -67,6 +67,9 @@ func Generate(project Project) Result {
 	for _, one := range steps {
 		result.Steps = append(result.Steps, one.name)
 	}
+	for _, fragment := range project.Fragments {
+		result.Steps = append(result.Steps, fragment.Steps...)
+	}
 	result.YAML = render(project, steps, result)
 	return result
 }

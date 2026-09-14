@@ -499,3 +499,65 @@ func (service *API) PipelineCheck(ctx context.Context, actor, repoName, trigger,
 	}
 	return service.pipelineCheck(ctx, actor, repoName, trigger, ref, restore)
 }
+
+type FragmentSource interface {
+	Load(ctx context.Context, key argoworkflow.FragmentKey) (argoworkflow.Fragment, error)
+}
+
+type FragmentView struct {
+	Ref         string   `json:"ref"`
+	SHA         string   `json:"sha"`
+	Steps       []string `json:"steps"`
+	Files       []string `json:"files"`
+	SecretPaths []string `json:"secret_paths"`
+}
+
+func (service *API) FragmentShow(ctx context.Context, ref string) (any, error) {
+	if service.fragmentSource == nil {
+		return nil, fmt.Errorf("%w: this server resolves no fragments", ErrInvalidInput)
+	}
+	repo, version, found := strings.Cut(strings.TrimSpace(ref), "@")
+	if !found || strings.TrimSpace(repo) == "" || strings.TrimSpace(version) == "" {
+		return nil, fmt.Errorf("%w: a fragment is named <upstream>/<repository>@<tag>", ErrInvalidInput)
+	}
+	key := argoworkflow.FragmentKey{Repo: repo, Version: version}
+	fragment, err := service.fragmentSource.Load(ctx, key)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrInvalidInput, err)
+	}
+	document, err := argoworkflow.Decode(fragment.Source)
+	if err != nil {
+		return nil, fmt.Errorf("%w: fragment %s: %w", ErrInvalidInput, key, err)
+	}
+	view := FragmentView{Ref: key.String(), SHA: fragment.SHA, Steps: []string{}, Files: []string{}, SecretPaths: []string{}}
+	for _, template := range document.Spec.Templates {
+		if template.Name != document.Spec.Entrypoint {
+			continue
+		}
+		for _, group := range template.Steps {
+			for _, step := range group.Steps {
+				if step.Template != "" {
+					view.Steps = append(view.Steps, step.Template)
+				}
+			}
+		}
+	}
+	if len(view.Steps) == 0 {
+		for _, template := range document.Spec.Templates {
+			if template.Container != nil {
+				view.Steps = append(view.Steps, template.Name)
+			}
+		}
+	}
+	for _, line := range strings.Split(document.Annotations[argoworkflow.FilesAnnotation], "\n") {
+		if trimmed := strings.TrimSpace(line); trimmed != "" {
+			view.Files = append(view.Files, trimmed)
+		}
+	}
+	for _, entry := range strings.Split(document.Annotations[argoworkflow.SecretPathsAnnotation], ",") {
+		if trimmed := strings.TrimSpace(entry); trimmed != "" {
+			view.SecretPaths = append(view.SecretPaths, trimmed)
+		}
+	}
+	return view, nil
+}

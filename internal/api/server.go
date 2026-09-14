@@ -150,6 +150,7 @@ func (server *Server) routes() {
 		server.mux.Handle("DELETE /api/repos/pipeline", server.requireAuth(http.HandlerFunc(server.handlePipelineUnset)))
 		server.mux.Handle("POST /api/repos/pipeline/check", server.requireAuth(http.HandlerFunc(server.handlePipelineCheck)))
 		server.mux.Handle("POST /api/repos", server.requireAuth(http.HandlerFunc(server.handleRepoRegister)))
+		server.mux.Handle("GET /api/fragments", server.requireAuth(http.HandlerFunc(server.handleFragmentShow)))
 	}
 	server.mux.HandleFunc("GET /assets/{asset...}", serveAsset)
 	server.mux.HandleFunc("GET /{$}", func(writer http.ResponseWriter, request *http.Request) {

@@ -60,12 +60,21 @@ func render(project Project, steps []step, result Result) string {
 	out.WriteString("  annotations:\n")
 	out.WriteString("    # Scheduler tier, not per-container resources. Those are on each template.\n")
 	out.WriteString("    oberth.ci/size: M\n")
-	if result.SecretPath != "" {
+	secretPaths := unique(append([]string{result.SecretPath}, fragmentSecretPaths(project)...))
+	if len(secretPaths) > 0 {
 		out.WriteString("    # Declared here, and matched at admission against this repository's own\n")
 		out.WriteString("    # registered upstream org. A path in another org's subtree, or another\n")
 		out.WriteString("    # repository's, is refused before any pod starts. No grant is needed for\n")
 		out.WriteString("    # this namespace; the value is the token `oberth install` stored.\n")
-		out.WriteString("    oberth.ci/secret-paths: " + result.SecretPath + "\n")
+		out.WriteString("    oberth.ci/secret-paths: " + strings.Join(secretPaths, ",") + "\n")
+	}
+	if files := unique(fragmentFiles(project)); len(files) > 0 {
+		out.WriteString("    # Files the shared steps below read, resolved by the server from a\n")
+		out.WriteString("    # published tag and mounted read-only under $OBERTH_FILES.\n")
+		out.WriteString("    oberth.ci/files: |\n")
+		for _, file := range files {
+			out.WriteString("      " + file + "\n")
+		}
 	}
 	out.WriteString("spec:\n")
 	out.WriteString("  entrypoint: ci\n")
@@ -97,6 +106,14 @@ func render(project Project, steps []step, result Result) string {
 	for _, one := range steps {
 		out.WriteString("    - - name: " + one.name + "\n")
 		out.WriteString("        template: " + one.name + "\n")
+	}
+	for _, fragment := range project.Fragments {
+		for _, name := range fragment.Steps {
+			out.WriteString("    - - name: " + name + "\n")
+			out.WriteString("        templateRef:\n")
+			out.WriteString("          name: " + fragment.Ref + "\n")
+			out.WriteString("          template: " + name + "\n")
+		}
 	}
 	out.WriteString("\n")
 
@@ -313,4 +330,34 @@ func environment(project Project) []variable {
 	default:
 		return common
 	}
+}
+
+func fragmentSecretPaths(project Project) []string {
+	var paths []string
+	for _, fragment := range project.Fragments {
+		paths = append(paths, fragment.SecretPaths...)
+	}
+	return paths
+}
+
+func fragmentFiles(project Project) []string {
+	var files []string
+	for _, fragment := range project.Fragments {
+		files = append(files, fragment.Files...)
+	}
+	return files
+}
+
+func unique(values []string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" || seen[value] {
+			continue
+		}
+		seen[value] = true
+		out = append(out, value)
+	}
+	return out
 }

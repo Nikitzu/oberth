@@ -46,6 +46,10 @@ func (f *fakePipelines) PipelineCheck(_ context.Context, actor, repo, trigger, r
 	return map[string]any{"repository": repo, "drifted": false}, nil
 }
 
+func (f *fakePipelines) FragmentShow(_ context.Context, ref string) (any, error) {
+	return map[string]any{"ref": ref, "steps": []string{"memory"}}, nil
+}
+
 func pipelineTestServer(t *testing.T) (*Server, *fakePipelines) {
 	t.Helper()
 	backend := &fakeBackend{}

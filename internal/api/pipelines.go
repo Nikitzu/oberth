@@ -29,6 +29,9 @@ type PipelineService interface {
 	// RepoRegister takes the acting identity, the repository name, and the
 	// upstream name (empty to take the only one). It is idempotent.
 	RepoRegister(context.Context, string, string, string) (any, error)
+	// FragmentShow takes "<upstream>/<repository>@<tag>" and reports the
+	// fragment's steps and what a consumer must declare for them.
+	FragmentShow(context.Context, string) (any, error)
 }
 
 // WithPipelines installs the server-held pipeline endpoints.
@@ -146,4 +149,14 @@ func decodePipelineBody(writer http.ResponseWriter, request *http.Request, targe
 		return false
 	}
 	return true
+}
+
+func (server *Server) handleFragmentShow(writer http.ResponseWriter, request *http.Request) {
+	ref := strings.TrimSpace(request.URL.Query().Get("ref"))
+	if ref == "" {
+		writeJSON(writer, http.StatusBadRequest, map[string]string{"error": "ref is required"})
+		return
+	}
+	value, err := server.pipelines.FragmentShow(request.Context(), ref)
+	server.writeView(writer, value, err)
 }

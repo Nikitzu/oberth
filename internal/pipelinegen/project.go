@@ -70,6 +70,11 @@ type Project struct {
 	// stricter shape.
 	Engine Engine
 
+	// Fragments are shared step sets the repository consumes, each pinned to
+	// a tag. Their steps run after the generated chain, and what a fragment
+	// says it needs (files, secret paths) is declared on this document.
+	Fragments []FragmentUse
+
 	// Workspaces reports a pnpm workspace root (pnpm-workspace.yaml). It
 	// changes what a script name means: a root script is one package's, and
 	// the suite usually lives in the members.
@@ -514,3 +519,10 @@ func pnpmMajorForLockfile(version string) string {
 // cross. Re-implementing the parse in the command is how the two would come to
 // disagree about what a checkout is called.
 func OriginIdentity(root string) (org, repo string) { return originIdentity(root) }
+
+type FragmentUse struct {
+	Ref         string
+	Steps       []string
+	Files       []string
+	SecretPaths []string
+}

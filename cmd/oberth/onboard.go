@@ -46,6 +46,7 @@ type onboardOptions struct {
 	dryRun   bool
 	branch   string
 	server   string
+	with     stringList
 }
 
 func runOnboard(ctx context.Context, arguments []string, output io.Writer) error {
@@ -57,6 +58,7 @@ func runOnboard(ctx context.Context, arguments []string, output io.Writer) error
 	flags.BoolVar(&options.dryRun, "dry-run", false, "do everything except pushing")
 	flags.StringVar(&options.branch, "branch", "", "branch to push HEAD to (default: the checkout's current branch)")
 	flags.StringVar(&options.server, "server", "", "profile of the server to onboard onto (default: the checkout's pinned profile, else the default profile)")
+	flags.Var(&options.with, "with", "shared steps to run after the repository's own, as <upstream>/<repository>@<tag>; repeatable")
 	if err := flags.Parse(permuteFlagsFirst(arguments)); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			flags.SetOutput(output)
@@ -259,6 +261,14 @@ func (board *onboarder) storePipeline(ctx context.Context, note string) (string,
 		pipelinegen.Apply(workflow, &project)
 	}
 	project.Org, project.Repo, project.Engine = board.org, board.repo, board.engine
+	for _, ref := range board.options.with {
+		use, err := board.fragmentUse(ctx, ref)
+		if err != nil {
+			return "", pipelinegen.Result{}, err
+		}
+		project.Fragments = append(project.Fragments, use)
+		board.step("with %s: %s", use.Ref, strings.Join(use.Steps, ", "))
+	}
 	result := pipelinegen.Generate(project)
 
 	if !result.Complete {
@@ -280,6 +290,23 @@ func (board *onboarder) storePipeline(ctx context.Context, note string) (string,
 		board.step("note: %s", line)
 	}
 	return result.YAML, result, nil
+}
+
+func (board *onboarder) fragmentUse(ctx context.Context, ref string) (pipelinegen.FragmentUse, error) {
+	var view struct {
+		Ref         string   `json:"ref"`
+		Steps       []string `json:"steps"`
+		Files       []string `json:"files"`
+		SecretPaths []string `json:"secret_paths"`
+	}
+	query := map[string]string{"ref": strings.TrimSpace(ref)}
+	if err := board.api.Get(ctx, "/api/fragments", query, &view); err != nil {
+		return pipelinegen.FragmentUse{}, fmt.Errorf("resolve --with %s: %w", ref, err)
+	}
+	if len(view.Steps) == 0 {
+		return pipelinegen.FragmentUse{}, fmt.Errorf("--with %s names a fragment with no steps", ref)
+	}
+	return pipelinegen.FragmentUse{Ref: view.Ref, Steps: view.Steps, Files: view.Files, SecretPaths: view.SecretPaths}, nil
 }
 
 func (board *onboarder) putPipeline(ctx context.Context, document string) error {
