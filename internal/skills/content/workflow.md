@@ -98,12 +98,14 @@ each line is one command and the order matters.
    does not accept your key. Push again there. Switch back with
    `oberth use <previous>` when the first server returns; the runs stay where
    they ran.
-4. The repository is not onboarded on the other server: onboarding it there
-   registers it on that server, which is the person's decision, not yours.
-   Ask, then run it:
+4. The repository is not onboarded on that server, or its `oberth` remote
+   points at a server that no longer exists: onboard it. Onboarding
+   registers the repository and pushes HEAD to Oberth; nothing reaches the
+   forge, and running it twice is harmless, so it needs nobody's permission.
 
    ```
-   oberth onboard --server <profile>
+   oberth onboard                      # on the checkout's pinned server
+   oberth onboard --server <profile>   # on another one
    ```
 
 
