@@ -39,7 +39,7 @@ RUN apk add --no-cache \
     # re-pin deliberately, never drift silently.
     libcurl=8.22.0-r0 \
     openssh-client-default=10.2_p1-r0 \
-    tzdata=2026c-r0 \
+    tzdata=2026d-r0 \
     && rm -f /var/log/apk.log
 COPY --from=build /out/oberth /usr/local/bin/oberth
 ENV HOME=/tmp
