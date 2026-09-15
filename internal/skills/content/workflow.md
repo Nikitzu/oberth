@@ -74,6 +74,43 @@ should wait for a green run for the exact HEAD. A red or missing run is never
 a reason to go around it. If a person decides to skip Oberth for one push,
 that is their call to state, and the result is reported as untested.
 
+## When the server does not answer
+
+`oberth status` (or a push) fails with connection refused. Work down this list;
+each line is one command and the order matters.
+
+1. A docker-engine server is a process on this machine that needs the Docker
+   daemon. `docker info` failing means the daemon is down: start Docker Desktop
+   or OrbStack (`open -a OrbStack` on a Mac), wait ten seconds, retry. The
+   server reconnects on its own; nothing else to restart.
+2. Docker is up and the server still refuses: restart the service, then
+   `oberth unseal` if runs fail at the secret store afterwards.
+
+   ```
+   launchctl kickstart -k gui/$(id -u)/ci.oberth.server   # macOS
+   systemctl --user restart oberth                          # Linux
+   ```
+
+3. Still down, or the server is a remote one you cannot reach: switch the
+   checkout to another server this repository is onboarded on. `oberth use`
+   with no argument lists the profiles and marks the pinned one;
+   `oberth use <profile>` moves the `oberth` remote and warns if that server
+   does not accept your key. Push again there. Switch back with
+   `oberth use <previous>` when the first server returns; the runs stay where
+   they ran.
+4. The repository is not onboarded on the other server: onboarding it there
+   registers it on that server, which is the person's decision, not yours.
+   Ask, then run it:
+
+   ```
+   oberth onboard --server <profile>
+   ```
+
+
+Never edit the `oberth` remote by hand and never point it at a server that
+does not know the repository: the push is refused and the verdict you need
+does not exist there.
+
 ## When something is wrong
 
 - "sealed" or connection refused from the store: `oberth unseal`.
