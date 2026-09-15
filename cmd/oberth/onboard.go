@@ -32,7 +32,7 @@ import (
 // because the common reason to run this twice is that the first run said
 // something needed fixing.
 
-const onboardUsage = "onboard [path] [--timeout 15m] [--upstream <name>] [--dry-run]"
+const onboardUsage = "onboard [path] [--timeout 15m] [--upstream <name>] [--dry-run] [--regenerate]"
 
 // maxPipelineRetries bounds the automatic repair loop. Two is deliberate: the
 // generator gets one chance to be wrong about the ecosystem and one to be
@@ -40,13 +40,14 @@ const onboardUsage = "onboard [path] [--timeout 15m] [--upstream <name>] [--dry-
 const maxPipelineRetries = 2
 
 type onboardOptions struct {
-	root     string
-	upstream string
-	timeout  time.Duration
-	dryRun   bool
-	branch   string
-	server   string
-	with     stringList
+	root       string
+	upstream   string
+	timeout    time.Duration
+	dryRun     bool
+	branch     string
+	server     string
+	with       stringList
+	regenerate bool
 }
 
 func runOnboard(ctx context.Context, arguments []string, output io.Writer) error {
@@ -59,6 +60,7 @@ func runOnboard(ctx context.Context, arguments []string, output io.Writer) error
 	flags.StringVar(&options.branch, "branch", "", "branch to push HEAD to (default: the checkout's current branch)")
 	flags.StringVar(&options.server, "server", "", "profile of the server to onboard onto (default: the checkout's pinned profile, else the default profile)")
 	flags.Var(&options.with, "with", "shared steps to run after the repository's own, as <upstream>/<repository>@<tag>; repeatable")
+	flags.BoolVar(&options.regenerate, "regenerate", false, "replace a pipeline the server already holds with a freshly generated one")
 	if err := flags.Parse(permuteFlagsFirst(arguments)); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			flags.SetOutput(output)
@@ -96,6 +98,7 @@ type onboarder struct {
 	org      string
 	engine   pipelinegen.Engine
 	endpoint string
+	kept     bool
 }
 
 func onboard(ctx context.Context, options onboardOptions, output io.Writer) error {
@@ -123,7 +126,7 @@ func onboard(ctx context.Context, options onboardOptions, output io.Writer) erro
 	if err := board.register(ctx); err != nil {
 		return err
 	}
-	document, result, err := board.storePipeline(ctx, "")
+	document, result, err := board.keepOrStorePipeline(ctx)
 	if err != nil {
 		return err
 	}
@@ -243,6 +246,32 @@ func (board *onboarder) register(ctx context.Context) error {
 		board.step("already registered, default branch %s", registered.DefaultBranch)
 	}
 	return nil
+}
+
+// keepOrStorePipeline leaves a pipeline the server already holds alone.
+//
+// A stored document may have been hand-ordered or repaired since the first
+// onboarding, and a re-run of onboard after a server move must not undo that
+// silently. Only --regenerate replaces it.
+func (board *onboarder) keepOrStorePipeline(ctx context.Context) (string, pipelinegen.Result, error) {
+	var held remotePipeline
+	query := map[string]string{"repo": board.repo, "trigger": "build"}
+	if err := board.api.Get(ctx, "/api/repos/pipeline", query, &held); err != nil {
+		return "", pipelinegen.Result{}, sealedAdvice(err)
+	}
+	if !held.Held || board.options.regenerate {
+		return board.storePipeline(ctx, "")
+	}
+	if len(board.options.with) > 0 {
+		return "", pipelinegen.Result{}, fmt.Errorf(
+			"%s already has pipeline version %d on this server; --with would replace it.\n"+
+				"  Add --regenerate to store a fresh document that includes the fragment.",
+			board.repo, held.Version)
+	}
+	board.kept = true
+	board.step("keeping pipeline version %d stored by %s (oberth onboard --regenerate replaces it)",
+		held.Version, held.StoredBy)
+	return held.Document, pipelinegen.Result{Complete: true}, nil
 }
 
 // storePipeline generates the document and stores it server-side.
@@ -561,6 +590,9 @@ func (board *onboarder) pushAndSettle(ctx context.Context, document string, resu
 		}
 
 		verdict, repaired := board.classify(ctx, run, document, result, attempt)
+		if board.kept {
+			return board.verdict(verdict)
+		}
 		if !repaired {
 			return board.verdict(verdict)
 		}

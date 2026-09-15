@@ -62,6 +62,16 @@ func newOnboardServer(t *testing.T, engine string) (*onboardServer, *httptest.Se
 				"default_branch": "master", "created": state.registered == 1,
 				"branch_source": "the upstream's own HEAD advertisement",
 			})
+		case r.Method == http.MethodGet && r.URL.Path == "/api/repos/pipeline":
+			held := len(state.stored) > 0
+			document := ""
+			if held {
+				document = state.stored[len(state.stored)-1]
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"repository": "web-app", "held": held, "version": len(state.stored),
+				"document": document, "stored_by": "someone@laptop",
+			})
 		case r.Method == http.MethodPut && r.URL.Path == "/api/repos/pipeline":
 			var body map[string]string
 			_ = json.NewDecoder(r.Body).Decode(&body)
@@ -215,14 +225,34 @@ func TestOnboardIsIdempotent(t *testing.T) {
 	if state.registered != 2 {
 		t.Errorf("registration was called %d times, want 2 (it is idempotent, not skipped)", state.registered)
 	}
-	// The same repository generates the same document, so the second store is
-	// byte-identical. A differing document would report drift on every run.
-	if len(state.stored) == 2 && state.stored[0] != state.stored[1] {
-		t.Error("two onboardings of an unchanged repository produced different documents")
+	// The second run finds a stored pipeline and leaves it alone: a document
+	// hand-ordered since the first onboarding must survive a re-onboard.
+	if len(state.stored) != 1 {
+		t.Errorf("the pipeline was stored %d times, want 1 (the second onboarding keeps it)", len(state.stored))
 	}
 	url, err := exec.Command("git", "-C", root, "remote", "get-url", "oberth").Output()
 	if err != nil || strings.TrimSpace(string(url)) != "ssh://git@oberth.invalid:2222/web-app" {
 		t.Errorf("the remote was not left correct on the second run: %q %v", url, err)
+	}
+}
+
+func TestOnboardRegenerateReplacesTheStoredPipeline(t *testing.T) {
+	state, _ := newOnboardServer(t, "argo")
+	root := onboardCheckout(t, "git@forge.example:acme/web-app.git")
+
+	var out bytes.Buffer
+	if err := runOnboard(context.Background(), []string{root, "--dry-run"}, &out); err != nil {
+		t.Fatal(err)
+	}
+	if err := runOnboard(context.Background(), []string{root, "--dry-run", "--regenerate"}, &out); err != nil {
+		t.Fatal(err)
+	}
+	if len(state.stored) != 2 {
+		t.Errorf("the pipeline was stored %d times, want 2 with --regenerate", len(state.stored))
+	}
+	err := runOnboard(context.Background(), []string{root, "--dry-run", "--with=forge/shared@v1"}, &out)
+	if err == nil || !strings.Contains(err.Error(), "--regenerate") {
+		t.Errorf("--with on a held pipeline should ask for --regenerate, got %v", err)
 	}
 }
 

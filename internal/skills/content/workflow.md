@@ -101,7 +101,9 @@ each line is one command and the order matters.
 4. The repository is not onboarded on that server, or its `oberth` remote
    points at a server that no longer exists: onboard it. Onboarding
    registers the repository and pushes HEAD to Oberth; nothing reaches the
-   forge, and running it twice is harmless, so it needs nobody's permission.
+   forge, and running it twice is harmless: a pipeline the server already
+   holds is kept, not regenerated (only `--regenerate` replaces it). So it
+   needs nobody's permission.
 
    ```
    oberth onboard                      # on the checkout's pinned server
