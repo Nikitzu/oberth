@@ -51,6 +51,7 @@ func oberthConfig() Config {
 func oberthReleaseApprovedSecrets() map[string]bool {
 	return map[string]bool{
 		"oberth/data/release/gar-sa-key":       true,
+		"oberth/data/release/gar-reader-key":   true,
 		"oberth/data/release/r2-upload-token":  true,
 		"oberth/data/release/cosign-secret":    true,
 		"oberth/data/release/homebrew-tap-key": true,
@@ -124,6 +125,7 @@ func TestOberthReleasePipelineIsAdmissible(t *testing.T) {
 	}
 	want := []string{
 		"oberth/data/release/gar-sa-key",
+		"oberth/data/release/gar-reader-key",
 		"oberth/data/release/r2-upload-token",
 		"oberth/data/release/cosign-secret",
 		"oberth/data/release/homebrew-tap-key",
@@ -537,6 +539,7 @@ func TestOberthReleaseScriptReadsStoreFieldNames(t *testing.T) {
 	referencePattern := regexp.MustCompile(`\$secret_root/([A-Za-z0-9._-]+)/([A-Za-z0-9._-]+)`)
 	expected := map[string]bool{
 		"gar-sa-key/GAR_SA_KEY":           true,
+		"gar-reader-key/GAR_SA_KEY":       true,
 		"r2-upload-token/R2_UPLOAD_TOKEN": true,
 		"cosign-secret/COSIGN_KEY":        true,
 		"cosign-secret/COSIGN_PASSWORD":   true, // optional at runtime, named here so a rename is visible

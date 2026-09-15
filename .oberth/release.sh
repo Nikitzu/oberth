@@ -36,7 +36,14 @@ gar_chart=${gar_host}/skipopsmain/cloudtaser-helm/oberth
 # (docs/argo-secret-delivery.md); the store was seeded to satisfy that. A
 # rename here MUST be paired with re-seeding the store fields, and vice versa
 # — v0.13.1 failed exactly on this divergence.
-gar_key=$secret_root/gar-sa-key/GAR_SA_KEY
+# GAR registry auth: prefer gar-reader-key (read-only, #418) when present
+# (verify steps); fall back to gar-sa-key for publish steps that push.
+gar_reader_key=$secret_root/gar-reader-key/GAR_SA_KEY
+if [ -s "$gar_reader_key" ]; then
+	gar_key=$gar_reader_key
+else
+	gar_key=$secret_root/gar-sa-key/GAR_SA_KEY
+fi
 r2_config_owned=false
 registry_config_owned=false
 
@@ -485,7 +492,7 @@ publish_homebrew_tap() {
 }
 
 prepare_registry_auth() {
-	test -s "$gar_key" || fail "gar-sa-key/GAR_SA_KEY is missing"
+	test -s "$gar_key" || fail "GAR registry key is missing (tried gar-reader-key and gar-sa-key)"
 	ensure_cred_dir
 	rm -rf -- "$cred_dir/.docker" "$cred_dir/.helm"
 	mkdir -p "$cred_dir/.docker" "$cred_dir/.helm/registry"

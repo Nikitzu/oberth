@@ -48,6 +48,8 @@
 #
 # Release secrets, fetched in-Pod via `oberth secretstore exec`:
 #   gar-sa-key:       oberth/data/release/gar-sa-key       (field GAR_SA_KEY)
+#   gar-reader-key:   oberth/data/release/gar-reader-key   (field GAR_SA_KEY;
+#     read-only, used by release-verify instead of gar-sa-key — #418)
 #   r2-upload-token:  oberth/data/release/r2-upload-token  (field R2_UPLOAD_TOKEN)
 #   cosign-secret:    oberth/data/release/cosign-secret    (fields COSIGN_KEY,
 #     COSIGN_PUB; COSIGN_PASSWORD optional for an encrypted key)
@@ -93,7 +95,7 @@ kind: Workflow
 metadata:
   annotations:
     oberth.ci/size: L
-    oberth.ci/secret-paths: oberth/data/release/gar-sa-key,oberth/data/release/r2-upload-token,oberth/data/release/cosign-secret,oberth/data/release/homebrew-tap-key
+    oberth.ci/secret-paths: oberth/data/release/gar-sa-key,oberth/data/release/gar-reader-key,oberth/data/release/r2-upload-token,oberth/data/release/cosign-secret,oberth/data/release/homebrew-tap-key
 spec:
   entrypoint: release
   activeDeadlineSeconds: 14400
@@ -1540,10 +1542,10 @@ spec:
           cpu: "2"
           memory: "4Gi"
 
-  # ---- release-verify burn (secretstore exec, needs gar-sa-key + cosign-secret) ----
+  # ---- release-verify burn (secretstore exec, needs gar-reader-key + cosign-secret) ----
   # verify_release calls prepare_signing_identity (cosign-secret) and
-  # prepare_registry_auth (gar-sa-key). It reads published objects over public
-  # HTTPS, so it needs no R2 upload credential.
+  # prepare_registry_auth (gar-reader-key). It reads published objects over
+  # public HTTPS — read-only GAR access is sufficient (#418).
   - name: release-verify
     activeDeadlineSeconds: 3600
     retryStrategy:
@@ -1560,7 +1562,7 @@ spec:
       - "secretstore"
       - "exec"
       - "--dir=/run/oberth-secrets"
-      - "--path=oberth/data/release/gar-sa-key"
+      - "--path=oberth/data/release/gar-reader-key"
       - "--path=oberth/data/release/cosign-secret"
       - "--"
       - "./.oberth/release.sh"
