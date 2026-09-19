@@ -331,14 +331,11 @@ func (w *wizard) advance() (*wizard, tea.Cmd) {
 // program exits (S2/S10: no exit route leaves secret bytes live).
 func (w *wizard) teardownSecrets() {
 	for _, p := range w.pages {
-		switch pg := p.(type) {
-		case *applyPage:
+		if pg, ok := p.(*applyPage); ok {
 			// Cancel the installer context so it stops mutating on abort.
 			if pg.cancel != nil {
 				pg.cancel()
 			}
-			pg.wipeSecrets()
-		case *forgePage:
 			pg.wipeSecrets()
 		}
 	}
@@ -480,7 +477,7 @@ func (w *wizard) overlayHelp(backdrop string) string {
 		sKey.Render("escape")+"     "+sMuted.Render("ctrl+c abort — confirmed; states what already exists"),
 		"",
 		sMuted.Render("the wizard is a skin over ")+sInfo.Render("oberth install")+sMuted.Render(" — every answer maps to"),
-		sMuted.Render("a flag; --dry-run prints the equivalent non-interactive command."),
+		sMuted.Render("a flag; --dry-mode prints the equivalent non-interactive command."),
 		"",
 		sMuted.Render("                                              ")+sKey.Render("?")+" or "+sKey.Render("esc")+" closes help",
 	)

@@ -38,7 +38,7 @@ func newStoreConnectPage() *storeConnectPage {
 func (p *storeConnectPage) title() string    { return "propellant" }
 func (p *storeConnectPage) question() string { return "Connect the store." }
 func (p *storeConnectPage) keys() string {
-	return sKey.Render("tab") + " fields · " + sKey.Render("v") + " verify · " + sKey.Render("n") + " add path · " + sKey.Render("enter") + " continue · " + sKey.Render("esc") + " back"
+	return sKey.Render("tab") + " fields · " + sKey.Render("enter") + " continue · " + sKey.Render("esc") + " back"
 }
 
 func (p *storeConnectPage) init(state *WizardState) tea.Cmd {
@@ -71,26 +71,26 @@ func (p *storeConnectPage) update(msg tea.Msg, state *WizardState) (page, tea.Cm
 	case tea.KeyPressMsg:
 		switch msg.String() {
 		case "tab":
-			p.focus = (p.focus + 1) % 3 // address, CA cert, and allowed paths
+			p.focus = (p.focus + 1) % 4 // address(0), CA cert(1), paths(2), actions(3)
 			p.errMsg = ""
 		case "shift+tab":
-			p.focus = (p.focus + 2) % 3
+			p.focus = (p.focus + 3) % 4
 			p.errMsg = ""
 		case "v":
-			// Guard: do not steal 'v' from text fields (address, CA cert,
-			// allowed paths). Only act as a hotkey when no text field is
-			// focused — which on this page means never; but the guard is
-			// explicit so a future non-text focus works automatically.
+			// Focus 0-2 are text fields: 'v' is text input.
 			if p.focus == 0 || p.focus == 1 {
 				p.fields[p.focus].value += "v"
 				return p, nil
 			}
-			if p.focus == 2 && len(p.allowedPaths) > 0 {
-				last := len(p.allowedPaths) - 1
-				p.allowedPaths[last] += "v"
-				p.fields[2].value = strings.Join(p.allowedPaths, ", ")
+			if p.focus == 2 {
+				if len(p.allowedPaths) > 0 {
+					last := len(p.allowedPaths) - 1
+					p.allowedPaths[last] += "v"
+					p.fields[2].value = strings.Join(p.allowedPaths, ", ")
+				}
 				return p, nil
 			}
+			// Focus 3 (actions row): trigger verify.
 			if err := p.validateFields(); err != "" {
 				p.errMsg = err
 				return p, nil
@@ -99,18 +99,20 @@ func (p *storeConnectPage) update(msg tea.Msg, state *WizardState) (page, tea.Cm
 			p.errMsg = ""
 			return p, probeVault(p.fields[0].value, p.fields[1].value)
 		case "n":
-			// Guard: do not steal 'n' from text fields.
+			// Focus 0-2 are text fields: 'n' is text input.
 			if p.focus == 0 || p.focus == 1 {
 				p.fields[p.focus].value += "n"
 				return p, nil
 			}
-			if p.focus == 2 && len(p.allowedPaths) > 0 {
-				last := len(p.allowedPaths) - 1
-				p.allowedPaths[last] += "n"
-				p.fields[2].value = strings.Join(p.allowedPaths, ", ")
+			if p.focus == 2 {
+				if len(p.allowedPaths) > 0 {
+					last := len(p.allowedPaths) - 1
+					p.allowedPaths[last] += "n"
+					p.fields[2].value = strings.Join(p.allowedPaths, ", ")
+				}
 				return p, nil
 			}
-			// Add another path (only reachable if allowedPaths is empty).
+			// Focus 3 (actions row): add a path.
 			p.allowedPaths = append(p.allowedPaths, "")
 			p.fields[2].value = strings.Join(p.allowedPaths, ", ")
 			return p, nil
@@ -200,15 +202,20 @@ func (p *storeConnectPage) view(_ *WizardState, _, _ int) string {
 		}
 		b.WriteString(lipgloss.NewStyle().Background(cLine).Foreground(cFg).Padding(0, 1).Render(path))
 	}
-	b.WriteString("   " + sKey.Render("n") + " add\n\n")
+	b.WriteString("\n")
 
 	// Auth note.
 	b.WriteString("  " + sMuted.Render("auth is kubernetes (role oberth-secretstore) — oberth ") +
 		sText.Render("never") + sMuted.Render(" asks for a store") + "\n")
 	b.WriteString("  " + sMuted.Render("admin token; store-side policy is setup-secretstore.sh in your own session") + "\n\n")
 
-	// Verify section.
-	b.WriteString("  " + sKey.Render("v") + sMuted.Render("erify") + "\n")
+	// Actions row (focus index 3): v verify, n add path.
+	actionStyle := sMuted
+	if p.focus == 3 {
+		actionStyle = lipgloss.NewStyle().Foreground(cPurple)
+	}
+	b.WriteString("  " + actionStyle.Render("v") + " " + actionStyle.Render("verify") +
+		"  " + actionStyle.Render("n") + " " + actionStyle.Render("add path") + "\n")
 
 	if p.verifying {
 		b.WriteString("    " + lipgloss.NewStyle().Foreground(cPurple).Render("⠸") + " verifying...\n")

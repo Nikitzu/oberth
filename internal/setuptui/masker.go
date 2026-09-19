@@ -1,6 +1,9 @@
 package setuptui
 
-import "strings"
+import (
+	"strings"
+	"sync"
+)
 
 // masker implements allowlist-shaped secret masking (S3). The wizard knows
 // every secret it holds; values are registered with the masker before first
@@ -12,7 +15,12 @@ import "strings"
 // heap). mask() necessarily creates a transient string per comparison; that
 // copy is short-lived garbage, unlike a map key that pins the value for the
 // program's lifetime.
+//
+// All methods are goroutine-safe: register() and wipe() run on the TUI
+// goroutine while mask() runs on the installer goroutine (via
+// applyWriter.processLine).
 type masker struct {
+	mu      sync.Mutex
 	secrets [][]byte
 }
 
@@ -26,6 +34,8 @@ func (m *masker) register(secret []byte) {
 	if len(secret) == 0 {
 		return
 	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	cp := make([]byte, len(secret))
 	copy(cp, secret)
 	m.secrets = append(m.secrets, cp)
@@ -33,6 +43,8 @@ func (m *masker) register(secret []byte) {
 
 // mask replaces all registered secret values in s with "********".
 func (m *masker) mask(s string) string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	for _, secret := range m.secrets {
 		if len(secret) == 0 {
 			continue
@@ -45,6 +57,8 @@ func (m *masker) mask(s string) string {
 // wipe zeros every registered secret buffer (S2: teardown discipline).
 // After wipe the masker is empty; it can be reused.
 func (m *masker) wipe() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	for _, secret := range m.secrets {
 		for i := range secret {
 			secret[i] = 0

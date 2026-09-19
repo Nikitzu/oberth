@@ -144,8 +144,38 @@ func (p *applyPage) listenForMsg() tea.Cmd {
 
 // startApply launches installer.Execute in a goroutine and returns a tea.Cmd
 // that begins listening for progress messages.
+// forgeUpstreamURL derives the upstream URL from the wizard's forge
+// selection. Returns "" for unknown forge types (the installer skips the
+// upstream step in that case).
+func forgeUpstreamURL(forgeType, org string) string {
+	if org == "" {
+		return ""
+	}
+	switch forgeType {
+	case "github":
+		return "github.com/" + org
+	case "codeberg":
+		return "codeberg.org/" + org
+	case "gitlab":
+		return "gitlab.com/" + org
+	default:
+		return ""
+	}
+}
+
 func (p *applyPage) startApply(state *WizardState) tea.Cmd {
 	cfg := state.Config
+
+	// Wire the wizard-collected onboarding data into Config so the
+	// installer's non-interactive onboarding path uses it instead of
+	// prompting (which would EOF on the empty reader).
+	cfg.ForgeType = state.ForgeType
+	cfg.ForgeOrg = state.ForgeOrg
+	cfg.ForgeURL = forgeUpstreamURL(state.ForgeType, state.ForgeOrg)
+	cfg.UplinkIdentity = state.UplinkIdentity
+	cfg.SSHPublicKeyPath = state.SSHKeyPath
+	// The user already confirmed on the review page.
+	cfg.Yes = true
 
 	// Derive a cancellable context — a confirmed abort calls cancel() so the
 	// installer stops mutating instead of running until process death (Bug 7).
@@ -220,10 +250,14 @@ func (p *applyPage) runInstaller(ctx context.Context, cfg installer.Config) {
 	w.stepStarts[0] = time.Now()
 
 	// Use a non-interactive reader instead of os.Stdin to prevent stdin
-	// contention with bubbletea's raw mode (Bug 7).
+	// contention with bubbletea's raw mode (Bug 7). IsTerminal returns
+	// false so host.go never wires term.ReadPassword/MakeRaw to os.Stdin,
+	// and the installer enters the pre-filled onboarding path instead of
+	// the interactive prompting path.
 	err := installer.Execute(ctx, cfg, installer.InstallDeps{
-		Output: w,
-		Input:  strings.NewReader(""),
+		Output:     w,
+		Input:      strings.NewReader(""),
+		IsTerminal: func() bool { return false },
 	})
 
 	// Mark the last running step as done (or failed).

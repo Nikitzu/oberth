@@ -196,6 +196,25 @@ type Config struct {
 	ImageRef      string
 	Timeout       time.Duration
 	BinaryVersion string
+
+	// ForgeType is the forge platform selected by the TUI wizard (codeberg,
+	// github, forgejo, gitlab). Present only when entering onboarding from
+	// the wizard; the interactive CLI path prompts instead.
+	ForgeType string
+	// ForgeOrg is the forge organization (e.g., "cloudtaser") from the TUI
+	// wizard.
+	ForgeOrg string
+	// ForgeURL is the upstream URL derived from ForgeType and ForgeOrg
+	// (e.g., "github.com/cloudtaser"). When set, onboarding uses it
+	// instead of prompting.
+	ForgeURL string
+	// UplinkIdentity is the uplink identity (e.g., "admin@laptop") from the
+	// TUI wizard. When set alongside SSHPublicKeyPath, onboarding uses it
+	// instead of prompting.
+	UplinkIdentity string
+	// SSHPublicKeyPath is the path to the operator's SSH public key
+	// (e.g., "~/.ssh/id_ed25519.pub") from the TUI wizard.
+	SSHPublicKeyPath string
 	// AcceptWitnessGenesis is the one-shot "<auditID>:<sha256hex>" acknowledgment
 	// forwarded to auditAnchor.acceptWitnessGenesis when --install-rekor retrofits
 	// an existing deployment that already has audit history.

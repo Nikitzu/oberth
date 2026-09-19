@@ -81,7 +81,7 @@ func FinishInstall(ctx context.Context, cfg Config, deps Deps, tw *tableWriter, 
 		return waitAndAnnounceReady(ctx, cfg, deps)
 	}
 
-	if !isInteractive(deps) {
+	if !isInteractive(deps) && !cfg.hasOnboardingConfig() {
 		_, _ = fmt.Fprintln(deps.Output, "The pod stays NotReady until an upstream is registered. Finish the setup manually:")
 		return PrintNextSteps(cfg, deps.Output)
 	}
@@ -90,6 +90,13 @@ func FinishInstall(ctx context.Context, cfg Config, deps Deps, tw *tableWriter, 
 
 func isInteractive(deps Deps) bool {
 	return deps.IsTerminal != nil && deps.IsTerminal() && deps.Input != nil && deps.RunInteractive != nil
+}
+
+// hasOnboardingConfig reports whether the Config carries pre-filled
+// onboarding data (from the TUI wizard), so a non-interactive session can
+// run onboarding without prompting.
+func (cfg Config) hasOnboardingConfig() bool {
+	return cfg.ForgeURL != "" && cfg.UplinkIdentity != "" && cfg.SSHPublicKeyPath != ""
 }
 
 func waitAndAnnounceReady(ctx context.Context, cfg Config, deps Deps) error {
@@ -182,7 +189,7 @@ func runOnboarding(ctx context.Context, cfg Config, deps Deps, tw *tableWriter, 
 	color := isColor(deps)
 
 	// --- Upstream URL ---
-	baseURL, name, ok, err := promptUpstream(ctx, deps, tw)
+	baseURL, name, ok, err := promptUpstream(ctx, cfg, deps, tw)
 	if err != nil {
 		return err
 	}
@@ -218,6 +225,11 @@ func runOnboarding(ctx context.Context, cfg Config, deps Deps, tw *tableWriter, 
 	// upstreams can never observe the registration.
 	if registered {
 		tw.AppendRow("Key registration", hostnameFromURL(baseURL), "✓ accepted", false)
+	} else if !isInteractive(deps) {
+		// Non-interactive (TUI wizard): the deploy key was just generated
+		// and needs manual registration at the forge. Skip the
+		// verification loop — the operator registers it after setup.
+		tw.AppendRow("Key registration", hostnameFromURL(baseURL), "pending", false)
 	} else {
 		forgeHost := hostnameFromURL(baseURL)
 		var lastAttemptErr error
@@ -304,7 +316,16 @@ func runOnboarding(ctx context.Context, cfg Config, deps Deps, tw *tableWriter, 
 // onboarding; up to three malformed answers are re-prompted. The prompt
 // appears below the table's bottom border; after the user answers, the
 // prompt is erased and the result is appended to the table.
-func promptUpstream(ctx context.Context, deps Deps, tw *tableWriter) (baseURL, name string, ok bool, err error) {
+func promptUpstream(ctx context.Context, cfg Config, deps Deps, tw *tableWriter) (baseURL, name string, ok bool, err error) {
+	// Pre-filled path (TUI wizard): derive the upstream from config.
+	if cfg.ForgeURL != "" {
+		name, baseURL, parseErr := upstreamFromInput(cfg.ForgeURL)
+		if parseErr != nil {
+			return "", "", false, fmt.Errorf("invalid forge URL from config: %w", parseErr)
+		}
+		return baseURL, name, true, nil
+	}
+
 	w := deps.Output
 	color := isColor(deps)
 
@@ -366,6 +387,11 @@ func upstreamFromInput(raw string) (string, string, error) {
 // raw mode is unavailable (pipes, CI, tests), it falls back to the text-based
 // [G]enerate / [P]rovide prompt.
 func promptDeployKey(ctx context.Context, cfg Config, deps Deps, tw *tableWriter) (bool, error) {
+	// Non-interactive (TUI wizard): always generate the deploy key.
+	if !isInteractive(deps) {
+		tw.AppendRow("Deploy key", "generated", "✓ stored", false)
+		return false, nil
+	}
 	color := isColor(deps)
 	for attempt := 0; ; attempt++ {
 		idx, err := selectOption(ctx, deps, color, "Deploy key", []string{"Generate", "Provide"}, 1)
@@ -620,95 +646,110 @@ func onboardUplink(ctx context.Context, cfg Config, deps Deps, tw *tableWriter) 
 	w := deps.Output
 	color := isColor(deps)
 
-	// Public key path prompt: operators with non-default key paths (RSA,
-	// *_sk, custom names) must be able to point at their own key.
-	// When the terminal supports raw mode, an arrow-key file picker lists
-	// .pub keys found in ~/.ssh/ before falling back to the free-text prompt.
-	if color && deps.MakeRaw != nil {
-		if home, homeErr := os.UserHomeDir(); homeErr == nil {
-			keys := listSSHKeys(filepath.Join(home, ".ssh"), true)
-			if len(keys) > 0 {
-				options := make([]string, len(keys)+1)
-				copy(options, keys)
-				options[len(keys)] = "Type path manually..."
+	// --- SSH public key path ---
+	if cfg.SSHPublicKeyPath != "" {
+		// Pre-filled (TUI wizard): use the path directly, skip prompts.
+		pubKeyPath = cfg.SSHPublicKeyPath
+	} else {
+		// Interactive: key picker or free-text prompt.
+		if color && deps.MakeRaw != nil {
+			if home, homeErr := os.UserHomeDir(); homeErr == nil {
+				keys := listSSHKeys(filepath.Join(home, ".ssh"), true)
+				if len(keys) > 0 {
+					options := make([]string, len(keys)+1)
+					copy(options, keys)
+					options[len(keys)] = "Type path manually..."
 
-				defaultIdx := 0
-				for i, k := range keys {
-					if k == defaultUplinkKeyPath {
-						defaultIdx = i
-						break
+					defaultIdx := 0
+					for i, k := range keys {
+						if k == defaultUplinkKeyPath {
+							defaultIdx = i
+							break
+						}
 					}
-				}
 
-				startPrompt(w, color, "Uplink key", "")
-				idx, selErr := selectFromList(deps, color, options, defaultIdx)
-				if selErr != nil && !errors.Is(selErr, errRawModeUnavailable) {
-					return "", "", "", "", fmt.Errorf("uplink key selection: %w", selErr)
-				}
-				if selErr == nil && idx >= 0 && idx < len(keys) {
-					pubKeyPath = options[idx]
-				}
-				if pubKeyPath == "" {
-					_, _ = fmt.Fprint(w, "\033[1A\r\033[2K")
+					startPrompt(w, color, "Uplink key", "")
+					idx, selErr := selectFromList(deps, color, options, defaultIdx)
+					if selErr != nil && !errors.Is(selErr, errRawModeUnavailable) {
+						return "", "", "", "", fmt.Errorf("uplink key selection: %w", selErr)
+					}
+					if selErr == nil && idx >= 0 && idx < len(keys) {
+						pubKeyPath = options[idx]
+					}
+					if pubKeyPath == "" {
+						_, _ = fmt.Fprint(w, "\033[1A\r\033[2K")
+					}
 				}
 			}
 		}
-	}
 
-	if pubKeyPath == "" {
-		startPrompt(w, color, "Uplink key", defaultUplinkKeyPath+": ")
-		rawPath, readErr := readLine(ctx, deps.Input)
-		if readErr != nil {
-			return "", "", "", "", fmt.Errorf("read public-key path: %w", readErr)
-		}
-		pubKeyPath = strings.TrimSpace(rawPath)
 		if pubKeyPath == "" {
-			pubKeyPath = defaultUplinkKeyPath
+			startPrompt(w, color, "Uplink key", defaultUplinkKeyPath+": ")
+			rawPath, readErr := readLine(ctx, deps.Input)
+			if readErr != nil {
+				return "", "", "", "", fmt.Errorf("read public-key path: %w", readErr)
+			}
+			pubKeyPath = strings.TrimSpace(rawPath)
+			if pubKeyPath == "" {
+				pubKeyPath = defaultUplinkKeyPath
+			}
 		}
 	}
 
 	expanded, expandErr := expandSSHKeyPath(pubKeyPath)
 	if expandErr != nil {
-		completePrompt(w, color, "Uplink key", pubKeyPath, "✗ error")
+		if isInteractive(deps) {
+			completePrompt(w, color, "Uplink key", pubKeyPath, "✗ error")
+		}
 		return "", "", "", "", expandErr
 	}
 	// #nosec G304 -- the operator explicitly names their own public-key file.
 	publicKey, readFileErr := os.ReadFile(expanded)
 	if readFileErr != nil {
-		completePrompt(w, color, "Uplink key", pubKeyPath, "✗ error")
+		if isInteractive(deps) {
+			completePrompt(w, color, "Uplink key", pubKeyPath, "✗ error")
+		}
 		return "", "", "", "", fmt.Errorf("read public key %s: %w", pubKeyPath, readFileErr)
 	}
 	if err := validatePublicKeyFile(publicKey); err != nil {
-		completePrompt(w, color, "Uplink key", pubKeyPath, "✗ error")
+		if isInteractive(deps) {
+			completePrompt(w, color, "Uplink key", pubKeyPath, "✗ error")
+		}
 		return "", "", "", "", err
 	}
-	// Erase the key-path prompt and show it as a table row.
+	// Erase the key-path prompt (no-op when non-interactive / no color).
 	erasePromptLines(w, color, 1)
 	tw.AppendRow("Uplink key", pubKeyPath, "✓ read", false)
 
-	identityDefault := defaultUplinkIdentity()
-	for attempt := 0; ; attempt++ {
-		startPrompt(w, color, "Uplink", identityDefault+": ")
-		raw, readErr := readLine(ctx, deps.Input)
-		if readErr != nil {
-			return "", "", "", "", fmt.Errorf("read uplink identity: %w", readErr)
-		}
-		identity = strings.TrimSpace(raw)
-		if identity == "" {
-			identity = identityDefault
-		}
-		if validErr := validateUplinkIdentity(identity); validErr != nil {
-			completePrompt(w, color, "Uplink", validErr.Error(), "✗ invalid")
-			if attempt >= 2 {
-				return "", "", "", "", fmt.Errorf("invalid uplink identity after 3 attempts: %w", validErr)
+	// --- Identity ---
+	if cfg.UplinkIdentity != "" {
+		// Pre-filled (TUI wizard): use the identity directly.
+		identity = cfg.UplinkIdentity
+	} else {
+		// Interactive: prompt for identity.
+		identityDefault := defaultUplinkIdentity()
+		for attempt := 0; ; attempt++ {
+			startPrompt(w, color, "Uplink", identityDefault+": ")
+			raw, readErr := readLine(ctx, deps.Input)
+			if readErr != nil {
+				return "", "", "", "", fmt.Errorf("read uplink identity: %w", readErr)
 			}
-			continue
+			identity = strings.TrimSpace(raw)
+			if identity == "" {
+				identity = identityDefault
+			}
+			if validErr := validateUplinkIdentity(identity); validErr != nil {
+				completePrompt(w, color, "Uplink", validErr.Error(), "✗ invalid")
+				if attempt >= 2 {
+					return "", "", "", "", fmt.Errorf("invalid uplink identity after 3 attempts: %w", validErr)
+				}
+				continue
+			}
+			break
 		}
-		break
+		// Erase the identity prompt line.
+		erasePromptLines(w, color, 1)
 	}
-	// Erase the identity prompt line — the result is added by the caller
-	// via AppendRow after the uplink add succeeds.
-	erasePromptLines(w, color, 1)
 
 	run := deps.RunCommand
 	if run == nil {
@@ -775,20 +816,24 @@ func offerSSHConfig(ctx context.Context, deps Deps, pubKeyPath string, tw *table
 		}
 	}
 
-	startPrompt(w, color, "SSH config", "add to ~/.ssh/config? [Y/n]: ")
-	answer, readErr := readLine(ctx, deps.Input)
-	if readErr != nil {
-		if errors.Is(readErr, ErrInterrupted) {
-			return ErrInterrupted
+	// Non-interactive (TUI wizard): auto-accept SSH config addition.
+	// Interactive: prompt the operator.
+	if isInteractive(deps) {
+		startPrompt(w, color, "SSH config", "add to ~/.ssh/config? [Y/n]: ")
+		answer, readErr := readLine(ctx, deps.Input)
+		if readErr != nil {
+			if errors.Is(readErr, ErrInterrupted) {
+				return ErrInterrupted
+			}
+			erasePromptLines(w, color, 1)
+			tw.AppendRow("SSH config", "~/.ssh/config", "⚠ skip", false)
+			return nil
 		}
-		erasePromptLines(w, color, 1)
-		tw.AppendRow("SSH config", "~/.ssh/config", "⚠ skip", false)
-		return nil
-	}
-	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(answer)), "n") {
-		erasePromptLines(w, color, 1)
-		tw.AppendRow("SSH config", "~/.ssh/config", "skipped", false)
-		return nil
+		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(answer)), "n") {
+			erasePromptLines(w, color, 1)
+			tw.AppendRow("SSH config", "~/.ssh/config", "skipped", false)
+			return nil
+		}
 	}
 
 	if err := os.MkdirAll(sshDir, 0700); err != nil {

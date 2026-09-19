@@ -79,10 +79,20 @@ func (p *uplinkPage) update(msg tea.Msg, state *WizardState) (page, tea.Cmd) {
 		case "shift+tab":
 			p.focusField = (p.focusField + 1) % 2
 		case "up", "k":
+			// Guard: 'k' is text input when the identity field is focused.
+			if p.focusField == 0 && msg.String() == "k" {
+				p.identity += "k"
+				return p, nil
+			}
 			if p.focusField == 1 && p.keyCursor > 0 {
 				p.keyCursor--
 			}
 		case "down", "j":
+			// Guard: 'j' is text input when the identity field is focused.
+			if p.focusField == 0 && msg.String() == "j" {
+				p.identity += "j"
+				return p, nil
+			}
 			if p.focusField == 1 && p.keyCursor < len(p.sshKeys)-1 {
 				p.keyCursor++
 			}

@@ -3,7 +3,9 @@ package setuptui
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"strings"
+	"sync"
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
@@ -463,6 +465,94 @@ func TestForgeHotkeyDoesNotStealFromOrgField(t *testing.T) {
 	}
 	if p.discovering {
 		t.Fatal("'d' on org field must not trigger discovery")
+	}
+}
+
+// --- Important-3: masker data race (must pass with -race) ---
+
+func TestMaskerConcurrentAccess(t *testing.T) {
+	m := newMasker()
+	var wg sync.WaitGroup
+
+	// register goroutine
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 100; i++ {
+			m.register([]byte(fmt.Sprintf("secret-%d", i)))
+		}
+	}()
+
+	// mask goroutine
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 100; i++ {
+			_ = m.mask(fmt.Sprintf("line with secret-%d in it", i))
+		}
+	}()
+
+	// wipe goroutine
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 10; i++ {
+			m.wipe()
+		}
+	}()
+
+	wg.Wait()
+}
+
+// --- Minor-1: uplink j/k must type into the identity field when focused ---
+
+func TestUplinkJKTypesIntoIdentityField(t *testing.T) {
+	p := newUplinkPage()
+	state := &WizardState{}
+	p.init(state)
+
+	// focusField starts at 0 (identity).
+	p.identity = "admin"
+	p.update(keyPress('j', "j"), state)
+	if !strings.HasSuffix(p.identity, "j") {
+		t.Fatalf("'j' on identity field must type text, got %q", p.identity)
+	}
+	p.update(keyPress('k', "k"), state)
+	if !strings.HasSuffix(p.identity, "k") {
+		t.Fatalf("'k' on identity field must type text, got %q", p.identity)
+	}
+}
+
+// --- Important-2: store-connect actions row ---
+
+func TestStoreConnectActionsRowVerify(t *testing.T) {
+	p := newStoreConnectPage()
+	state := &WizardState{}
+	p.init(state)
+
+	// Set a valid address so verify doesn't reject on validation.
+	p.fields[0].value = "https://openbao.internal:8200"
+
+	// Focus on the actions row (index 3) and press 'v'.
+	p.focus = 3
+	p.update(keyPress('v', "v"), state)
+	if !p.verifying {
+		t.Fatal("'v' on actions row (focus 3) must trigger verify")
+	}
+}
+
+func TestStoreConnectActionsRowAddPath(t *testing.T) {
+	p := newStoreConnectPage()
+	state := &WizardState{}
+	p.init(state)
+
+	initialPaths := len(p.allowedPaths)
+
+	// Focus on the actions row (index 3) and press 'n'.
+	p.focus = 3
+	p.update(keyPress('n', "n"), state)
+	if len(p.allowedPaths) != initialPaths+1 {
+		t.Fatalf("'n' on actions row must add a path, got %d (was %d)", len(p.allowedPaths), initialPaths)
 	}
 }
 

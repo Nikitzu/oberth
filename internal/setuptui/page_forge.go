@@ -13,12 +13,8 @@ type forgePage struct {
 	forgeCursor  int
 	org          string
 	authCursor   int // 0=deploy-key, 1=token
-	focusField   int // 0=forge, 1=org, 2=auth, 3=token (when auth=token)
+	focusField   int // 0=forge, 1=org, 2=auth
 	errMsg       string
-
-	// Forge token (I6): held as []byte, never in WizardState (S4).
-	// Delivered to OpenBao at apply time; zeroed on teardown.
-	forgeToken []byte
 
 	// Discovery state.
 	discovering     bool
@@ -29,14 +25,6 @@ func newForgePage() *forgePage {
 	return &forgePage{
 		forgeOptions: []string{"codeberg", "github", "forgejo", "gitlab"},
 	}
-}
-
-// wipeSecrets zeros the forge token bytes (S2/S4 teardown discipline).
-func (p *forgePage) wipeSecrets() {
-	for i := range p.forgeToken {
-		p.forgeToken[i] = 0
-	}
-	p.forgeToken = nil
 }
 
 func (p *forgePage) title() string    { return "ground station" }
@@ -116,10 +104,6 @@ func (p *forgePage) update(msg tea.Msg, state *WizardState) (page, tea.Cmd) {
 			// Guard: do not steal 'd' from text fields (org, token).
 			if p.focusField == 1 {
 				p.org += "d"
-				return p, nil
-			}
-			if p.focusField == 3 {
-				p.forgeToken = append(p.forgeToken, 'd')
 				return p, nil
 			}
 			if p.org == "" {

@@ -2,6 +2,7 @@ package setuptui
 
 import (
 	"fmt"
+	"os"
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
@@ -14,11 +15,15 @@ type donePage struct {
 	sshFingerprint string
 	context        string
 	identity       string
+	reportSaved    bool
 }
 
 func (p *donePage) title() string    { return "orbit" }
 func (p *donePage) question() string { return "" }
 func (p *donePage) keys() string {
+	if p.reportSaved {
+		return sKey.Render("enter") + " exit · " + sMuted.Render("report saved")
+	}
 	return sKey.Render("enter") + " exit · " + sKey.Render("s") + " save report (contains no secrets)"
 }
 
@@ -31,15 +36,67 @@ func (p *donePage) init(state *WizardState) tea.Cmd {
 	return nil
 }
 
-func (p *donePage) update(msg tea.Msg, _ *WizardState) (page, tea.Cmd) {
+func (p *donePage) update(msg tea.Msg, state *WizardState) (page, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyPressMsg:
 		switch msg.String() {
 		case "enter", "q":
 			return p, tea.Quit
+		case "s":
+			if !p.reportSaved {
+				p.reportSaved = p.saveReport(state)
+			}
+			return p, nil
 		}
 	}
 	return p, nil
+}
+
+// saveReport writes a plaintext setup summary to ./oberth-setup-report.txt.
+// Contains no secrets by construction: only config fields are read. Returns
+// true on success.
+func (p *donePage) saveReport(state *WizardState) bool {
+	var b strings.Builder
+	b.WriteString("Oberth Setup Report\n")
+	b.WriteString(strings.Repeat("=", 40) + "\n\n")
+	fmt.Fprintf(&b, "Steps: %d/%d green\n", p.greenCount, p.totalSteps)
+	fmt.Fprintf(&b, "Context: %s\n", p.context)
+	fmt.Fprintf(&b, "Identity: %s\n", p.identity)
+	ns := state.Config.Namespace
+	if ns == "" {
+		ns = "oberth"
+	}
+	fmt.Fprintf(&b, "Namespace: %s\n", ns)
+	if state.Config.ArgoNamespace != "" {
+		fmt.Fprintf(&b, "Argo namespace: %s\n", state.Config.ArgoNamespace)
+	}
+	openbaoNs := state.Config.OpenBaoNamespace
+	if openbaoNs == "" {
+		openbaoNs = "openbao"
+	}
+	fmt.Fprintf(&b, "OpenBao namespace: %s\n", openbaoNs)
+	if state.ForgeType != "" {
+		fmt.Fprintf(&b, "Forge: %s / %s\n", state.ForgeType, state.ForgeOrg)
+	}
+	if state.StoreAddress != "" {
+		fmt.Fprintf(&b, "Store: %s\n", state.StoreAddress)
+	}
+	fmt.Fprintf(&b, "TLS: %s\n", state.TLSMode)
+	fmt.Fprintf(&b, "Mode: %s\n", formatModeSummary(state))
+	b.WriteString("\nFingerprints\n")
+	b.WriteString(strings.Repeat("-", 40) + "\n")
+	if p.fingerprint != "" {
+		fmt.Fprintf(&b, "TLS 30443: %s\n", p.fingerprint)
+	} else {
+		b.WriteString("TLS 30443: (generated at apply time)\n")
+	}
+	if p.sshFingerprint != "" {
+		fmt.Fprintf(&b, "SSH 30022: %s\n", p.sshFingerprint)
+	} else {
+		b.WriteString("SSH 30022: (generated at apply time)\n")
+	}
+	// #nosec G306 -- report is non-sensitive, world-readable is fine.
+	return os.WriteFile("oberth-setup-report.txt", []byte(b.String()), 0644) == nil
 }
 
 func (p *donePage) view(state *WizardState, width, _ int) string {
