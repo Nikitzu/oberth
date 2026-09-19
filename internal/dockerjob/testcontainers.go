@@ -15,6 +15,7 @@ const (
 	proxyAliasDocker   = "docker"
 	proxyPortKubedock  = "2475"
 	proxyPortDocker    = "2375"
+	proxyDockerHost    = "tcp://kubedock:2475"
 	dockerSocket       = "/var/run/docker.sock"
 	defaultGatewayName = "host.docker.internal"
 	proxyMemoryBytes   = 64 << 20
@@ -61,7 +62,7 @@ func (controller *Controller) proxyCreateArguments(request Request) []string {
 
 func (controller *Controller) testcontainersEnvironment(step Step) []string {
 	defaults := []string{
-		"DOCKER_HOST=tcp://" + proxyAliasKubedock + ":" + proxyPortKubedock,
+		"DOCKER_HOST=" + proxyDockerHost,
 		"TESTCONTAINERS_RYUK_DISABLED=true",
 		"TESTCONTAINERS_HOST_OVERRIDE=" + controller.gatewayName(),
 		"TESTCONTAINERS_CHECKS_DISABLE=true",
