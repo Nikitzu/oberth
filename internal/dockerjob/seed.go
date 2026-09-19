@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // seedTree streams the run volume's initial contents into a created container
@@ -53,6 +54,9 @@ func seedTree(ctx context.Context, binary, container, destination string, entrie
 func rootOwned(header *tar.Header) {
 	header.Uid, header.Gid = 0, 0
 	header.Uname, header.Gname = "", ""
+	if header.ModTime.IsZero() {
+		header.ModTime = time.Now()
+	}
 }
 
 // tarDirectory adds one root-owned directory.
@@ -105,7 +109,7 @@ func tarSourceTree(writer *tar.Writer, root, prefix string) error {
 			if err != nil {
 				return err
 			}
-			header := &tar.Header{Typeflag: tar.TypeSymlink, Name: name, Linkname: target, Mode: 0o777}
+			header := &tar.Header{Typeflag: tar.TypeSymlink, Name: name, Linkname: target, Mode: 0o777, ModTime: info.ModTime()}
 			rootOwned(header)
 			return writer.WriteHeader(header)
 		case info.Mode().IsRegular():
@@ -113,7 +117,7 @@ func tarSourceTree(writer *tar.Writer, root, prefix string) error {
 			if info.Mode()&0o111 != 0 {
 				mode = 0o755
 			}
-			header := &tar.Header{Typeflag: tar.TypeReg, Name: name, Mode: mode, Size: info.Size()}
+			header := &tar.Header{Typeflag: tar.TypeReg, Name: name, Mode: mode, Size: info.Size(), ModTime: info.ModTime()}
 			rootOwned(header)
 			if err := writer.WriteHeader(header); err != nil {
 				return err
