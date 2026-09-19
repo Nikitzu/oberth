@@ -108,3 +108,11 @@ func TestReapSetKeepsWhatExistedBefore(t *testing.T) {
 		t.Fatal("nothing new must reap nothing")
 	}
 }
+
+func TestSupportsHostGateway(t *testing.T) {
+	for version, want := range map[string]bool{"20.10.0": true, "24.0.7": true, "28.3.2-orbstack": true, "19.03.15": false, "20.9.1": false, "": false} {
+		if got := SupportsHostGateway(version); got != want {
+			t.Fatalf("SupportsHostGateway(%q) = %v, want %v", version, got, want)
+		}
+	}
+}

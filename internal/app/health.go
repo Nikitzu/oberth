@@ -36,6 +36,9 @@ type Health struct {
 	// without either being configured by hand.
 	Engine      string
 	SSHEndpoint string
+	// Testcontainers, when set, says whether runs may declare
+	// oberth.ci/testcontainers here. Nil means the engine did not say.
+	Testcontainers *bool
 	// SSHHostKey is the server's SSH host public key in authorized_keys form,
 	// so a client can pin it without a first-use prompt or a network scan.
 	SSHHostKey string
@@ -124,6 +127,8 @@ type HealthStatus struct {
 	// requires. A client that generates a pipeline has to ask before it
 	// writes one.
 	Engine string `json:"engine,omitempty"`
+	// Testcontainers is "offered" or "not offered" when the engine said.
+	Testcontainers string `json:"testcontainers,omitempty"`
 	// SSHEndpoint is the host and port a push goes to, so a client can set up
 	// the git remote without being told it out of band.
 	SSHEndpoint string `json:"ssh_endpoint,omitempty"`
@@ -209,6 +214,12 @@ func requiresSSHIdentity(upstreams []model.Upstream) bool {
 func (health Health) Status(ctx context.Context) (any, error) {
 	status := HealthStatus{Database: "unavailable", VCS: "unavailable", Cluster: "unavailable", Audit: "unavailable", AuditMode: health.AuditMode, Version: health.Version, PublishOnGreen: health.PublishOnGreen, SecretStore: health.SecretStore,
 		Engine: health.Engine, SSHEndpoint: health.SSHEndpoint, SSHHostKey: health.SSHHostKey}
+	if health.Testcontainers != nil {
+		status.Testcontainers = "not offered"
+		if *health.Testcontainers {
+			status.Testcontainers = "offered"
+		}
+	}
 	if health.Store == nil {
 		return status, nil
 	}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"strconv"
 	"strings"
 )
 
@@ -168,4 +169,22 @@ func (controller *Controller) reapTestcontainers(ctx context.Context, name strin
 		fmt.Fprintf(log, "testcontainers: removed network %s\n", shortID(id))
 	}
 	_, _ = controller.client.run(ctx, "rm", "--force", controller.proxyName(name))
+}
+
+func (controller *Controller) DaemonVersion(ctx context.Context) (string, error) {
+	return controller.client.run(ctx, "version", "--format", "{{.Server.Version}}")
+}
+
+// SupportsHostGateway is Docker 20.10 or newer, where --add-host host-gateway exists.
+func SupportsHostGateway(version string) bool {
+	parts := strings.SplitN(strings.TrimSpace(version), ".", 3)
+	if len(parts) < 2 {
+		return false
+	}
+	major, err1 := strconv.Atoi(parts[0])
+	minor, err2 := strconv.Atoi(parts[1])
+	if err1 != nil || err2 != nil {
+		return false
+	}
+	return major > 20 || (major == 20 && minor >= 10)
 }

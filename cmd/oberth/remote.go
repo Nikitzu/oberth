@@ -459,13 +459,14 @@ func runRepos(ctx context.Context, arguments []string, output io.Writer) error {
 }
 
 type remoteHealthStatus struct {
-	Database     string `json:"database"`
-	Upstreams    int    `json:"upstreams"`
-	Repositories int    `json:"repositories"`
-	VCS          string `json:"vcs"`
-	Cluster      string `json:"cluster"`
-	Audit        string `json:"audit"`
-	Version      string `json:"version,omitempty"`
+	Database       string `json:"database"`
+	Upstreams      int    `json:"upstreams"`
+	Repositories   int    `json:"repositories"`
+	VCS            string `json:"vcs"`
+	Cluster        string `json:"cluster"`
+	Audit          string `json:"audit"`
+	Version        string `json:"version,omitempty"`
+	Testcontainers string `json:"testcontainers,omitempty"`
 	// PipelineDrift names repositories whose last server-held run saw the
 	// generator inputs move. Advisory: those runs still ran.
 	PipelineDrift []remotePipelineDrift `json:"pipeline_drift,omitempty"`
@@ -501,6 +502,7 @@ func runRemoteStatus(ctx context.Context, arguments []string, output io.Writer) 
 		{"cluster:", status.Cluster},
 		{"audit:", status.Audit},
 		{"version:", status.Version},
+		{"testcontainers:", status.Testcontainers},
 		{"upstreams:", fmt.Sprint(status.Upstreams)},
 		{"repositories:", fmt.Sprint(status.Repositories)},
 	} {

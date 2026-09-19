@@ -223,3 +223,43 @@ func TestUncredentialedPipelineRunsWithNoStore(t *testing.T) {
 		t.Fatalf("an uncredentialed run was marked credentialed: %+v", control.submitted)
 	}
 }
+
+func pipelineDeclaringTestcontainers() string {
+	return strings.Replace(pipelineDeclaring(), `oberth.ci/size: "S"`, "oberth.ci/size: \"S\"\n    oberth.ci/testcontainers: \"true\"", 1)
+}
+
+// A pipeline that declares Testcontainers on a server that does not offer it
+// is refused at submission, naming the install flag, not at the first
+// connection timeout six minutes into a run.
+func TestTestcontainersPipelineIsRefusedWhenNotOffered(t *testing.T) {
+	control := &stubDockerControl{}
+	jobs := newTestDockerJobs(t, control, false, nil)
+	source := sourceWith(t, "build.yaml", pipelineDeclaringTestcontainers())
+	err := jobs.CreateCI(context.Background(), ciRequest(source))
+	if err == nil || !strings.Contains(err.Error(), "this server does not offer it (oberth install --testcontainers)") {
+		t.Fatalf("expected a refusal naming the install flag, got %v", err)
+	}
+	if len(control.submitted) != 0 {
+		t.Fatalf("a refused pipeline reached the engine: %+v", control.submitted)
+	}
+}
+
+func TestTestcontainersPipelineReachesTheEngineWhenOffered(t *testing.T) {
+	control := &stubDockerControl{}
+	jobs := newTestDockerJobs(t, control, false, nil)
+	jobs.SetTestcontainers(true)
+	source := sourceWith(t, "build.yaml", pipelineDeclaringTestcontainers())
+	if err := jobs.CreateCI(context.Background(), ciRequest(source)); err != nil {
+		t.Fatalf("CreateCI: %v", err)
+	}
+	if len(control.submitted) != 1 || !control.submitted[0].Testcontainers {
+		t.Fatalf("the engine request did not carry Testcontainers: %+v", control.submitted)
+	}
+	plain := sourceWith(t, "build.yaml", pipelineDeclaring())
+	if err := jobs.CreateCI(context.Background(), ciRequest(plain)); err != nil {
+		t.Fatalf("CreateCI plain: %v", err)
+	}
+	if control.submitted[1].Testcontainers {
+		t.Fatalf("an undeclared pipeline was marked Testcontainers: %+v", control.submitted[1])
+	}
+}

@@ -37,6 +37,7 @@ func buildDockerEngine(
 		RunnerImagePrefixes: splitRunnerImagePrefixes(options.runnerImagePrefixes),
 		ArtifactsLimitBytes: artifactLimit,
 		SecretStore:         store,
+		Testcontainers:      options.testcontainers,
 		Helper: dockerjob.HelperConfig{
 			ImageRef: imageRef, Version: version, SourceDir: strings.TrimSpace(options.helperSource),
 		},
@@ -50,12 +51,22 @@ func buildDockerEngine(
 	if err := controller.Available(ctx); err != nil {
 		return nil, err
 	}
+	if options.testcontainers {
+		version, err := controller.DaemonVersion(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("--testcontainers needs a reachable daemon: %w", err)
+		}
+		if !dockerjob.SupportsHostGateway(version) {
+			return nil, fmt.Errorf("--testcontainers needs Docker 20.10 or newer for host-gateway; the daemon reports %s", version)
+		}
+	}
 	jobs, err := app.NewDockerJobs(controller, auditor)
 	if err != nil {
 		return nil, err
 	}
 	jobs.SetArtifacts(artifactStore, artifactLimit, artifactBudget)
 	jobs.SetSecretStore(store.Enabled(), options.secretStorePaths)
+	jobs.SetTestcontainers(options.testcontainers)
 	return jobs, nil
 }
 

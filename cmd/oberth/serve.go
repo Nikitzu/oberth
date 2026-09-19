@@ -94,6 +94,7 @@ type serveOptions struct {
 	scheduleMaxEntries      int
 	maxConcurrent           int
 	publishOnGreen          bool
+	testcontainers          bool
 	upstreamTokenFile       string
 	ciCacheRoot             string
 	releaseCacheRoot        string
@@ -200,6 +201,8 @@ func parseServeOptions(arguments []string, output io.Writer) (serveOptions, erro
 	flags.IntVar(&options.maxConcurrent, "max-concurrent-jobs", 3, "maximum concurrent Jobs")
 	flags.StringVar(&options.upstreamTokenFile, "upstream-token-file", "",
 		"file holding a personal access token used to authenticate HTTPS upstreams (re-read on every use, so rotating the file needs no restart)")
+	flags.BoolVar(&options.testcontainers, "testcontainers", false,
+		"start a Docker socket proxy for runs that declare oberth.ci/testcontainers (docker engine)")
 	flags.BoolVar(&options.publishOnGreen, "publish-on-green", true,
 		"force-sync an ordinary green branch run to the upstream forge. Set false to keep the gate advisory: "+
 			"the run still goes green and is recorded, but nothing reaches the forge until it is published on request. "+
@@ -754,7 +757,8 @@ func serve(ctx context.Context, options serveOptions, logger *log.Logger) (resul
 	}
 	health := app.Health{Store: database, Audit: anchors.Ready, VCSCache: &app.VCSSnapshot{},
 		Engine: options.engine, SSHEndpoint: advertisedSSHEndpoint(options), SSHHostKey: hostPublicKey(hostKey),
-		PipelineDrift: database.DriftedPipelineRuns, Configured: func(ctx context.Context) error {
+		Testcontainers: testcontainersOffered(options),
+		PipelineDrift:  database.DriftedPipelineRuns, Configured: func(ctx context.Context) error {
 			if err := ctx.Err(); err != nil {
 				return err
 			}
@@ -1981,4 +1985,14 @@ func repoCacheQualifications(ctx context.Context, database *store.Store) (map[st
 		delete(qualifications, name)
 	}
 	return qualifications, nil
+}
+
+// testcontainersOffered is what the docker engine was told; the Argo engine
+// reports nothing, since kubedock is a chart value the server does not read.
+func testcontainersOffered(options serveOptions) *bool {
+	if options.engine != engineDocker {
+		return nil
+	}
+	offered := options.testcontainers
+	return &offered
 }
