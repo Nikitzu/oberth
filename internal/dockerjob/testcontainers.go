@@ -16,6 +16,7 @@ const (
 	proxyPortKubedock  = "2475"
 	proxyPortDocker    = "2375"
 	proxyDockerHost    = "tcp://kubedock:2475"
+	proxyKeepAlive     = "10m"
 	dockerSocket       = "/var/run/docker.sock"
 	defaultGatewayName = "host.docker.internal"
 	proxyMemoryBytes   = 64 << 20
@@ -56,7 +57,7 @@ func (controller *Controller) proxyCreateArguments(request Request) []string {
 		arguments = append(arguments, "--env", variable)
 	}
 	arguments = append(arguments, "--entrypoint", "sh", "--", proxyImage, "-c",
-		`sed "s/\${BIND_CONFIG}/:`+proxyPortKubedock+`,:`+proxyPortDocker+`/g" /usr/local/etc/haproxy/haproxy.cfg.template > /tmp/haproxy.cfg && exec haproxy -W -db -f /tmp/haproxy.cfg`)
+		`sed -e "s/\${BIND_CONFIG}/:`+proxyPortKubedock+`,:`+proxyPortDocker+`/g" -e "s/timeout http-keep-alive 10s/timeout http-keep-alive `+proxyKeepAlive+`/" /usr/local/etc/haproxy/haproxy.cfg.template > /tmp/haproxy.cfg && exec haproxy -W -db -f /tmp/haproxy.cfg`)
 	return arguments
 }
 

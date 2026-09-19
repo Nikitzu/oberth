@@ -25,6 +25,7 @@ func TestProxyCreateArgumentsMountTheSocketReadOnlyAndAliasBothNames(t *testing.
 		"--env SYSTEM=0", "--env PLUGINS=0", "--env AUTH=0",
 		proxyImage,
 		":2475,:2375",
+		"timeout http-keep-alive 10m",
 	} {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("proxy argv lacks %q: %v", want, arguments)
