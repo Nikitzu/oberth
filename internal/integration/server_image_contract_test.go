@@ -28,7 +28,7 @@ func TestServerImageUsesPinnedMinimalContract(t *testing.T) {
 		"ca-certificates=20260611-r0",
 		"git=2.52.0-r0",
 		"openssh-client-default=10.2_p1-r0",
-		"tzdata=2026c-r0",
+		"tzdata=2026d-r0",
 		"USER 65534:65534",
 		`ENTRYPOINT ["/usr/local/bin/oberth"]`,
 		`CMD ["serve"]`,
