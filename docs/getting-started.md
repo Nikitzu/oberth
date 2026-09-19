@@ -33,6 +33,12 @@ questions, for scripts and re-runs:
 
     oberth install --engine=docker --secretstore --service --shell-profile=yes
 
+Add `--testcontainers` when your backend tests start containers
+(Testcontainers). Pipelines opt in with the `oberth.ci/testcontainers`
+annotation, which `oberth onboard` writes for Maven and Gradle projects that
+depend on it; a server installed without the flag refuses such a pipeline at
+admission and names the flag.
+
 Open a new shell afterwards (or source `~/.config/oberth/env`), and the
 dashboard is at the address the install printed.
 

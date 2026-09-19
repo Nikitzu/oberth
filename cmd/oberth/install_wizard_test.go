@@ -9,7 +9,7 @@ import (
 
 func TestInstallWizardDefaultsToDockerWithAServiceAndTheShellLine(t *testing.T) {
 	var out bytes.Buffer
-	arguments, docker, err := askInstallChoices(context.Background(), strings.NewReader("\n\n\n"), &out)
+	arguments, docker, err := askInstallChoices(context.Background(), strings.NewReader("\n\n\n\n"), &out)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -27,12 +27,27 @@ func TestInstallWizardDefaultsToDockerWithAServiceAndTheShellLine(t *testing.T) 
 
 func TestInstallWizardHonoursNoOnBothFollowUps(t *testing.T) {
 	var out bytes.Buffer
-	arguments, _, err := askInstallChoices(context.Background(), strings.NewReader("1\nn\nno\n"), &out)
+	arguments, _, err := askInstallChoices(context.Background(), strings.NewReader("1\nn\nno\nn\n"), &out)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got := strings.Join(arguments, " "); got != "--engine=docker --secretstore --shell-profile=no" {
 		t.Fatalf("arguments = %q", got)
+	}
+}
+
+func TestInstallWizardOffersTestcontainersOnYes(t *testing.T) {
+	var out bytes.Buffer
+	arguments, _, err := askInstallChoices(context.Background(), strings.NewReader("1\n\n\ny\n"), &out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "--engine=docker --secretstore --service --shell-profile=yes --testcontainers"
+	if got := strings.Join(arguments, " "); got != want {
+		t.Fatalf("arguments = %q, want %q", got, want)
+	}
+	if !strings.Contains(out.String(), "Testcontainers") {
+		t.Fatalf("the wizard did not ask about Testcontainers:\n%s", out.String())
 	}
 }
 

@@ -67,6 +67,10 @@ func askInstallChoices(ctx context.Context, input io.Reader, output io.Writer) (
 	if err != nil {
 		return nil, false, err
 	}
+	testcontainers, err := ask("Offer Testcontainers to pipelines? (a socket proxy per run; tests can reach your own Docker daemon) [y/N]: ", "n")
+	if err != nil {
+		return nil, false, err
+	}
 	arguments := []string{"--engine=docker", "--secretstore"}
 	if strings.HasPrefix(service, "y") {
 		arguments = append(arguments, "--service")
@@ -75,6 +79,9 @@ func askInstallChoices(ctx context.Context, input io.Reader, output io.Writer) (
 		arguments = append(arguments, "--shell-profile=yes")
 	} else {
 		arguments = append(arguments, "--shell-profile=no")
+	}
+	if strings.HasPrefix(testcontainers, "y") {
+		arguments = append(arguments, "--testcontainers")
 	}
 	fmt.Fprintln(output, "Next time, the same without questions: oberth install "+strings.Join(arguments, " "))
 	fmt.Fprintln(output)

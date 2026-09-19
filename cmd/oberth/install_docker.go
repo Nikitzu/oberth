@@ -55,6 +55,7 @@ func runInstallDocker(ctx context.Context, arguments []string, output io.Writer)
 	launchd := flags.Bool("launchd", false, "same as --service (kept for older instructions)")
 	shellProfile := flags.String("shell-profile", "", "add the client environment line to your shell profile: yes (the login shell's own file), no, or a path such as ~/.zshrc; empty prints the line instead")
 	secretStore := flags.Bool("secretstore", false, "also run `secretstore init --engine=docker`, so credentialed pipelines work from the first push")
+	testcontainers := flags.Bool("testcontainers", false, "start a Docker socket proxy for pipelines that declare oberth.ci/testcontainers (Java backends with Testcontainers)")
 	publishOnGreen := flags.Bool("publish-on-green", false, "publish a green run to the upstream automatically")
 	helperSource := flags.String("helper-source", "", "oberth source directory a development build compiles the credentialed-step helper from; a release needs none")
 	var releaseSecretPaths stringList
@@ -147,7 +148,7 @@ func runInstallDocker(ctx context.Context, arguments []string, output io.Writer)
 	if err != nil {
 		return errors.New("install --engine=docker needs the docker CLI on PATH")
 	}
-	serveArguments := localServeArguments(layout, *httpsPort, *sshPort, *publishOnGreen, storeCA, releaseSecretPaths, dockerBinary)
+	serveArguments := localServeArguments(layout, *httpsPort, *sshPort, *publishOnGreen, storeCA, releaseSecretPaths, dockerBinary, *testcontainers)
 	if source := strings.TrimSpace(*helperSource); source != "" {
 		absolute, err := filepath.Abs(source)
 		if err != nil {
@@ -246,7 +247,7 @@ func requireDockerDaemon(ctx context.Context) error {
 // built here rather than in a template so the launchd agent and the foreground
 // run cannot drift.
 func localServeArguments(layout localinstall.Layout, httpsPort, sshPort int, publishOnGreen bool,
-	storeCACert string, releaseSecretPaths []string, dockerBinary string) []string {
+	storeCACert string, releaseSecretPaths []string, dockerBinary string, testcontainers bool) []string {
 	arguments := []string{
 		"serve", "--engine=docker",
 		"--docker-binary=" + dockerBinary,
@@ -269,6 +270,9 @@ func localServeArguments(layout localinstall.Layout, httpsPort, sshPort int, pub
 		for _, path := range releaseSecretPaths {
 			arguments = append(arguments, "--secretstore-path="+path)
 		}
+	}
+	if testcontainers {
+		arguments = append(arguments, "--testcontainers")
 	}
 	return arguments
 }
