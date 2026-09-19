@@ -1987,8 +1987,6 @@ func repoCacheQualifications(ctx context.Context, database *store.Store) (map[st
 	return qualifications, nil
 }
 
-// testcontainersOffered is what the docker engine was told; the Argo engine
-// reports nothing, since kubedock is a chart value the server does not read.
 func testcontainersOffered(options serveOptions) *bool {
 	if options.engine != engineDocker {
 		return nil

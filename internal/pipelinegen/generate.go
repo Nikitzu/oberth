@@ -297,9 +297,6 @@ func mavenSteps(project Project) []step {
 
 	settings := ""
 	if credentialed && project.MavenSettings != "" {
-		// The repository brought its own file, with the repository ids its
-		// pom expects. Only the names it reads its credential from are set,
-		// from the two the preamble already filled.
 		var exports []string
 		for _, name := range project.MavenSettingsEnv {
 			source := "OBERTH_REGISTRY_PASSWORD"

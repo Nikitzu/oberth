@@ -114,19 +114,9 @@ type Project struct {
 	WorkflowScripts  []string
 	BuildRunsScripts bool
 
-	// MavenSettings is the repository's own settings.xml, relative to the
-	// root, when it carries one at .github/settings.xml or .mvn/settings.xml.
-	// A Transferz service lists a dozen GitHub Packages repositories there,
-	// each needing a server entry of its own id; a generated file naming only
-	// `github` cannot resolve the parent. MavenSettingsEnv are the ${env.X}
-	// names the file reads its credential from.
 	MavenSettings    string
 	MavenSettingsEnv []string
 
-	// Testcontainers says the tests start containers through the Docker API,
-	// read off a Maven or Gradle dependency on org.testcontainers. The
-	// pipeline then declares oberth.ci/testcontainers, which is what makes a
-	// Java service one line to onboard instead of one red run then a fix.
 	Testcontainers bool
 
 	// Provenance and honesty.
@@ -561,8 +551,6 @@ type FragmentUse struct {
 
 var settingsEnvPattern = regexp.MustCompile(`\$\{env\.([A-Za-z_][A-Za-z0-9_]*)\}`)
 
-// settingsEnvNames lists the distinct ${env.NAME} references in a settings
-// file, in order of first appearance.
 func settingsEnvNames(settings string) []string {
 	var names []string
 	seen := map[string]bool{}

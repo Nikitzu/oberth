@@ -50,10 +50,7 @@ const DefaultArtifactsLimitBytes = 256 << 20
 
 type Config struct {
 	// Docker is the CLI binary; empty selects "docker".
-	Docker string
-	// Testcontainers says this deployment starts a socket proxy for runs
-	// that declare oberth.ci/testcontainers. Off, the annotation is refused
-	// at submission; the engine never starts a proxy nobody asked for.
+	Docker         string
 	Testcontainers bool
 	// RunnerImagePrefixes is the administrator allowlist handed to admission.
 	RunnerImagePrefixes []string
@@ -89,12 +86,9 @@ type Request struct {
 	// declarations themselves, already authorized for this trigger, org and
 	// repo by the caller. The engine never derives this from the document: it
 	// is told, so that admission and execution cannot disagree.
-	Credentialed bool
-	SecretPaths  []string
-	Files        map[argoworkflow.FileRef]argoworkflow.SeededFile
-	// Testcontainers says the document declared oberth.ci/testcontainers and
-	// the deployment offers it. The engine is told, exactly as with
-	// Credentialed, so admission and execution cannot disagree.
+	Credentialed   bool
+	SecretPaths    []string
+	Files          map[argoworkflow.FileRef]argoworkflow.SeededFile
 	Testcontainers bool
 }
 
@@ -146,9 +140,7 @@ type job struct {
 	// life of the run and nowhere else: it is never written to the run log,
 	// never recorded on the completion, and the volume carrying it is
 	// destroyed with everything else at cleanup.
-	identity string
-	// testcontainers is what carried the org.testcontainers label before the
-	// run started, so reaping at the end removes only what this run made.
+	identity       string
 	testcontainers testcontainersSnapshot
 }
 

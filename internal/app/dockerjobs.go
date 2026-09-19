@@ -57,10 +57,7 @@ type DockerJobs struct {
 	// operator's own --secretstore-path flags, which is a narrower and more
 	// legible surface, not a wider one.
 	secretAllowlist []string
-	// testcontainers reports whether the engine starts a socket proxy for a
-	// run that declares oberth.ci/testcontainers. When it does not, such a
-	// pipeline is refused at submission with the install flag to use.
-	testcontainers bool
+	testcontainers  bool
 
 	pipelines pipelineResolver
 	files     FileLoader
@@ -90,8 +87,6 @@ func (jobs *DockerJobs) SetSecretStore(configured bool, systemAllowlist []string
 	jobs.secretAllowlist = append([]string(nil), systemAllowlist...)
 }
 
-// SetTestcontainers declares that the engine starts a socket proxy for runs
-// that declare oberth.ci/testcontainers.
 func (jobs *DockerJobs) SetTestcontainers(offered bool) { jobs.testcontainers = offered }
 
 func (jobs *DockerJobs) Testcontainers() bool { return jobs.testcontainers }

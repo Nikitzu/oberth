@@ -8,13 +8,8 @@ import (
 	"strings"
 )
 
-// proxyImage is tecnativa/docker-socket-proxy 0.3.0, pinned by digest: the
-// only container in a run that sees the daemon socket, so which bytes it runs
-// is not a detail.
 const proxyImage = "tecnativa/docker-socket-proxy@sha256:9e4b9e7517a6b660f2cc903a19b257b1852d5b3344794e3ea334ff00ae677ac2"
 
-// The same name a kubedock pipeline already uses, so one document runs on
-// both engines. "docker" is for a document that names the plain default.
 const (
 	proxyAliasKubedock = "kubedock"
 	proxyAliasDocker   = "docker"
@@ -25,9 +20,6 @@ const (
 	proxyMemoryBytes   = 64 << 20
 )
 
-// proxyEndpoints is the haproxy allowlist. Everything a Testcontainers
-// module needs to start, inspect, exec into, log and remove a container and
-// its network; nothing that builds images, touches volumes, or reaches swarm.
 var proxyEndpoints = []string{
 	"CONTAINERS=1", "EXEC=1", "IMAGES=1", "NETWORKS=1", "POST=1",
 	"INFO=1", "PING=1", "VERSION=1", "EVENTS=1",
@@ -44,9 +36,6 @@ func (controller *Controller) gatewayName() string {
 	return defaultGatewayName
 }
 
-// proxyCreateArguments is the argv for the run's socket proxy. The image's
-// entrypoint binds 2375 only, so the config template is rendered here with
-// both ports and haproxy started directly.
 func (controller *Controller) proxyCreateArguments(request Request) []string {
 	arguments := []string{
 		"create",
@@ -70,9 +59,6 @@ func (controller *Controller) proxyCreateArguments(request Request) []string {
 	return arguments
 }
 
-// testcontainersEnvironment is what a declared step gets, minus anything the
-// document set itself: a pipeline written for kubedock already names
-// DOCKER_HOST and must keep its own value.
 func (controller *Controller) testcontainersEnvironment(step Step) []string {
 	defaults := []string{
 		"DOCKER_HOST=tcp://" + proxyAliasKubedock + ":" + proxyPortKubedock,
@@ -97,9 +83,6 @@ func (controller *Controller) testcontainersEnvironment(step Step) []string {
 	return out
 }
 
-// Testcontainers labels every container and network it creates. Ryuk, its
-// own reaper, needs a socket it will not get, so the engine reaps instead:
-// everything with the label that was not there when the run started.
 const testcontainersLabel = "org.testcontainers=true"
 
 func newSince(before, after []string) []string {
@@ -129,8 +112,6 @@ func (controller *Controller) snapshotTestcontainers(ctx context.Context) testco
 	return testcontainersSnapshot{containers: strings.Fields(containers), networks: strings.Fields(networks)}
 }
 
-// startProxy creates and starts the run's proxy. It runs after the network
-// exists and before any step, so the alias resolves from the first step on.
 func (controller *Controller) startProxy(ctx context.Context, request Request) error {
 	if _, err := controller.client.run(ctx, controller.proxyCreateArguments(request)...); err != nil {
 		return fmt.Errorf("dockerjob: create the testcontainers proxy: %w", err)
@@ -148,9 +129,6 @@ func shortID(id string) string {
 	return id
 }
 
-// reapTestcontainers removes what the run's tests left behind, then the
-// proxy. Every failure is logged and swallowed: a leaked test container is a
-// leaked process, not a wrong verdict.
 func (controller *Controller) reapTestcontainers(ctx context.Context, name string,
 	before testcontainersSnapshot, log io.Writer) {
 	after := controller.snapshotTestcontainers(ctx)
@@ -175,7 +153,6 @@ func (controller *Controller) DaemonVersion(ctx context.Context) (string, error)
 	return controller.client.run(ctx, "version", "--format", "{{.Server.Version}}")
 }
 
-// SupportsHostGateway is Docker 20.10 or newer, where --add-host host-gateway exists.
 func SupportsHostGateway(version string) bool {
 	parts := strings.SplitN(strings.TrimSpace(version), ".", 3)
 	if len(parts) < 2 {

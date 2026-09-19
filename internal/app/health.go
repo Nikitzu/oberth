@@ -34,10 +34,8 @@ type Health struct {
 	// Engine and SSHEndpoint are reported verbatim so a client can generate a
 	// pipeline this engine accepts and point a git remote at this server
 	// without either being configured by hand.
-	Engine      string
-	SSHEndpoint string
-	// Testcontainers, when set, says whether runs may declare
-	// oberth.ci/testcontainers here. Nil means the engine did not say.
+	Engine         string
+	SSHEndpoint    string
 	Testcontainers *bool
 	// SSHHostKey is the server's SSH host public key in authorized_keys form,
 	// so a client can pin it without a first-use prompt or a network scan.
@@ -126,8 +124,7 @@ type HealthStatus struct {
 	// engine refuses repository-declared volumeMounts, which the Argo engine
 	// requires. A client that generates a pipeline has to ask before it
 	// writes one.
-	Engine string `json:"engine,omitempty"`
-	// Testcontainers is "offered" or "not offered" when the engine said.
+	Engine         string `json:"engine,omitempty"`
 	Testcontainers string `json:"testcontainers,omitempty"`
 	// SSHEndpoint is the host and port a push goes to, so a client can set up
 	// the git remote without being told it out of band.
