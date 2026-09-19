@@ -114,6 +114,12 @@ type Project struct {
 	WorkflowScripts  []string
 	BuildRunsScripts bool
 
+	// Testcontainers says the tests start containers through the Docker API,
+	// read off a Maven or Gradle dependency on org.testcontainers. The
+	// pipeline then declares oberth.ci/testcontainers, which is what makes a
+	// Java service one line to onboard instead of one red run then a fix.
+	Testcontainers bool
+
 	// Provenance and honesty.
 	Sources      []string
 	Untranslated []string
@@ -215,6 +221,13 @@ func DetectProject(root string) Project {
 			project.PrivateRegistry = true
 			project.Registry = "maven.pkg.github.com"
 			project.note("pom.xml: parent " + parent + " is not a public group, so the build needs a credentialed Maven repository")
+		}
+	}
+	for _, manifest := range []string{"pom.xml", "build.gradle", "build.gradle.kts"} {
+		if raw, err := os.ReadFile(filepath.Join(root, manifest)); err == nil && strings.Contains(string(raw), "org.testcontainers") {
+			project.Testcontainers = true
+			project.note(manifest + ": depends on org.testcontainers, so the pipeline declares oberth.ci/testcontainers")
+			break
 		}
 	}
 

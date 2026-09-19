@@ -322,3 +322,43 @@ func TestGeneratedPipelineConsumesAFragmentAndDeclaresWhatItNeeds(t *testing.T) 
 		t.Fatalf("FragmentRefs = %v, %v", refs, err)
 	}
 }
+
+func TestGenerateDeclaresTestcontainersForMaven(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "pom.xml"), []byte(`<project><dependencies><dependency><groupId>org.testcontainers</groupId><artifactId>postgresql</artifactId></dependency></dependencies></project>`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	project := DetectProject(root)
+	if !project.Testcontainers {
+		t.Fatal("pom naming org.testcontainers was not detected")
+	}
+	project.Org, project.Repo = "acme", "svc"
+	result := Generate(project)
+	if !strings.Contains(result.YAML, `oberth.ci/testcontainers: "true"`) {
+		t.Fatalf("annotation missing from the generated document:\n%s", result.YAML)
+	}
+}
+
+func TestGenerateDeclaresTestcontainersForGradle(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "build.gradle.kts"), []byte(`dependencies { testImplementation("org.testcontainers:junit-jupiter:1.20.1") }`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if !DetectProject(root).Testcontainers {
+		t.Fatal("gradle naming org.testcontainers was not detected")
+	}
+}
+
+func TestGenerateLeavesTheAnnotationOutOtherwise(t *testing.T) {
+	t.Parallel()
+	result := generateFor(t, "npm-actions-inputs")
+	if strings.Contains(result.YAML, "oberth.ci/testcontainers") {
+		t.Fatal("a node project got the testcontainers annotation")
+	}
+	maven := generateFor(t, "maven-private-parent")
+	if strings.Contains(maven.YAML, "oberth.ci/testcontainers") {
+		t.Fatal("a maven project without the dependency got the annotation")
+	}
+}

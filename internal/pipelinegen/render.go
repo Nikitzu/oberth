@@ -60,6 +60,11 @@ func render(project Project, steps []step, result Result) string {
 	out.WriteString("  annotations:\n")
 	out.WriteString("    # Scheduler tier, not per-container resources. Those are on each template.\n")
 	out.WriteString("    oberth.ci/size: M\n")
+	if project.Testcontainers {
+		out.WriteString("    # The tests start containers through the Docker API. On kube this is\n")
+		out.WriteString("    # kubedock; on the docker engine a socket proxy answers to the same name.\n")
+		out.WriteString("    oberth.ci/testcontainers: \"true\"\n")
+	}
 	secretPaths := unique(append([]string{result.SecretPath}, fragmentSecretPaths(project)...))
 	if len(secretPaths) > 0 {
 		out.WriteString("    # Declared here, and matched at admission against this repository's own\n")
