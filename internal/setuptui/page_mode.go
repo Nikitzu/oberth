@@ -18,6 +18,9 @@ func newModePage() *modePage {
 
 func (p *modePage) title() string    { return "flight plan" }
 func (p *modePage) question() string { return "Which mode?" }
+func (p *modePage) keys() string {
+	return sKey.Render("↑/↓") + " choose · " + sKey.Render("enter") + " continue · " + sKey.Render("esc") + " back"
+}
 
 func (p *modePage) init(state *WizardState) tea.Cmd {
 	if state.Config.Production {

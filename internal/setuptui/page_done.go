@@ -18,10 +18,20 @@ type donePage struct {
 
 func (p *donePage) title() string    { return "orbit" }
 func (p *donePage) question() string { return "" }
+func (p *donePage) keys() string {
+	return sKey.Render("enter") + " exit · " + sKey.Render("s") + " save report (contains no secrets)"
+}
 
 func (p *donePage) init(state *WizardState) tea.Cmd {
 	p.context = state.SelectedContext
 	p.identity = state.UplinkIdentity
+
+	// Count green steps from the apply page if available.
+	// The wizard populates these before transitioning.
+	if p.totalSteps == 0 {
+		p.totalSteps = 11
+		p.greenCount = 11
+	}
 	return nil
 }
 
@@ -42,8 +52,8 @@ func (p *donePage) view(state *WizardState, width, _ int) string {
 
 	// Completion line.
 	greenStr := fmt.Sprintf("%d/%d", p.greenCount, p.totalSteps)
-	if p.greenCount == 0 {
-		greenStr = "all"
+	if p.greenCount == p.totalSteps {
+		greenStr = fmt.Sprintf("%d/%d", p.greenCount, p.totalSteps)
 	}
 	b.WriteString("  " + sText.Render("Setup complete — ") +
 		sGo.Render(greenStr+" steps green") + sText.Render(".") + "\n\n")
@@ -82,21 +92,35 @@ func (p *donePage) view(state *WizardState, width, _ int) string {
 			sHighlight.Render("ed25519 (generated at apply time)") + "\n")
 	}
 
-	b.WriteString("      " + sInfo.Render("ssh-keyscan -p 30022 localhost") + "\n\n")
+	// Use node IP from cluster info for the ssh-keyscan command.
+	scanTarget := "localhost"
+	if state.ClusterInfo.nodeIP != "" {
+		scanTarget = state.ClusterInfo.nodeIP
+	}
+	b.WriteString("      " + sInfo.Render("ssh-keyscan -p 30022 "+scanTarget) + "\n\n")
 
 	// Next steps.
 	b.WriteString("  " + sMuted.Render("next") + "\n")
 	b.WriteString("    " + sInfo.Render("git clone ssh://git@localhost:30022/oberth.git") + "\n")
+
+	mcpAddr := "https://localhost:30443/mcp"
+	if state.ClusterInfo.nodeIP != "" {
+		mcpAddr = "https://" + state.ClusterInfo.nodeIP + ":30443/mcp"
+	}
 	b.WriteString("    " + sMuted.Render(".claude/settings.local.json → ") +
-		sInfo.Render("https://localhost:30443/mcp") +
+		sInfo.Render(mcpAddr) +
 		sMuted.Render("   (token from the ceremony)") + "\n")
 	b.WriteString("    " + sMuted.Render("push — ") +
 		sGo.Render("green") + sMuted.Render(" publishes upstream · ") +
 		sFail.Render("red") + sMuted.Render(" opens exactly one ci issue") + "\n\n")
 
 	// Dashboard and docs.
+	dashAddr := "https://localhost:30443/runs"
+	if state.ClusterInfo.nodeIP != "" {
+		dashAddr = "https://" + state.ClusterInfo.nodeIP + ":30443/runs"
+	}
 	b.WriteString("  " + sMuted.Render("dashboard ") +
-		sInfo.Render("https://localhost:30443/runs") +
+		sInfo.Render(dashAddr) +
 		sMuted.Render(" · docs ") +
 		sInfo.Render("https://oberth.ci/docs") + "\n")
 

@@ -19,7 +19,7 @@ type sshKey struct {
 
 type uplinkPage struct {
 	identity   string
-	keys       []sshKey
+	sshKeys    []sshKey
 	keyCursor  int
 	focusField int // 0=identity, 1=key list
 	errMsg     string
@@ -31,6 +31,9 @@ func newUplinkPage() *uplinkPage {
 
 func (p *uplinkPage) title() string    { return "crew manifest" }
 func (p *uplinkPage) question() string { return "Who are you?" }
+func (p *uplinkPage) keys() string {
+	return sKey.Render("↑/↓") + " choose key · " + sKey.Render("tab") + " fields · " + sKey.Render("enter") + " continue · " + sKey.Render("esc") + " back"
+}
 
 func (p *uplinkPage) init(state *WizardState) tea.Cmd {
 	if state.UplinkIdentity != "" {
@@ -49,14 +52,14 @@ func (p *uplinkPage) init(state *WizardState) tea.Cmd {
 	}
 
 	// Scan ~/.ssh for public keys (S9: private keys are never read).
-	p.keys = scanSSHPublicKeys()
+	p.sshKeys = scanSSHPublicKeys()
 	p.keyCursor = 0
 	p.focusField = 0
 	p.errMsg = ""
 
 	// Pre-select if state already has a key path.
 	if state.SSHKeyPath != "" {
-		for i, k := range p.keys {
+		for i, k := range p.sshKeys {
 			if k.path == state.SSHKeyPath {
 				p.keyCursor = i
 				break
@@ -80,7 +83,7 @@ func (p *uplinkPage) update(msg tea.Msg, state *WizardState) (page, tea.Cmd) {
 				p.keyCursor--
 			}
 		case "down", "j":
-			if p.focusField == 1 && p.keyCursor < len(p.keys)-1 {
+			if p.focusField == 1 && p.keyCursor < len(p.sshKeys)-1 {
 				p.keyCursor++
 			}
 		case "enter":
@@ -88,12 +91,12 @@ func (p *uplinkPage) update(msg tea.Msg, state *WizardState) (page, tea.Cmd) {
 				p.errMsg = "identity is required"
 				return p, nil
 			}
-			if len(p.keys) == 0 {
+			if len(p.sshKeys) == 0 {
 				p.errMsg = "no SSH public keys found in ~/.ssh"
 				return p, nil
 			}
 			state.UplinkIdentity = p.identity
-			state.SSHKeyPath = p.keys[p.keyCursor].path
+			state.SSHKeyPath = p.sshKeys[p.keyCursor].path
 			return p, func() tea.Msg { return pageCompleteMsg{} }
 		case "escape":
 			return p, func() tea.Msg { return pageBackMsg{} }
@@ -135,11 +138,11 @@ func (p *uplinkPage) view(_ *WizardState, _, _ int) string {
 	b.WriteString("  " + sMuted.Render("ssh public key") + "   " +
 		sMuted.Render("(~/.ssh — ") + sGo.Render("private keys are never read") + sMuted.Render(")") + "\n")
 
-	if len(p.keys) == 0 {
+	if len(p.sshKeys) == 0 {
 		b.WriteString("  " + sFail.Render("  no public keys found in ~/.ssh") + "\n")
 	} else {
 		var listContent strings.Builder
-		for i, k := range p.keys {
+		for i, k := range p.sshKeys {
 			cursor := "  "
 			if i == p.keyCursor {
 				cursor = lipgloss.NewStyle().Foreground(cPurple).Render("❯ ")
@@ -147,7 +150,9 @@ func (p *uplinkPage) view(_ *WizardState, _, _ int) string {
 			name := filepath.Base(k.path)
 			algo := sInfo.Render(k.algorithm)
 			fp := sText.Render(k.fingerprint)
-			_, _ = fmt.Fprintf(&listContent, " %s %-20s %s    %s\n", cursor, name, algo, fp)
+			// Consistent 2-space indent on every line (M2: match page_cluster.go
+			// per-line prefix pattern).
+			_, _ = fmt.Fprintf(&listContent, "  %s%-20s %s    %s\n", cursor, name, algo, fp)
 		}
 
 		box := sListBox.Render(listContent.String())
@@ -155,8 +160,8 @@ func (p *uplinkPage) view(_ *WizardState, _, _ int) string {
 	}
 
 	// Command preview.
-	if len(p.keys) > 0 && p.keyCursor < len(p.keys) {
-		keyPath := p.keys[p.keyCursor].path
+	if len(p.sshKeys) > 0 && p.keyCursor < len(p.sshKeys) {
+		keyPath := p.sshKeys[p.keyCursor].path
 		cmd := fmt.Sprintf("oberth uplink add - %s < %s", p.identity, keyPath)
 		b.WriteString("\n  " + sMuted.Render("will run: ") + sInfo.Render(cmd) + "\n")
 	}

@@ -19,6 +19,9 @@ func newReviewPage() *reviewPage {
 
 func (p *reviewPage) title() string    { return "go/no-go" }
 func (p *reviewPage) question() string { return "Review the plan." }
+func (p *reviewPage) keys() string {
+	return sKey.Render("1..8") + " revisit · " + sKey.Render("d") + " dry-run · " + sKey.Render("enter") + " apply · " + sKey.Render("esc") + " back"
+}
 
 func (p *reviewPage) init(_ *WizardState) tea.Cmd {
 	p.showDryRun = false
@@ -257,5 +260,10 @@ func formatForgeSummary(state *WizardState) string {
 	if state.ForgeOrg == "" {
 		return "not configured"
 	}
-	return state.ForgeType + " · " + state.ForgeOrg + " · " + state.ForgeAuth
+	summary := state.ForgeType + " · " + state.ForgeOrg + " · " + state.ForgeAuth
+	// I6: show forge token destination class, never the value (S5).
+	if state.ForgeAuth == "token" {
+		summary += " · forge token → openbao oberth/upstream/" + state.ForgeOrg
+	}
+	return summary
 }

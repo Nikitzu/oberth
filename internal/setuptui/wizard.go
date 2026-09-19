@@ -10,6 +10,7 @@ import (
 	"charm.land/bubbles/v2/progress"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/oberthci/oberth/internal/installer"
 )
@@ -31,7 +32,6 @@ type applyStepMsg struct {
 	name     string
 	status   string // "running", "done", "failed"
 	duration time.Duration
-	logLine  string
 	err      error
 }
 
@@ -148,6 +148,7 @@ type wizard struct {
 type page interface {
 	title() string    // stage name for the top bar
 	question() string // the page question
+	keys() string     // page-specific key hints for the bottom key line
 	init(state *WizardState) tea.Cmd
 	update(msg tea.Msg, state *WizardState) (page, tea.Cmd)
 	view(state *WizardState, width, height int) string
@@ -184,6 +185,7 @@ func newWizard(opts Options) *wizard {
 		newForgePage(),        // 11
 		newReviewPage(),       // 12
 		newApplyPage(),        // 13
+		&donePage{},           // done (after apply)
 	}
 
 	return w
@@ -306,8 +308,11 @@ func (w *wizard) advance() (*wizard, tea.Cmd) {
 // program exits (S2/S10: no exit route leaves secret bytes live).
 func (w *wizard) teardownSecrets() {
 	for _, p := range w.pages {
-		if ap, ok := p.(*applyPage); ok {
-			ap.wipeSecrets()
+		switch pg := p.(type) {
+		case *applyPage:
+			pg.wipeSecrets()
+		case *forgePage:
+			pg.wipeSecrets()
 		}
 	}
 }
@@ -390,9 +395,19 @@ func (w *wizard) renderContent() string {
 	// The band — last line, full width.
 	w.band.SetWidth(w.width)
 	var bandPercent float64
-	if w.page < totalPages {
+	switch {
+	case w.page < totalPages-1:
+		// Config pages: band = page / 13.
 		bandPercent = float64(w.page+1) / float64(totalPages)
-	} else {
+	case w.page == totalPages-1:
+		// Apply page: band tracks apply step progress.
+		if ap, ok := w.pages[w.page].(*applyPage); ok {
+			bandPercent = ap.bandPercent()
+		} else {
+			bandPercent = float64(w.page+1) / float64(totalPages)
+		}
+	default:
+		// Done page: full band.
 		bandPercent = 1.0
 	}
 	b.WriteString(w.band.ViewAs(bandPercent))
@@ -410,27 +425,21 @@ func (w *wizard) keyLine() string {
 			sMuted.Render("· any other key continues")
 	}
 
-	keys := []string{}
-
-	switch w.page {
-	case 0:
-		keys = append(keys, sKey.Render("enter")+" begin")
-	case totalPages - 1:
-		// Apply page has its own keys.
-		keys = append(keys, sKey.Render("l")+" full log")
-		keys = append(keys, sKey.Render("ctrl+c")+" abort")
-	case totalPages - 2:
-		// Review page.
-		keys = append(keys, sKey.Render("1..8")+" revisit")
-		keys = append(keys, sKey.Render("d")+" dry-run")
-		keys = append(keys, sKey.Render("enter")+" apply")
-		keys = append(keys, sKey.Render("esc")+" back")
-	default:
-		keys = append(keys, sKey.Render("enter")+" continue")
-		keys = append(keys, sKey.Render("esc")+" back")
+	// M3: each page exposes its own key hints.
+	pageKeys := ""
+	if w.page < len(w.pages) {
+		pageKeys = w.pages[w.page].keys()
 	}
-	keys = append(keys, sKey.Render("?")+" help")
+	if pageKeys != "" {
+		return " " + sMuted.Render(pageKeys+" "+sMuted.Render("·")+" ") + sKey.Render("?") + sMuted.Render(" help")
+	}
 
+	// Fallback for pages that return empty keys.
+	keys := []string{
+		sKey.Render("enter") + " continue",
+		sKey.Render("esc") + " back",
+		sKey.Render("?") + " help",
+	}
 	return " " + sMuted.Render(strings.Join(keys, " "+sMuted.Render("·")+" "))
 }
 
@@ -483,24 +492,10 @@ func (w *wizard) overlayHelp(backdrop string) string {
 	return strings.Join(result, "\n")
 }
 
-// stripAnsi removes ANSI escape sequences from a string.
+// stripAnsi removes ANSI escape sequences from a string, using the
+// x/ansi package already in the dependency tree.
 func stripAnsi(s string) string {
-	var b strings.Builder
-	inEsc := false
-	for _, r := range s {
-		if r == '\x1b' {
-			inEsc = true
-			continue
-		}
-		if inEsc {
-			if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') {
-				inEsc = false
-			}
-			continue
-		}
-		b.WriteRune(r)
-	}
-	return b.String()
+	return ansi.Strip(s)
 }
 
 // BuildCommandLine generates the equivalent `oberth install` command

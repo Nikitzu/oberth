@@ -17,6 +17,9 @@ func newStorePage() *storePage {
 
 func (p *storePage) title() string    { return "propellant" }
 func (p *storePage) question() string { return "Where do release secrets live?" }
+func (p *storePage) keys() string {
+	return sKey.Render("↑/↓") + " choose · " + sKey.Render("enter") + " continue · " + sKey.Render("esc") + " back"
+}
 
 func (p *storePage) init(state *WizardState) tea.Cmd {
 	switch state.StoreMode {

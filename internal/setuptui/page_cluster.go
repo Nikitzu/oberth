@@ -30,6 +30,9 @@ func newClusterPage() *clusterPage {
 
 func (p *clusterPage) title() string    { return "launch site" }
 func (p *clusterPage) question() string { return "Where will oberth run?" }
+func (p *clusterPage) keys() string {
+	return sKey.Render("↑/↓") + " move · " + sKey.Render("/") + " filter · " + sKey.Render("enter") + " select · " + sKey.Render("esc") + " back"
+}
 
 func (p *clusterPage) init(state *WizardState) tea.Cmd {
 	p.loadContexts()

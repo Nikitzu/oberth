@@ -24,6 +24,9 @@ func newCeremonyPage() *ceremonyPage {
 
 func (p *ceremonyPage) title() string    { return "crew manifest" }
 func (p *ceremonyPage) question() string { return "" }
+func (p *ceremonyPage) keys() string {
+	return sKey.Render("r") + " reveal · " + sKey.Render("c") + " copy · " + sKey.Render("enter") + " acknowledge (no esc — explicit ack required)"
+}
 
 func (p *ceremonyPage) init(_ *WizardState) tea.Cmd {
 	return nil

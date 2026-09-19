@@ -37,6 +37,9 @@ func newNamespacesPage() *namespacesPage {
 
 func (p *namespacesPage) title() string    { return "flight plan" }
 func (p *namespacesPage) question() string { return "Name the namespaces." }
+func (p *namespacesPage) keys() string {
+	return sKey.Render("tab") + " fields · " + sKey.Render("enter") + " continue · " + sKey.Render("esc") + " back"
+}
 
 func (p *namespacesPage) init(state *WizardState) tea.Cmd {
 	if state.Config.Namespace != "" {

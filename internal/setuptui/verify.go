@@ -3,6 +3,7 @@ package setuptui
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
@@ -23,6 +24,8 @@ type clusterInfoMsg struct {
 	isLocal   bool
 	nodeCount int
 	cores     int
+	nodeName  string // first node's hostname (for TLS SANs)
+	nodeIP    string // first node's internal IP (for TLS SANs)
 	err       error
 }
 
@@ -115,10 +118,21 @@ func probeCluster(contextName string) tea.Cmd {
 		totalCores := 0
 		engine := "unknown"
 		isLocal := false
+		var nodeName, nodeIP string
 
-		for _, node := range nodes.Items {
+		for i, node := range nodes.Items {
 			cpu := node.Status.Capacity["cpu"]
 			totalCores += int(cpu.Value())
+
+			// Extract the first node's hostname and internal IP for TLS SANs.
+			if i == 0 {
+				nodeName = node.Name
+				for _, addr := range node.Status.Addresses {
+					if addr.Type == "InternalIP" && nodeIP == "" {
+						nodeIP = addr.Address
+					}
+				}
+			}
 
 			if _, ok := node.Labels["node.kubernetes.io/instance-type"]; ok {
 				if v, ok := node.Labels["cloud.google.com/gke-nodepool"]; ok && v != "" {
@@ -135,10 +149,10 @@ func probeCluster(contextName string) tea.Cmd {
 		// Heuristic: check kubelet version for k3s marker.
 		if engine == "unknown" && nodeCount > 0 {
 			kubeletVersion := nodes.Items[0].Status.NodeInfo.KubeletVersion
-			if contains(kubeletVersion, "k3s") {
+			if strings.Contains(kubeletVersion, "k3s") {
 				engine = "k3s"
 				isLocal = true
-			} else if contains(kubeletVersion, "kind") {
+			} else if strings.Contains(kubeletVersion, "kind") {
 				engine = "kind"
 				isLocal = true
 			}
@@ -152,6 +166,8 @@ func probeCluster(contextName string) tea.Cmd {
 			isLocal:   isLocal,
 			nodeCount: nodeCount,
 			cores:     totalCores,
+			nodeName:  nodeName,
+			nodeIP:    nodeIP,
 		}
 	}
 }
@@ -177,17 +193,4 @@ func probeForge(_, _ string) tea.Cmd {
 			err: fmt.Errorf("forge discovery not yet implemented in the setup wizard"),
 		}
 	}
-}
-
-func contains(s, substr string) bool {
-	return len(s) >= len(substr) && searchString(s, substr)
-}
-
-func searchString(s, sub string) bool {
-	for i := 0; i <= len(s)-len(sub); i++ {
-		if s[i:i+len(sub)] == sub {
-			return true
-		}
-	}
-	return false
 }

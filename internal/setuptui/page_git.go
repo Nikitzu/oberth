@@ -14,6 +14,9 @@ func newGitPage() *gitPage {
 
 func (p *gitPage) title() string    { return "comms check" }
 func (p *gitPage) question() string { return "How code arrives." }
+func (p *gitPage) keys() string {
+	return sKey.Render("enter") + " continue · " + sKey.Render("esc") + " back"
+}
 
 func (p *gitPage) init(_ *WizardState) tea.Cmd { return nil }
 

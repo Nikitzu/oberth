@@ -13,8 +13,12 @@ type forgePage struct {
 	forgeCursor  int
 	org          string
 	authCursor   int // 0=deploy-key, 1=token
-	focusField   int // 0=forge, 1=org, 2=auth
+	focusField   int // 0=forge, 1=org, 2=auth, 3=token (when auth=token)
 	errMsg       string
+
+	// Forge token (I6): held as []byte, never in WizardState (S4).
+	// Delivered to OpenBao at apply time; zeroed on teardown.
+	forgeToken []byte
 
 	// Discovery state.
 	discovering     bool
@@ -27,8 +31,19 @@ func newForgePage() *forgePage {
 	}
 }
 
+// wipeSecrets zeros the forge token bytes (S2/S4 teardown discipline).
+func (p *forgePage) wipeSecrets() {
+	for i := range p.forgeToken {
+		p.forgeToken[i] = 0
+	}
+	p.forgeToken = nil
+}
+
 func (p *forgePage) title() string    { return "ground station" }
 func (p *forgePage) question() string { return "Where does green code go?" }
+func (p *forgePage) keys() string {
+	return sKey.Render("←/→") + " forge · " + sKey.Render("tab") + " fields · " + sKey.Render("d") + " discovery · " + sKey.Render("enter") + " continue · " + sKey.Render("esc") + " back"
+}
 
 func (p *forgePage) init(state *WizardState) tea.Cmd {
 	for i, opt := range p.forgeOptions {
@@ -62,12 +77,18 @@ func (p *forgePage) update(msg tea.Msg, state *WizardState) (page, tea.Cmd) {
 		return p, nil
 
 	case tea.KeyPressMsg:
+		// Determine how many fields are active based on auth mode.
+		fieldCount := 3
+		if p.authCursor == 1 {
+			fieldCount = 4 // token field visible
+		}
+
 		switch msg.String() {
 		case "tab":
-			p.focusField = (p.focusField + 1) % 3
+			p.focusField = (p.focusField + 1) % fieldCount
 			p.errMsg = ""
 		case "shift+tab":
-			p.focusField = (p.focusField + 2) % 3
+			p.focusField = (p.focusField + fieldCount - 1) % fieldCount
 			p.errMsg = ""
 		case "left":
 			switch p.focusField {
@@ -78,6 +99,10 @@ func (p *forgePage) update(msg tea.Msg, state *WizardState) (page, tea.Cmd) {
 			case 2:
 				if p.authCursor > 0 {
 					p.authCursor--
+				}
+				// When switching away from token auth, clamp focus.
+				if p.authCursor == 0 && p.focusField >= 3 {
+					p.focusField = 2
 				}
 			}
 		case "right":
@@ -104,6 +129,10 @@ func (p *forgePage) update(msg tea.Msg, state *WizardState) (page, tea.Cmd) {
 				p.errMsg = "org is required"
 				return p, nil
 			}
+			if p.authCursor == 1 && len(p.forgeToken) == 0 {
+				p.errMsg = "forge token is required for token auth"
+				return p, nil
+			}
 			state.ForgeType = p.forgeOptions[p.forgeCursor]
 			state.ForgeOrg = p.org
 			if p.authCursor == 0 {
@@ -117,18 +146,22 @@ func (p *forgePage) update(msg tea.Msg, state *WizardState) (page, tea.Cmd) {
 		case "backspace":
 			if p.focusField == 1 && len(p.org) > 0 {
 				p.org = p.org[:len(p.org)-1]
+			} else if p.focusField == 3 && len(p.forgeToken) > 0 {
+				p.forgeToken = p.forgeToken[:len(p.forgeToken)-1]
 			}
 		default:
 			text := msg.String()
 			if p.focusField == 1 && len(text) == 1 {
 				p.org += text
+			} else if p.focusField == 3 && len(text) == 1 {
+				p.forgeToken = append(p.forgeToken, text[0])
 			}
 		}
 	}
 	return p, nil
 }
 
-func (p *forgePage) view(_ *WizardState, _, _ int) string {
+func (p *forgePage) view(state *WizardState, _, _ int) string {
 	var b strings.Builder
 
 	b.WriteString("  " + sQuestion.Render(p.question()) + "\n\n")
@@ -176,7 +209,27 @@ func (p *forgePage) view(_ *WizardState, _, _ int) string {
 	} else {
 		b.WriteString(sMuted.Render("( ) token → openbao only"))
 	}
-	b.WriteString("\n\n")
+	b.WriteString("\n")
+
+	// Token field (I6): visible only when auth=token.
+	if p.authCursor == 1 {
+		tokenCursor := "  "
+		tokenLabelStyle := sMuted
+		if p.focusField == 3 {
+			tokenCursor = lipgloss.NewStyle().Foreground(cPurple).Render("❯ ")
+			tokenLabelStyle = lipgloss.NewStyle().Foreground(cPurple)
+		}
+		// EchoModePassword: show masked blocks, never the value (S5).
+		tokenDisplay := lipgloss.NewStyle().
+			Background(cLine).
+			Foreground(cFg).
+			Padding(0, 1).
+			Render(strings.Repeat("*", len(p.forgeToken)))
+		_, _ = fmt.Fprintf(&b, "  %s%-14s %s\n", tokenCursor, tokenLabelStyle.Render("token"), tokenDisplay)
+		b.WriteString("    " + sMuted.Render("· delivered to openbao "+state.ForgeOrg+" — never stored on disk") + "\n")
+	}
+
+	b.WriteString("\n")
 
 	// Discovery section.
 	b.WriteString("  " + sKey.Render("d") + sMuted.Render("iscovery") + "\n")

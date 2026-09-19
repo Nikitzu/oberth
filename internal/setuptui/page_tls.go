@@ -22,6 +22,9 @@ func newTLSPage() *tlsPage {
 
 func (p *tlsPage) title() string    { return "heat shield" }
 func (p *tlsPage) question() string { return "How should oberth serve TLS?" }
+func (p *tlsPage) keys() string {
+	return sKey.Render("↑/↓") + " choose · " + sKey.Render("n") + " edit sans · " + sKey.Render("enter") + " continue · " + sKey.Render("esc") + " back"
+}
 
 func (p *tlsPage) init(state *WizardState) tea.Cmd {
 	switch state.TLSMode {
@@ -36,15 +39,20 @@ func (p *tlsPage) init(state *WizardState) tea.Cmd {
 		p.proxyCursor = 0
 	}
 
-	// Pre-fill SANs from cluster info.
+	// Pre-fill SANs from cluster info: service DNS, node name, node IP.
+	// The context name ("default", "k3s-tuxbox") is not a useful SAN —
+	// the node name and IP are what clients actually connect to.
 	p.sans = []string{}
 	ns := state.Config.Namespace
 	if ns == "" {
 		ns = "oberth"
 	}
 	p.sans = append(p.sans, "oberth."+ns+".svc")
-	if state.ClusterInfo.context != "" {
-		p.sans = append(p.sans, state.ClusterInfo.context)
+	if state.ClusterInfo.nodeName != "" {
+		p.sans = append(p.sans, state.ClusterInfo.nodeName)
+	}
+	if state.ClusterInfo.nodeIP != "" {
+		state.Config.TLSExtraIPs = append(state.Config.TLSExtraIPs, state.ClusterInfo.nodeIP)
 	}
 	if state.ProxyEnabled {
 		p.sans = append(p.sans, "watch.oberth.ci")

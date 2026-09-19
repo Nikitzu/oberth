@@ -27,6 +27,9 @@ func newWelcomePage() *welcomePage {
 
 func (p *welcomePage) title() string    { return "mission briefing" }
 func (p *welcomePage) question() string { return "" }
+func (p *welcomePage) keys() string {
+	return sKey.Render("enter") + " begin · " + sKey.Render("a") + " accessible · " + sKey.Render("p") + " plain · " + sKey.Render("q") + " quit"
+}
 
 func (p *welcomePage) init(state *WizardState) tea.Cmd {
 	// Build detected environment line from cluster info if available.

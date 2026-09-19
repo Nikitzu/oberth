@@ -37,6 +37,9 @@ func newStoreConnectPage() *storeConnectPage {
 
 func (p *storeConnectPage) title() string    { return "propellant" }
 func (p *storeConnectPage) question() string { return "Connect the store." }
+func (p *storeConnectPage) keys() string {
+	return sKey.Render("tab") + " fields · " + sKey.Render("v") + " verify · " + sKey.Render("n") + " add path · " + sKey.Render("enter") + " continue · " + sKey.Render("esc") + " back"
+}
 
 func (p *storeConnectPage) init(state *WizardState) tea.Cmd {
 	if state.StoreAddress != "" {
@@ -68,10 +71,10 @@ func (p *storeConnectPage) update(msg tea.Msg, state *WizardState) (page, tea.Cm
 	case tea.KeyPressMsg:
 		switch msg.String() {
 		case "tab":
-			p.focus = (p.focus + 1) % 2 // Only address and CA cert are editable.
+			p.focus = (p.focus + 1) % 3 // address, CA cert, and allowed paths
 			p.errMsg = ""
 		case "shift+tab":
-			p.focus = (p.focus + 1) % 2
+			p.focus = (p.focus + 2) % 3
 			p.errMsg = ""
 		case "v":
 			if err := p.validateFields(); err != "" {
@@ -104,11 +107,21 @@ func (p *storeConnectPage) update(msg tea.Msg, state *WizardState) (page, tea.Cm
 				if len(v) > 0 {
 					p.fields[p.focus].value = v[:len(v)-1]
 				}
+			} else if p.focus == 2 && len(p.allowedPaths) > 0 {
+				last := len(p.allowedPaths) - 1
+				if len(p.allowedPaths[last]) > 0 {
+					p.allowedPaths[last] = p.allowedPaths[last][:len(p.allowedPaths[last])-1]
+				}
+				p.fields[2].value = strings.Join(p.allowedPaths, ", ")
 			}
 		default:
 			text := msg.String()
 			if p.focus < 2 && len(text) == 1 {
 				p.fields[p.focus].value += text
+			} else if p.focus == 2 && len(text) == 1 && len(p.allowedPaths) > 0 {
+				last := len(p.allowedPaths) - 1
+				p.allowedPaths[last] += text
+				p.fields[2].value = strings.Join(p.allowedPaths, ", ")
 			}
 		}
 	}
@@ -148,8 +161,14 @@ func (p *storeConnectPage) view(_ *WizardState, _, _ int) string {
 		b.WriteString("\n")
 	}
 
-	// Allowed paths (read-only display with add).
-	b.WriteString("  " + sMuted.Render("allowed paths") + "    ")
+	// Allowed paths (editable when focused).
+	pathCursor := "  "
+	pathLabelStyle := sMuted
+	if p.focus == 2 {
+		pathCursor = lipgloss.NewStyle().Foreground(cPurple).Render("❯ ")
+		pathLabelStyle = lipgloss.NewStyle().Foreground(cPurple)
+	}
+	_, _ = fmt.Fprintf(&b, "  %s%-16s ", pathCursor, pathLabelStyle.Render("allowed paths"))
 	for i, path := range p.allowedPaths {
 		if i > 0 {
 			b.WriteString("  ")

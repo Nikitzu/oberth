@@ -67,11 +67,12 @@ var (
 // brandMark is the triangle logomark used in the top bar.
 const brandMark = "▲" // ▲
 
-// newBand creates the apt-style progress band: solid Purple fill, no
-// gradient, no percentage text, no easing.
+// newBand creates the apt-style progress band: solid Purple fill with full
+// block characters, no gradient, no percentage text, no easing (design 4.4).
 func newBand() progress.Model {
 	return progress.New(
 		progress.WithColors(cPurple),
+		progress.WithFillCharacters(progress.DefaultFullCharFullBlock, progress.DefaultEmptyCharBlock),
 		progress.WithoutPercentage(),
 	)
 }

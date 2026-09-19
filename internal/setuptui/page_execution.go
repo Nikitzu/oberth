@@ -41,6 +41,9 @@ func newExecutionPage() *executionPage {
 
 func (p *executionPage) title() string    { return "flight plan" }
 func (p *executionPage) question() string { return "Execution and network." }
+func (p *executionPage) keys() string {
+	return sKey.Render("tab") + " fields · " + sKey.Render("←/→") + " options · " + sKey.Render("enter") + " continue · " + sKey.Render("esc") + " back"
+}
 
 func (p *executionPage) init(state *WizardState) tea.Cmd {
 	if state.Config.NetworkPolicy != "" {
