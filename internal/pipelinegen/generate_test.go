@@ -362,3 +362,39 @@ func TestGenerateLeavesTheAnnotationOutOtherwise(t *testing.T) {
 		t.Fatal("a maven project without the dependency got the annotation")
 	}
 }
+
+func TestGeneratedMavenPipelineUsesTheRepositorysOwnSettings(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, ".github"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	pom := `<project><parent><groupId>com.acme</groupId><artifactId>parent</artifactId><version>1</version></parent></project>`
+	if err := os.WriteFile(filepath.Join(root, "pom.xml"), []byte(pom), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	settings := `<settings><servers><server><id>github-common-lib</id><username>${env.GITHUB_REPO_USERNAME}</username><password>${env.GITHUB_REPO_PASSWORD}</password></server></servers></settings>`
+	if err := os.WriteFile(filepath.Join(root, ".github", "settings.xml"), []byte(settings), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	project := DetectProject(root)
+	if project.MavenSettings != ".github/settings.xml" {
+		t.Fatalf("MavenSettings = %q, want .github/settings.xml", project.MavenSettings)
+	}
+	project.Org, project.Repo = "acme", "svc"
+	result := Generate(project)
+	if !strings.Contains(result.YAML, "-s /work/build/.github/settings.xml") {
+		t.Fatalf("the repository's settings.xml is not passed to mvn:\n%s", result.YAML)
+	}
+	if strings.Contains(result.YAML, ".oberth-m2/settings.xml") {
+		t.Fatalf("a generated settings.xml was written although the repository has its own:\n%s", result.YAML)
+	}
+	for _, want := range []string{
+		`export GITHUB_REPO_USERNAME="$OBERTH_REGISTRY_USERNAME"`,
+		`export GITHUB_REPO_PASSWORD="$OBERTH_REGISTRY_PASSWORD"`,
+	} {
+		if !strings.Contains(result.YAML, want) {
+			t.Fatalf("missing %q, the env names the settings file references:\n%s", want, result.YAML)
+		}
+	}
+}

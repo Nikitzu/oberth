@@ -114,6 +114,15 @@ type Project struct {
 	WorkflowScripts  []string
 	BuildRunsScripts bool
 
+	// MavenSettings is the repository's own settings.xml, relative to the
+	// root, when it carries one at .github/settings.xml or .mvn/settings.xml.
+	// A Transferz service lists a dozen GitHub Packages repositories there,
+	// each needing a server entry of its own id; a generated file naming only
+	// `github` cannot resolve the parent. MavenSettingsEnv are the ${env.X}
+	// names the file reads its credential from.
+	MavenSettings    string
+	MavenSettingsEnv []string
+
 	// Testcontainers says the tests start containers through the Docker API,
 	// read off a Maven or Gradle dependency on org.testcontainers. The
 	// pipeline then declares oberth.ci/testcontainers, which is what makes a
@@ -222,6 +231,16 @@ func DetectProject(root string) Project {
 			project.Registry = "maven.pkg.github.com"
 			project.note("pom.xml: parent " + parent + " is not a public group, so the build needs a credentialed Maven repository")
 		}
+	}
+	for _, candidate := range []string{".github/settings.xml", ".mvn/settings.xml"} {
+		raw, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(candidate)))
+		if err != nil {
+			continue
+		}
+		project.MavenSettings = candidate
+		project.MavenSettingsEnv = settingsEnvNames(string(raw))
+		project.note(candidate + ": repository-owned Maven settings, used as-is with its ${env.*} credentials exported")
+		break
 	}
 	for _, manifest := range []string{"pom.xml", "build.gradle", "build.gradle.kts"} {
 		if raw, err := os.ReadFile(filepath.Join(root, manifest)); err == nil && strings.Contains(string(raw), "org.testcontainers") {
@@ -538,4 +557,20 @@ type FragmentUse struct {
 	Steps       []string
 	Files       []string
 	SecretPaths []string
+}
+
+var settingsEnvPattern = regexp.MustCompile(`\$\{env\.([A-Za-z_][A-Za-z0-9_]*)\}`)
+
+// settingsEnvNames lists the distinct ${env.NAME} references in a settings
+// file, in order of first appearance.
+func settingsEnvNames(settings string) []string {
+	var names []string
+	seen := map[string]bool{}
+	for _, match := range settingsEnvPattern.FindAllStringSubmatch(settings, -1) {
+		if !seen[match[1]] {
+			seen[match[1]] = true
+			names = append(names, match[1])
+		}
+	}
+	return names
 }

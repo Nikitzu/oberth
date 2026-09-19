@@ -296,7 +296,20 @@ func mavenSteps(project Project) []step {
 	credentialed := project.PrivateRegistry && project.Org != ""
 
 	settings := ""
-	if credentialed {
+	if credentialed && project.MavenSettings != "" {
+		// The repository brought its own file, with the repository ids its
+		// pom expects. Only the names it reads its credential from are set,
+		// from the two the preamble already filled.
+		var exports []string
+		for _, name := range project.MavenSettingsEnv {
+			source := "OBERTH_REGISTRY_PASSWORD"
+			if strings.Contains(strings.ToUpper(name), "USER") {
+				source = "OBERTH_REGISTRY_USERNAME"
+			}
+			exports = append(exports, "export "+name+"=\"$"+source+"\"")
+		}
+		settings = strings.Join(exports, "\n") + "\n"
+	} else if credentialed {
 		// The server id must match the <repository><id> the pom (or its
 		// parent) declares. `github` is the convention for GitHub Packages;
 		// when the pom uses another id this file has to say that id instead.
@@ -328,7 +341,9 @@ func mavenSteps(project Project) []step {
 	}
 
 	mavenFlags := "-B -ntp -Dmaven.repo.local=/work/cache/m2"
-	if credentialed {
+	if credentialed && project.MavenSettings != "" {
+		mavenFlags += " -s " + buildDir + "/" + project.MavenSettings
+	} else if credentialed {
 		mavenFlags += " -s " + buildDir + "/.oberth-m2/settings.xml"
 	}
 
