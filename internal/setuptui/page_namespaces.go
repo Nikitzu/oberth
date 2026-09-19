@@ -1,0 +1,155 @@
+package setuptui
+
+import (
+	"fmt"
+	"regexp"
+	"strings"
+
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
+)
+
+// dns1123LabelRegexp validates a DNS-1123 label.
+var dns1123LabelRegexp = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
+
+type namespacesPage struct {
+	fields [3]fieldState
+	focus  int
+	errMsg string
+}
+
+type fieldState struct {
+	label       string
+	value       string
+	description string
+	defaultVal  string
+}
+
+func newNamespacesPage() *namespacesPage {
+	return &namespacesPage{
+		fields: [3]fieldState{
+			{label: "oberth", defaultVal: "oberth", description: "main oberth namespace"},
+			{label: "pipelines", defaultVal: "oberth-pipelines", description: "pipeline jobs run here under trigger-tier service accounts"},
+			{label: "openbao", defaultVal: "openbao", description: "openbao secret store namespace"},
+		},
+	}
+}
+
+func (p *namespacesPage) title() string    { return "flight plan" }
+func (p *namespacesPage) question() string { return "Name the namespaces." }
+
+func (p *namespacesPage) init(state *WizardState) tea.Cmd {
+	if state.Config.Namespace != "" {
+		p.fields[0].value = state.Config.Namespace
+	} else {
+		p.fields[0].value = p.fields[0].defaultVal
+	}
+	if state.Config.ArgoNamespace != "" {
+		p.fields[1].value = state.Config.ArgoNamespace
+	} else {
+		p.fields[1].value = p.fields[1].defaultVal
+	}
+	if state.Config.OpenBaoNamespace != "" {
+		p.fields[2].value = state.Config.OpenBaoNamespace
+	} else {
+		p.fields[2].value = p.fields[2].defaultVal
+	}
+	p.focus = 0
+	p.errMsg = ""
+	return nil
+}
+
+func (p *namespacesPage) update(msg tea.Msg, state *WizardState) (page, tea.Cmd) {
+	switch msg := msg.(type) {
+	case tea.KeyPressMsg:
+		switch msg.String() {
+		case "tab":
+			p.focus = (p.focus + 1) % 3
+			p.errMsg = ""
+		case "shift+tab":
+			p.focus = (p.focus + 2) % 3
+			p.errMsg = ""
+		case "enter":
+			if err := p.validate(); err != "" {
+				p.errMsg = err
+				return p, nil
+			}
+			state.Config.Namespace = p.fields[0].value
+			state.Config.ArgoNamespace = p.fields[1].value
+			state.Config.OpenBaoNamespace = p.fields[2].value
+			return p, func() tea.Msg { return pageCompleteMsg{} }
+		case "escape":
+			return p, func() tea.Msg { return pageBackMsg{} }
+		case "backspace":
+			v := p.fields[p.focus].value
+			if len(v) > 0 {
+				p.fields[p.focus].value = v[:len(v)-1]
+			}
+		default:
+			text := msg.String()
+			if len(text) == 1 && isNSChar(text[0]) {
+				p.fields[p.focus].value += text
+			}
+		}
+	}
+	return p, nil
+}
+
+func (p *namespacesPage) validate() string {
+	for _, f := range p.fields {
+		if !dns1123LabelRegexp.MatchString(f.value) {
+			return fmt.Sprintf("%s: must be a valid DNS-1123 label", f.label)
+		}
+	}
+	// Namespaces must be distinct.
+	if p.fields[0].value == p.fields[1].value {
+		return "oberth and pipelines namespaces must differ"
+	}
+	if p.fields[0].value == p.fields[2].value {
+		return "oberth and openbao namespaces must differ"
+	}
+	if p.fields[1].value == p.fields[2].value {
+		return "pipelines and openbao namespaces must differ"
+	}
+	return ""
+}
+
+func (p *namespacesPage) view(_ *WizardState, _, _ int) string {
+	var b strings.Builder
+
+	b.WriteString("  " + sQuestion.Render(p.question()) + "\n\n")
+
+	for i, f := range p.fields {
+		cursor := "  "
+		labelStyle := sMuted
+		if i == p.focus {
+			cursor = lipgloss.NewStyle().Foreground(cPurple).Render("❯ ")
+			labelStyle = lipgloss.NewStyle().Foreground(cPurple)
+		}
+
+		// Field with value rendered on Current Line bg.
+		input := lipgloss.NewStyle().
+			Background(cLine).
+			Foreground(cFg).
+			Padding(0, 1).
+			Render(f.value)
+
+		_, _ = fmt.Fprintf(&b, "  %s%-14s %s\n", cursor, labelStyle.Render(f.label), input)
+
+		// Description under focused field.
+		if i == p.focus && f.description != "" {
+			b.WriteString("    " + sMuted.Render("· "+f.description) + "\n")
+		}
+		b.WriteString("\n")
+	}
+
+	if p.errMsg != "" {
+		b.WriteString("  " + sFail.Render(p.errMsg) + "\n")
+	}
+
+	return b.String()
+}
+
+func isNSChar(c byte) bool {
+	return (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-'
+}
