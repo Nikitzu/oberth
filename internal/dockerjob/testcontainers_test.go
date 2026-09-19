@@ -96,3 +96,15 @@ func TestGatewayNameFollowsTheSecretStoreSetting(t *testing.T) {
 		t.Fatalf("gateway name not taken from the secret store setting: %s", joined)
 	}
 }
+
+func TestReapSetKeepsWhatExistedBefore(t *testing.T) {
+	before := []string{"aaa", "bbb"}
+	after := []string{"aaa", "bbb", "ccc", "ddd"}
+	got := newSince(before, after)
+	if strings.Join(got, ",") != "ccc,ddd" {
+		t.Fatalf("newSince = %v, want [ccc ddd]", got)
+	}
+	if len(newSince(after, before)) != 0 {
+		t.Fatal("nothing new must reap nothing")
+	}
+}

@@ -1,7 +1,9 @@
 package dockerjob
 
 import (
+	"context"
 	"fmt"
+	"io"
 	"strings"
 )
 
@@ -92,4 +94,78 @@ func (controller *Controller) testcontainersEnvironment(step Step) []string {
 		}
 	}
 	return out
+}
+
+// Testcontainers labels every container and network it creates. Ryuk, its
+// own reaper, needs a socket it will not get, so the engine reaps instead:
+// everything with the label that was not there when the run started.
+const testcontainersLabel = "org.testcontainers=true"
+
+func newSince(before, after []string) []string {
+	seen := make(map[string]bool, len(before))
+	for _, id := range before {
+		seen[id] = true
+	}
+	var out []string
+	for _, id := range after {
+		if !seen[id] {
+			out = append(out, id)
+		}
+	}
+	return out
+}
+
+type testcontainersSnapshot struct {
+	containers []string
+	networks   []string
+}
+
+func (controller *Controller) snapshotTestcontainers(ctx context.Context) testcontainersSnapshot {
+	containers, _ := controller.client.run(ctx, "ps", "--all", "--no-trunc",
+		"--filter", "label="+testcontainersLabel, "--format", "{{.ID}}")
+	networks, _ := controller.client.run(ctx, "network", "ls",
+		"--filter", "label="+testcontainersLabel, "--format", "{{.ID}}")
+	return testcontainersSnapshot{containers: strings.Fields(containers), networks: strings.Fields(networks)}
+}
+
+// startProxy creates and starts the run's proxy. It runs after the network
+// exists and before any step, so the alias resolves from the first step on.
+func (controller *Controller) startProxy(ctx context.Context, request Request) error {
+	if _, err := controller.client.run(ctx, controller.proxyCreateArguments(request)...); err != nil {
+		return fmt.Errorf("dockerjob: create the testcontainers proxy: %w", err)
+	}
+	if _, err := controller.client.run(ctx, "start", controller.proxyName(request.Name)); err != nil {
+		return fmt.Errorf("dockerjob: start the testcontainers proxy: %w", err)
+	}
+	return nil
+}
+
+func shortID(id string) string {
+	if len(id) > 12 {
+		return id[:12]
+	}
+	return id
+}
+
+// reapTestcontainers removes what the run's tests left behind, then the
+// proxy. Every failure is logged and swallowed: a leaked test container is a
+// leaked process, not a wrong verdict.
+func (controller *Controller) reapTestcontainers(ctx context.Context, name string,
+	before testcontainersSnapshot, log io.Writer) {
+	after := controller.snapshotTestcontainers(ctx)
+	for _, id := range newSince(before.containers, after.containers) {
+		if _, err := controller.client.run(ctx, "rm", "--force", "--volumes", id); err != nil {
+			fmt.Fprintf(log, "testcontainers: could not remove container %s: %v\n", shortID(id), err)
+			continue
+		}
+		fmt.Fprintf(log, "testcontainers: removed container %s\n", shortID(id))
+	}
+	for _, id := range newSince(before.networks, after.networks) {
+		if _, err := controller.client.run(ctx, "network", "rm", id); err != nil {
+			fmt.Fprintf(log, "testcontainers: could not remove network %s: %v\n", shortID(id), err)
+			continue
+		}
+		fmt.Fprintf(log, "testcontainers: removed network %s\n", shortID(id))
+	}
+	_, _ = controller.client.run(ctx, "rm", "--force", controller.proxyName(name))
 }

@@ -147,6 +147,9 @@ type job struct {
 	// never recorded on the completion, and the volume carrying it is
 	// destroyed with everything else at cleanup.
 	identity string
+	// testcontainers is what carried the org.testcontainers label before the
+	// run started, so reaping at the end removes only what this run made.
+	testcontainers testcontainersSnapshot
 }
 
 func NewController(config Config) (*Controller, error) {
@@ -280,6 +283,9 @@ func (controller *Controller) Wait(ctx context.Context, name, runID string, dest
 	defer func() {
 		cleanupCtx, cancelCleanup := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Minute)
 		defer cancelCleanup()
+		if current.request.Testcontainers {
+			controller.reapTestcontainers(cleanupCtx, name, current.testcontainers, budget)
+		}
 		controller.cleanup(cleanupCtx, name)
 	}()
 
@@ -293,6 +299,9 @@ func (controller *Controller) execute(ctx context.Context, current *job, destina
 	completion := Completion{Name: name, Succeeded: false, Phase: "job"}
 
 	_, _ = io.WriteString(destination, current.plan.ExecutionNote()+"\n")
+	if current.request.Testcontainers {
+		current.testcontainers = controller.snapshotTestcontainers(ctx)
+	}
 	if err := controller.provision(ctx, current.request); err != nil {
 		completion.Reason = err.Error()
 		return completion, err
@@ -375,6 +384,11 @@ func (controller *Controller) provision(ctx context.Context, request Request) er
 	networkArgs := append([]string{"network", "create"}, labels...)
 	if _, err := controller.client.run(ctx, append(networkArgs, controller.networkName(request.Name))...); err != nil {
 		return fmt.Errorf("dockerjob: create run network: %w", err)
+	}
+	if request.Testcontainers {
+		if err := controller.startProxy(ctx, request); err != nil {
+			return err
+		}
 	}
 	// The cache volume outlives the run. Creating it is idempotent, so the
 	// first run for a repository provisions it and every later run finds it
