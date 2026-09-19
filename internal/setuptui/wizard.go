@@ -171,6 +171,12 @@ func newWizard(opts Options) *wizard {
 		},
 	}
 
+	// Thread the binary version so TUI apply resolves the same chart
+	// version the installer would (never a hardcoded "dev" placeholder).
+	if opts.BinaryVersion != "" {
+		w.state.Config.BinaryVersion = opts.BinaryVersion
+	}
+
 	w.pages = []page{
 		newWelcomePage(),      // 1
 		newClusterPage(),      // 2
@@ -240,7 +246,7 @@ func (w *wizard) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Dismiss help overlay.
 		if w.showHelp {
 			switch msg.String() {
-			case "escape", "?":
+			case "esc", "?":
 				w.showHelp = false
 			}
 			return w, nil
@@ -298,6 +304,23 @@ func (w *wizard) advance() (*wizard, tea.Cmd) {
 		return w, tea.Quit
 	}
 
+	// When advancing from apply to done, populate step results from the
+	// apply page so the done page shows real counts instead of fabricated
+	// "11/11 green" (P4-3).
+	if nextPage == len(w.pages)-1 { // entering the done page
+		if ap, ok := w.pages[nextPage-1].(*applyPage); ok {
+			if dp, ok := w.pages[nextPage].(*donePage); ok {
+				dp.totalSteps = len(ap.steps)
+				dp.greenCount = 0
+				for _, s := range ap.steps {
+					if s.status == "done" {
+						dp.greenCount++
+					}
+				}
+			}
+		}
+	}
+
 	w.page = nextPage
 	cmd := w.pages[w.page].init(&w.state)
 	return w, cmd
@@ -310,6 +333,10 @@ func (w *wizard) teardownSecrets() {
 	for _, p := range w.pages {
 		switch pg := p.(type) {
 		case *applyPage:
+			// Cancel the installer context so it stops mutating on abort.
+			if pg.cancel != nil {
+				pg.cancel()
+			}
 			pg.wipeSecrets()
 		case *forgePage:
 			pg.wipeSecrets()
@@ -448,7 +475,7 @@ func (w *wizard) overlayHelp(backdrop string) string {
 		"",
 		sKey.Render("navigate")+"   "+sMuted.Render("up/down or j/k · tab/shift+tab fields · left/right options · / filter"),
 		sKey.Render("advance")+"    "+sMuted.Render("enter continue · esc back one page (answers kept)"),
-		sKey.Render("pages")+"      "+sMuted.Render("1..8 jump (review) · d dry-run / discovery · v verify"),
+		sKey.Render("pages")+"      "+sMuted.Render("1..8 jump (review) · d dry-mode / discovery · v verify"),
 		sKey.Render("modes")+"      "+sMuted.Render("a accessible (screen reader) · p plain (no color/motion)"),
 		sKey.Render("escape")+"     "+sMuted.Render("ctrl+c abort — confirmed; states what already exists"),
 		"",

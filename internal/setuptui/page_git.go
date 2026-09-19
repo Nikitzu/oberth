@@ -26,7 +26,7 @@ func (p *gitPage) update(msg tea.Msg, _ *WizardState) (page, tea.Cmd) {
 		switch msg.String() {
 		case "enter":
 			return p, func() tea.Msg { return pageCompleteMsg{} }
-		case "escape":
+		case "esc":
 			return p, func() tea.Msg { return pageBackMsg{} }
 		}
 	}

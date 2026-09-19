@@ -77,11 +77,10 @@ func (p *forgePage) update(msg tea.Msg, state *WizardState) (page, tea.Cmd) {
 		return p, nil
 
 	case tea.KeyPressMsg:
-		// Determine how many fields are active based on auth mode.
+		// Token auth is not yet implemented (no delivery path to OpenBao),
+		// so the only active fields are forge(0), org(1), auth(2) — the
+		// token field(3) is never reachable.
 		fieldCount := 3
-		if p.authCursor == 1 {
-			fieldCount = 4 // token field visible
-		}
 
 		switch msg.String() {
 		case "tab":
@@ -111,12 +110,18 @@ func (p *forgePage) update(msg tea.Msg, state *WizardState) (page, tea.Cmd) {
 				if p.forgeCursor < len(p.forgeOptions)-1 {
 					p.forgeCursor++
 				}
-			case 2:
-				if p.authCursor < 1 {
-					p.authCursor++
-				}
+				// case 2: token auth is not selectable (no delivery path).
 			}
 		case "d":
+			// Guard: do not steal 'd' from text fields (org, token).
+			if p.focusField == 1 {
+				p.org += "d"
+				return p, nil
+			}
+			if p.focusField == 3 {
+				p.forgeToken = append(p.forgeToken, 'd')
+				return p, nil
+			}
 			if p.org == "" {
 				p.errMsg = "org is required for discovery"
 				return p, nil
@@ -129,32 +134,24 @@ func (p *forgePage) update(msg tea.Msg, state *WizardState) (page, tea.Cmd) {
 				p.errMsg = "org is required"
 				return p, nil
 			}
-			if p.authCursor == 1 && len(p.forgeToken) == 0 {
-				p.errMsg = "forge token is required for token auth"
+			if p.authCursor == 1 {
+				p.errMsg = "forge token -> openbao is not yet implemented"
 				return p, nil
 			}
 			state.ForgeType = p.forgeOptions[p.forgeCursor]
 			state.ForgeOrg = p.org
-			if p.authCursor == 0 {
-				state.ForgeAuth = "deploy-key"
-			} else {
-				state.ForgeAuth = "token"
-			}
+			state.ForgeAuth = "deploy-key"
 			return p, func() tea.Msg { return pageCompleteMsg{} }
-		case "escape":
+		case "esc":
 			return p, func() tea.Msg { return pageBackMsg{} }
 		case "backspace":
 			if p.focusField == 1 && len(p.org) > 0 {
 				p.org = p.org[:len(p.org)-1]
-			} else if p.focusField == 3 && len(p.forgeToken) > 0 {
-				p.forgeToken = p.forgeToken[:len(p.forgeToken)-1]
 			}
 		default:
 			text := msg.String()
 			if p.focusField == 1 && len(text) == 1 {
 				p.org += text
-			} else if p.focusField == 3 && len(text) == 1 {
-				p.forgeToken = append(p.forgeToken, text[0])
 			}
 		}
 	}
@@ -203,31 +200,8 @@ func (p *forgePage) view(state *WizardState, _, _ int) string {
 		b.WriteString(sMuted.Render("( ) deploy key per repo"))
 	}
 	b.WriteString("      ")
-	if p.authCursor == 1 {
-		selected := lipgloss.NewStyle().Foreground(cPurple)
-		b.WriteString(selected.Render("(•) token → openbao only"))
-	} else {
-		b.WriteString(sMuted.Render("( ) token → openbao only"))
-	}
+	b.WriteString(sHold.Render("( ) forge token -> openbao (not yet implemented)"))
 	b.WriteString("\n")
-
-	// Token field (I6): visible only when auth=token.
-	if p.authCursor == 1 {
-		tokenCursor := "  "
-		tokenLabelStyle := sMuted
-		if p.focusField == 3 {
-			tokenCursor = lipgloss.NewStyle().Foreground(cPurple).Render("❯ ")
-			tokenLabelStyle = lipgloss.NewStyle().Foreground(cPurple)
-		}
-		// EchoModePassword: show masked blocks, never the value (S5).
-		tokenDisplay := lipgloss.NewStyle().
-			Background(cLine).
-			Foreground(cFg).
-			Padding(0, 1).
-			Render(strings.Repeat("*", len(p.forgeToken)))
-		_, _ = fmt.Fprintf(&b, "  %s%-14s %s\n", tokenCursor, tokenLabelStyle.Render("token"), tokenDisplay)
-		b.WriteString("    " + sMuted.Render("· delivered to openbao "+state.ForgeOrg+" — never stored on disk") + "\n")
-	}
 
 	b.WriteString("\n")
 

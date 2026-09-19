@@ -62,7 +62,7 @@ func (p *welcomePage) update(msg tea.Msg, state *WizardState) (page, tea.Cmd) {
 		switch msg.String() {
 		case "enter":
 			return p, func() tea.Msg { return pageCompleteMsg{} }
-		case "q":
+		case "q", "esc":
 			return p, tea.Quit
 		}
 	}

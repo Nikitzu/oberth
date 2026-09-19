@@ -37,7 +37,7 @@ func (p *reviewPage) update(msg tea.Msg, state *WizardState) (page, tea.Cmd) {
 				return p, nil
 			}
 			return p, func() tea.Msg { return pageCompleteMsg{} }
-		case "escape":
+		case "esc":
 			return p, func() tea.Msg { return pageBackMsg{} }
 		case "d":
 			p.showDryRun = !p.showDryRun

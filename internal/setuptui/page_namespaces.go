@@ -81,7 +81,7 @@ func (p *namespacesPage) update(msg tea.Msg, state *WizardState) (page, tea.Cmd)
 			state.Config.ArgoNamespace = p.fields[1].value
 			state.Config.OpenBaoNamespace = p.fields[2].value
 			return p, func() tea.Msg { return pageCompleteMsg{} }
-		case "escape":
+		case "esc":
 			return p, func() tea.Msg { return pageBackMsg{} }
 		case "backspace":
 			v := p.fields[p.focus].value

@@ -26,12 +26,8 @@ func (p *donePage) init(state *WizardState) tea.Cmd {
 	p.context = state.SelectedContext
 	p.identity = state.UplinkIdentity
 
-	// Count green steps from the apply page if available.
-	// The wizard populates these before transitioning.
-	if p.totalSteps == 0 {
-		p.totalSteps = 11
-		p.greenCount = 11
-	}
+	// totalSteps and greenCount are populated by wizard.advance() from
+	// the apply page's real step data before this init is called.
 	return nil
 }
 
@@ -101,7 +97,11 @@ func (p *donePage) view(state *WizardState, width, _ int) string {
 
 	// Next steps.
 	b.WriteString("  " + sMuted.Render("next") + "\n")
-	b.WriteString("    " + sInfo.Render("git clone ssh://git@localhost:30022/oberth.git") + "\n")
+	gitTarget := "localhost"
+	if state.ClusterInfo.nodeIP != "" {
+		gitTarget = state.ClusterInfo.nodeIP
+	}
+	b.WriteString("    " + sInfo.Render("git clone ssh://git@"+gitTarget+":30022/oberth.git") + "\n")
 
 	mcpAddr := "https://localhost:30443/mcp"
 	if state.ClusterInfo.nodeIP != "" {

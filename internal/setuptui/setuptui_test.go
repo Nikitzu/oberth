@@ -342,6 +342,130 @@ func TestWizardCtrlCConfirmedAbort(t *testing.T) {
 	}
 }
 
+// --- Bug 1: esc key must trigger back navigation ---
+
+func escKey() tea.KeyPressMsg {
+	return tea.KeyPressMsg(tea.Key{Code: tea.KeyEscape})
+}
+
+func TestEscKeyNavigatesBack(t *testing.T) {
+	w := newWizard(Options{})
+	// Start on page 2 (cluster page, index 1).
+	w.page = 2
+	state := &w.state
+
+	// Esc on the mode page (index 2) must produce pageBackMsg.
+	p := w.pages[2]
+	_, cmd := p.update(escKey(), state)
+	if cmd == nil {
+		t.Fatal("esc on the mode page must produce a command")
+	}
+	msg := cmd()
+	if _, ok := msg.(pageBackMsg); !ok {
+		t.Fatalf("esc must produce pageBackMsg, got %T", msg)
+	}
+}
+
+func TestEscKeyWorksOnAllConfigPages(t *testing.T) {
+	w := newWizard(Options{})
+	// Pages that must respond to esc with pageBackMsg (all config pages
+	// except welcome and apply/done).
+	escPages := []int{
+		1,  // cluster
+		2,  // mode
+		3,  // namespaces
+		4,  // execution
+		5,  // store
+		6,  // store-connect
+		7,  // tls
+		8,  // uplink
+		9,  // git
+		10, // forge
+		11, // review
+	}
+	for _, idx := range escPages {
+		p := w.pages[idx]
+		_, cmd := p.update(escKey(), &w.state)
+		if cmd == nil {
+			t.Errorf("page %d (%s): esc must produce a command", idx, p.title())
+			continue
+		}
+		msg := cmd()
+		if _, ok := msg.(pageBackMsg); !ok {
+			t.Errorf("page %d (%s): esc must produce pageBackMsg, got %T", idx, p.title(), msg)
+		}
+	}
+}
+
+func TestEscOnWelcomeQuits(t *testing.T) {
+	w := newWizard(Options{})
+	p := w.pages[0] // welcome page
+	_, cmd := p.update(escKey(), &w.state)
+	if cmd == nil {
+		t.Fatal("esc on welcome must produce a quit command")
+	}
+}
+
+func TestEscDismissesHelpOverlay(t *testing.T) {
+	w := newWizard(Options{})
+	w.showHelp = true
+	_, _ = w.Update(escKey())
+	if w.showHelp {
+		t.Fatal("esc must dismiss the help overlay")
+	}
+}
+
+// --- Bug 2: hotkeys must not steal from text fields ---
+
+func TestStoreConnectHotkeysDoNotStealFromTextFields(t *testing.T) {
+	p := newStoreConnectPage()
+	state := &WizardState{}
+	p.init(state)
+
+	// Focus on address field (index 0) and type "v" — must append, not verify.
+	p.focus = 0
+	p.update(keyPress('v', "v"), state)
+	if !strings.Contains(p.fields[0].value, "v") {
+		t.Fatalf("'v' on address field must be text input, got %q", p.fields[0].value)
+	}
+	if p.verifying {
+		t.Fatal("'v' on address field must not trigger verify")
+	}
+
+	// Type "n" on address field — must append, not add path.
+	initialPaths := len(p.allowedPaths)
+	p.update(keyPress('n', "n"), state)
+	if !strings.Contains(p.fields[0].value, "n") {
+		t.Fatalf("'n' on address field must be text input, got %q", p.fields[0].value)
+	}
+	if len(p.allowedPaths) != initialPaths {
+		t.Fatal("'n' on address field must not add an allowed path")
+	}
+
+	// Focus on CA cert field (index 1) — same guard.
+	p.focus = 1
+	p.update(keyPress('v', "v"), state)
+	if !strings.Contains(p.fields[1].value, "v") {
+		t.Fatalf("'v' on CA cert field must be text input, got %q", p.fields[1].value)
+	}
+}
+
+func TestForgeHotkeyDoesNotStealFromOrgField(t *testing.T) {
+	p := newForgePage()
+	state := &WizardState{}
+	p.init(state)
+
+	// Focus on org field (index 1) and type "d" — must append, not discover.
+	p.focusField = 1
+	p.update(keyPress('d', "d"), state)
+	if !strings.Contains(p.org, "d") {
+		t.Fatalf("'d' on org field must be text input, got %q", p.org)
+	}
+	if p.discovering {
+		t.Fatal("'d' on org field must not trigger discovery")
+	}
+}
+
 // --- namespace validation shared shape ---
 
 func TestDNS1123LabelRegexp(t *testing.T) {

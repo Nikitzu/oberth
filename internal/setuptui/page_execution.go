@@ -2,7 +2,6 @@ package setuptui
 
 import (
 	"fmt"
-	"strconv"
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
@@ -10,7 +9,7 @@ import (
 )
 
 type executionPage struct {
-	fields [5]execField
+	fields [2]execField
 	focus  int
 	errMsg string
 }
@@ -26,15 +25,12 @@ type execField struct {
 
 func newExecutionPage() *executionPage {
 	return &executionPage{
-		fields: [5]execField{
-			{label: "concurrent jobs", value: "3", fieldType: "number"},
+		fields: [2]execField{
 			{label: "network policy", value: "strict", fieldType: "select",
 				options: []string{"strict", "auto", "off"}, optionIndex: 0},
 			{label: "external anchoring", value: "off", fieldType: "select",
 				options: []string{"off", "on"}, optionIndex: 0,
 				description: "off — a default install contacts no external service"},
-			{label: "git ssh nodeport", value: "30022", fieldType: "port"},
-			{label: "https/mcp nodeport", value: "30443", fieldType: "port"},
 		},
 	}
 }
@@ -51,17 +47,17 @@ func (p *executionPage) init(state *WizardState) tea.Cmd {
 		// displays friendlier labels. Reverse-map for round-tripping.
 		display := map[string]string{"true": "strict", "auto": "auto", "false": "off"}
 		if label, ok := display[state.Config.NetworkPolicy]; ok {
-			for i, opt := range p.fields[1].options {
+			for i, opt := range p.fields[0].options {
 				if opt == label {
-					p.fields[1].optionIndex = i
-					p.fields[1].value = opt
+					p.fields[0].optionIndex = i
+					p.fields[0].value = opt
 				}
 			}
 		}
 	}
 	if state.Config.InstallRekor {
-		p.fields[2].optionIndex = 1
-		p.fields[2].value = "on"
+		p.fields[1].optionIndex = 1
+		p.fields[1].value = "on"
 	}
 	p.focus = 0
 	p.errMsg = ""
@@ -91,60 +87,22 @@ func (p *executionPage) update(msg tea.Msg, state *WizardState) (page, tea.Cmd) 
 				f.value = f.options[f.optionIndex]
 			}
 		case "enter":
-			if err := p.validate(); err != "" {
-				p.errMsg = err
-				return p, nil
-			}
 			// Write the installer's vocabulary, never the display label —
 			// installer.Config rejects anything but auto|true|false, and the
 			// --dry-mode command must be a valid `oberth install` invocation.
-			if np, ok := canonicalNetworkPolicy(p.fields[1].value); ok {
+			if np, ok := canonicalNetworkPolicy(p.fields[0].value); ok {
 				state.Config.NetworkPolicy = np
 			} else {
 				p.errMsg = "network policy must be strict, auto, or off"
 				return p, nil
 			}
-			state.Config.InstallRekor = p.fields[2].value == "on"
+			state.Config.InstallRekor = p.fields[1].value == "on"
 			return p, func() tea.Msg { return pageCompleteMsg{} }
-		case "escape":
+		case "esc":
 			return p, func() tea.Msg { return pageBackMsg{} }
-		case "backspace":
-			f := &p.fields[p.focus]
-			if (f.fieldType == "number" || f.fieldType == "port") && len(f.value) > 0 {
-				f.value = f.value[:len(f.value)-1]
-			}
-		default:
-			text := msg.String()
-			f := &p.fields[p.focus]
-			if (f.fieldType == "number" || f.fieldType == "port") && len(text) == 1 && text[0] >= '0' && text[0] <= '9' {
-				f.value += text
-			}
 		}
 	}
 	return p, nil
-}
-
-func (p *executionPage) validate() string {
-	// Validate concurrent jobs.
-	jobs, err := strconv.Atoi(p.fields[0].value)
-	if err != nil || jobs < 1 || jobs > 32 {
-		return "concurrent jobs must be 1-32"
-	}
-
-	// Validate NodePorts.
-	for _, idx := range []int{3, 4} {
-		port, err := strconv.Atoi(p.fields[idx].value)
-		if err != nil || port < 30000 || port > 32767 {
-			return fmt.Sprintf("%s must be 30000-32767", p.fields[idx].label)
-		}
-	}
-
-	// Ports must be distinct.
-	if p.fields[3].value == p.fields[4].value {
-		return "git ssh and https/mcp nodeports must differ"
-	}
-
-	return ""
 }
 
 func (p *executionPage) view(_ *WizardState, _, _ int) string {

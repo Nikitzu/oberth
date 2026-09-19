@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"os"
 	"strings"
 	"sync"
 	"time"
@@ -41,6 +40,10 @@ type applyPage struct {
 	ceremony     *ceremonyPage
 	showCeremony bool
 	applyDone    bool
+
+	// Cancellable context for the installer goroutine — a confirmed abort
+	// calls cancel() so the installer stops mutating (Bug 7).
+	cancel context.CancelFunc
 
 	// Channel-based message passing from the installer goroutine.
 	msgCh chan tea.Msg
@@ -143,10 +146,14 @@ func (p *applyPage) listenForMsg() tea.Cmd {
 // that begins listening for progress messages.
 func (p *applyPage) startApply(state *WizardState) tea.Cmd {
 	cfg := state.Config
-	cfg.BinaryVersion = "dev" // will be overridden from opts if set
+
+	// Derive a cancellable context — a confirmed abort calls cancel() so the
+	// installer stops mutating instead of running until process death (Bug 7).
+	ctx, cancel := context.WithCancel(context.Background())
+	p.cancel = cancel
 
 	return func() tea.Msg {
-		go p.runInstaller(cfg)
+		go p.runInstaller(ctx, cfg)
 		// Return the first message from the channel.
 		msg, ok := <-p.msgCh
 		if !ok {
@@ -192,7 +199,7 @@ var stepPatterns = []struct {
 
 // runInstaller runs the installer in a goroutine and sends progress messages
 // to the channel. It closes the channel when done.
-func (p *applyPage) runInstaller(cfg installer.Config) {
+func (p *applyPage) runInstaller(ctx context.Context, cfg installer.Config) {
 	defer close(p.msgCh)
 
 	// Mark the first step as running.
@@ -212,10 +219,11 @@ func (p *applyPage) runInstaller(cfg installer.Config) {
 	}
 	w.stepStarts[0] = time.Now()
 
-	ctx := context.Background()
+	// Use a non-interactive reader instead of os.Stdin to prevent stdin
+	// contention with bubbletea's raw mode (Bug 7).
 	err := installer.Execute(ctx, cfg, installer.InstallDeps{
 		Output: w,
-		Input:  os.Stdin,
+		Input:  strings.NewReader(""),
 	})
 
 	// Mark the last running step as done (or failed).
@@ -419,7 +427,7 @@ func (p *applyPage) update(msg tea.Msg, _ *WizardState) (page, tea.Cmd) {
 				}
 				return p, nil
 			}
-		case "escape":
+		case "esc":
 			if p.holdState {
 				return p, func() tea.Msg { return pageBackMsg{} }
 			}

@@ -92,7 +92,7 @@ func (p *tlsPage) update(msg tea.Msg, state *WizardState) (page, tea.Cmd) {
 			state.ProxyEnabled = p.proxyCursor == 0
 			state.Config.TLSExtraDNSNames = p.sans
 			return p, func() tea.Msg { return pageCompleteMsg{} }
-		case "escape":
+		case "esc":
 			return p, func() tea.Msg { return pageBackMsg{} }
 		}
 	}

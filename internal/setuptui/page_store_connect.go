@@ -77,6 +77,20 @@ func (p *storeConnectPage) update(msg tea.Msg, state *WizardState) (page, tea.Cm
 			p.focus = (p.focus + 2) % 3
 			p.errMsg = ""
 		case "v":
+			// Guard: do not steal 'v' from text fields (address, CA cert,
+			// allowed paths). Only act as a hotkey when no text field is
+			// focused — which on this page means never; but the guard is
+			// explicit so a future non-text focus works automatically.
+			if p.focus == 0 || p.focus == 1 {
+				p.fields[p.focus].value += "v"
+				return p, nil
+			}
+			if p.focus == 2 && len(p.allowedPaths) > 0 {
+				last := len(p.allowedPaths) - 1
+				p.allowedPaths[last] += "v"
+				p.fields[2].value = strings.Join(p.allowedPaths, ", ")
+				return p, nil
+			}
 			if err := p.validateFields(); err != "" {
 				p.errMsg = err
 				return p, nil
@@ -85,7 +99,18 @@ func (p *storeConnectPage) update(msg tea.Msg, state *WizardState) (page, tea.Cm
 			p.errMsg = ""
 			return p, probeVault(p.fields[0].value, p.fields[1].value)
 		case "n":
-			// Add another path.
+			// Guard: do not steal 'n' from text fields.
+			if p.focus == 0 || p.focus == 1 {
+				p.fields[p.focus].value += "n"
+				return p, nil
+			}
+			if p.focus == 2 && len(p.allowedPaths) > 0 {
+				last := len(p.allowedPaths) - 1
+				p.allowedPaths[last] += "n"
+				p.fields[2].value = strings.Join(p.allowedPaths, ", ")
+				return p, nil
+			}
+			// Add another path (only reachable if allowedPaths is empty).
 			p.allowedPaths = append(p.allowedPaths, "")
 			p.fields[2].value = strings.Join(p.allowedPaths, ", ")
 			return p, nil
@@ -99,7 +124,7 @@ func (p *storeConnectPage) update(msg tea.Msg, state *WizardState) (page, tea.Cm
 			state.AllowedPaths = p.allowedPaths
 			state.Config.ArgoVaultAddress = p.fields[0].value
 			return p, func() tea.Msg { return pageCompleteMsg{} }
-		case "escape":
+		case "esc":
 			return p, func() tea.Msg { return pageBackMsg{} }
 		case "backspace":
 			if p.focus < 2 {

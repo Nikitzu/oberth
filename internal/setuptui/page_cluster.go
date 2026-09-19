@@ -18,10 +18,11 @@ type kubeContext struct {
 }
 
 type clusterPage struct {
-	contexts []kubeContext
-	cursor   int
-	checking bool
-	errMsg   string
+	contexts       []kubeContext
+	cursor         int
+	currentContext string // the kubeconfig current-context at load time
+	checking       bool
+	errMsg         string
 }
 
 func newClusterPage() *clusterPage {
@@ -55,6 +56,7 @@ func (p *clusterPage) loadContexts() {
 		return
 	}
 
+	p.currentContext = rawConfig.CurrentContext
 	p.contexts = make([]kubeContext, 0, len(rawConfig.Contexts))
 	for name, ctx := range rawConfig.Contexts {
 		cluster, ok := rawConfig.Clusters[ctx.Cluster]
@@ -104,11 +106,18 @@ func (p *clusterPage) update(msg tea.Msg, state *WizardState) (page, tea.Cmd) {
 				p.errMsg = "no kubeconfig contexts found"
 				return p, nil
 			}
+			selected := p.contexts[p.cursor].name
+			// Guard: the installer targets the current kubeconfig context
+			// (no --context flag). Selecting a non-current context would
+			// apply to the wrong cluster silently.
+			if p.currentContext != "" && selected != p.currentContext {
+				p.errMsg = fmt.Sprintf("installing into a non-current context is not supported yet — run: kubectl config use-context %s", selected)
+				return p, nil
+			}
 			p.checking = true
 			p.errMsg = ""
-			selected := p.contexts[p.cursor].name
 			return p, probeCluster(selected)
-		case "escape":
+		case "esc":
 			return p, func() tea.Msg { return pageBackMsg{} }
 		}
 	}
