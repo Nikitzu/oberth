@@ -21,7 +21,7 @@ RUN --mount=type=cache,id=oberth-server-${BUILD_CACHE_NAMESPACE}-gomod,target=/g
 
 FROM alpine:3.23@sha256:fd791d74b68913cbb027c6546007b3f0d3bc45125f797758156952bc2d6daf40
 RUN apk add --no-cache \
-    ca-certificates=20260611-r0 \
+    ca-certificates=20260909-r0 \
     git=2.52.0-r0 \
     # CVE-2026-14456 (HIGH): the alpine:3.23 base at the digest above still
     # ships libcrypto3/libssl3 3.5.7-r0; the fixed 3.5.8-r0 exists only in the
