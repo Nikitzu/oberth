@@ -8,6 +8,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"golang.org/x/crypto/ssh"
 )
 
 type sshKey struct {
@@ -192,27 +193,26 @@ func scanSSHPublicKeys() []sshKey {
 			continue
 		}
 
-		parts := strings.Fields(string(data))
-		algo := "unknown"
-		fp := ""
-		if len(parts) >= 1 {
-			algo = parts[0]
-			// Shorten common prefixes.
-			algo = strings.TrimPrefix(algo, "ssh-")
+		// Parse as a real authorized_keys entry. Anything that does not
+		// parse is skipped outright — a mislabeled or corrupt file must not
+		// be offered as an uplink key, and its content must not be echoed.
+		pk, _, _, _, err := ssh.ParseAuthorizedKey(data)
+		if err != nil {
+			continue
 		}
-		if len(parts) >= 2 {
-			// Generate a short fingerprint display from the key data.
-			fpFull := parts[1]
-			if len(fpFull) > 12 {
-				fp = "SHA256:" + fpFull[:8] + "..." + fpFull[len(fpFull)-4:]
-			} else {
-				fp = fpFull
-			}
+
+		// The REAL SHA256 fingerprint — the same value `ssh-keygen -lf`
+		// prints, so out-of-band verification against the server's records
+		// compares like with like. Never display raw key-material prefixes
+		// dressed up as a fingerprint.
+		fp := ssh.FingerprintSHA256(pk)
+		if len(fp) > 20 {
+			fp = fp[:14] + "…" + fp[len(fp)-4:]
 		}
 
 		keys = append(keys, sshKey{
 			path:        path,
-			algorithm:   algo,
+			algorithm:   strings.TrimPrefix(pk.Type(), "ssh-"),
 			fingerprint: fp,
 		})
 	}

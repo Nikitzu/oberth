@@ -200,9 +200,16 @@ func formatNamespacesSummary(state *WizardState) string {
 }
 
 func formatNetworkSummary(state *WizardState) string {
+	// Config holds the installer vocabulary (auto|true|false); show the
+	// human-facing label the wizard collected instead of the raw value.
 	np := state.Config.NetworkPolicy
-	if np == "" {
+	switch np {
+	case "", "auto":
 		np = "auto"
+	case "true":
+		np = "strict"
+	case "false":
+		np = "off"
 	}
 	anchoring := "off"
 	if state.Config.InstallRekor {

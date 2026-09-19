@@ -8,6 +8,8 @@ import (
 	"os"
 	"strings"
 
+	"k8s.io/client-go/tools/clientcmd"
+
 	"github.com/oberthci/oberth/internal/installer"
 )
 
@@ -30,6 +32,44 @@ func runPlain(ctx context.Context, opts Options, output io.Writer) error {
 		TLSMode:   "self-signed",
 	}
 
+	// ask prompts until validate accepts the answer (S12: the sequential
+	// path keeps the same field-level validation the TUI enforces). An
+	// empty answer selects def. Three rejected answers abort the wizard —
+	// the same register as the installer's own prompts.
+	ask := func(label, def string, validate func(string) error) (string, error) {
+		for attempt := 0; attempt < 3; attempt++ {
+			if def != "" {
+				w("  %s [%s]: ", label, def)
+			} else {
+				w("  %s: ", label)
+			}
+			line, err := input.ReadString('\n')
+			if err != nil && line == "" {
+				return "", fmt.Errorf("read %s: %w", label, err)
+			}
+			answer := strings.TrimSpace(line)
+			if answer == "" {
+				answer = def
+			}
+			if validate == nil {
+				return answer, nil
+			}
+			if err := validate(answer); err != nil {
+				wln("  ERROR: " + err.Error())
+				continue
+			}
+			return answer, nil
+		}
+		return "", fmt.Errorf("%s: three invalid answers", label)
+	}
+
+	validNamespace := func(v string) error {
+		if !dns1123LabelRegexp.MatchString(v) {
+			return fmt.Errorf("%q must be a valid DNS-1123 label", v)
+		}
+		return nil
+	}
+
 	// Page 1: Welcome.
 	wln("")
 	wln("  OBERTH SETUP")
@@ -38,78 +78,130 @@ func runPlain(ctx context.Context, opts Options, output io.Writer) error {
 	wln("  step 1/13 — mission briefing")
 	wln("")
 
-	// Page 2: Cluster.
+	// Page 2: Cluster. The installer targets the CURRENT kubeconfig
+	// context — there is no --context flag — so naming a different context
+	// here must stop the wizard rather than silently install into whatever
+	// context happens to be current (wrong-cluster hazard).
 	wln("  step 2/13 — launch site")
-	w("  Kubeconfig context (empty for current): ")
-	ctxLine, _ := input.ReadString('\n')
-	state.SelectedContext = strings.TrimSpace(ctxLine)
+	currentContext := ""
+	if raw, err := clientcmd.NewDefaultClientConfigLoadingRules().Load(); err == nil {
+		currentContext = raw.CurrentContext
+	}
+	ctxAnswer, err := ask("Kubeconfig context (empty for current)", currentContext, func(v string) error {
+		if v != "" && currentContext != "" && v != currentContext {
+			return fmt.Errorf("installing into a non-current context is not supported yet — "+
+				"run `kubectl config use-context %s` first, then re-run setup", v)
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	state.SelectedContext = ctxAnswer
 
 	// Page 3: Mode.
 	wln("  step 3/13 — flight plan")
-	w("  Mode [dev]: ")
-	modeLine, _ := input.ReadString('\n')
-	modeTrimmed := strings.TrimSpace(modeLine)
-	if modeTrimmed == "production" {
-		state.Config.Dev = false
-		state.Config.Production = true
+	if _, err := ask("Mode", "dev", func(v string) error {
+		if v == "production" {
+			return fmt.Errorf("production profile is not implemented yet — choose dev")
+		}
+		if v != "dev" {
+			return fmt.Errorf("mode must be dev")
+		}
+		return nil
+	}); err != nil {
+		return err
 	}
+	state.Config.Dev = true
+	state.Config.Production = false
 
-	// Page 4: Namespaces.
+	// Page 4: Namespaces — DNS-1123 validated and pairwise distinct, the
+	// same rules the TUI page enforces.
 	wln("  step 4/13 — flight plan")
-	w("  Oberth namespace [oberth]: ")
-	nsLine, _ := input.ReadString('\n')
-	if ns := strings.TrimSpace(nsLine); ns != "" {
-		state.Config.Namespace = ns
+	ns, err := ask("Oberth namespace", "oberth", validNamespace)
+	if err != nil {
+		return err
 	}
-	w("  Pipeline namespace [oberth-pipelines]: ")
-	argoLine, _ := input.ReadString('\n')
-	if ns := strings.TrimSpace(argoLine); ns != "" {
-		state.Config.ArgoNamespace = ns
-	} else {
-		state.Config.ArgoNamespace = "oberth-pipelines"
+	state.Config.Namespace = ns
+	argoNS, err := ask("Pipeline namespace", "oberth-pipelines", func(v string) error {
+		if err := validNamespace(v); err != nil {
+			return err
+		}
+		if v == ns {
+			return fmt.Errorf("pipeline namespace must differ from the oberth namespace")
+		}
+		return nil
+	})
+	if err != nil {
+		return err
 	}
-	w("  OpenBao namespace [openbao]: ")
-	baoLine, _ := input.ReadString('\n')
-	if ns := strings.TrimSpace(baoLine); ns != "" {
-		state.Config.OpenBaoNamespace = ns
-	} else {
-		state.Config.OpenBaoNamespace = "openbao"
+	state.Config.ArgoNamespace = argoNS
+	baoNS, err := ask("OpenBao namespace", "openbao", func(v string) error {
+		if err := validNamespace(v); err != nil {
+			return err
+		}
+		if v == ns || v == argoNS {
+			return fmt.Errorf("openbao namespace must differ from the other namespaces")
+		}
+		return nil
+	})
+	if err != nil {
+		return err
 	}
+	state.Config.OpenBaoNamespace = baoNS
 
 	// Page 5: Execution.
 	wln("  step 5/13 — flight plan")
-	w("  Network policy [auto]: ")
-	npLine, _ := input.ReadString('\n')
-	if np := strings.TrimSpace(npLine); np != "" {
-		state.Config.NetworkPolicy = np
+	np, err := ask("Network policy (auto/strict/off)", "auto", func(v string) error {
+		if _, ok := canonicalNetworkPolicy(v); !ok {
+			return fmt.Errorf("network policy must be auto, strict, or off")
+		}
+		return nil
+	})
+	if err != nil {
+		return err
 	}
-	w("  External anchoring [off]: ")
-	anchorLine, _ := input.ReadString('\n')
-	if strings.TrimSpace(anchorLine) == "on" {
-		state.Config.InstallRekor = true
+	if canonical, ok := canonicalNetworkPolicy(np); ok {
+		state.Config.NetworkPolicy = canonical
 	}
+	anchor, err := ask("External anchoring (on/off)", "off", func(v string) error {
+		if v != "on" && v != "off" {
+			return fmt.Errorf("answer on or off")
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	state.Config.InstallRekor = anchor == "on"
 
 	// Page 6: Secret store.
 	wln("  step 6/13 — propellant")
 	wln("  [1] Install OpenBao — dev")
 	wln("  [2] Install OpenBao — production")
 	wln("  [3] Connect existing")
-	w("  Choice [2]: ")
-	storeLine, _ := input.ReadString('\n')
-	switch strings.TrimSpace(storeLine) {
+	choice, err := ask("Choice", "2", func(v string) error {
+		if v != "1" && v != "2" && v != "3" {
+			return fmt.Errorf("answer 1, 2, or 3")
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	switch choice {
 	case "1":
 		state.Config.InstallSecretStoreDev = true
 		state.StoreMode = "install-dev"
 	case "3":
 		state.StoreMode = "connect"
-		// Page 7: Store connect.
+		// Page 7: Store connect — same S7 validator as the TUI field.
 		wln("  step 7/13 — propellant")
-		w("  Vault address (https://): ")
-		addrLine, _ := input.ReadString('\n')
-		addr := strings.TrimSpace(addrLine)
-		if strings.HasPrefix(addr, "http://") {
-			wln("  ERROR: https required — tls 1.3 is a product invariant")
-			return fmt.Errorf("http:// rejected")
+		addr, err := ask("Vault address (https://…)", "", func(v string) error {
+			return validateStoreAddress(v)
+		})
+		if err != nil {
+			return err
 		}
 		state.Config.ArgoVaultAddress = addr
 		state.StoreAddress = addr
@@ -120,11 +212,16 @@ func runPlain(ctx context.Context, opts Options, output io.Writer) error {
 
 	// Page 8: TLS.
 	wln("  step 8/13 — heat shield")
-	w("  TLS mode [self-signed]: ")
-	tlsLine, _ := input.ReadString('\n')
-	if strings.TrimSpace(tlsLine) == "byo" {
-		state.TLSMode = "byo"
+	tlsMode, err := ask("TLS mode (self-signed/byo)", "self-signed", func(v string) error {
+		if v != "self-signed" && v != "byo" {
+			return fmt.Errorf("answer self-signed or byo")
+		}
+		return nil
+	})
+	if err != nil {
+		return err
 	}
+	state.TLSMode = tlsMode
 
 	// Page 9: Uplink.
 	wln("  step 9/13 — crew manifest")
@@ -136,14 +233,11 @@ func runPlain(ctx context.Context, opts Options, output io.Writer) error {
 	if host == "" {
 		host = "localhost"
 	}
-	defaultIdentity := user + "@" + host
-	w("  Identity [%s]: ", defaultIdentity)
-	idLine, _ := input.ReadString('\n')
-	if id := strings.TrimSpace(idLine); id != "" {
-		state.UplinkIdentity = id
-	} else {
-		state.UplinkIdentity = defaultIdentity
+	identity, err := ask("Identity", user+"@"+host, nil)
+	if err != nil {
+		return err
 	}
+	state.UplinkIdentity = identity
 
 	// Page 10: Git (informational).
 	wln("  step 10/13 — comms check")
@@ -152,14 +246,27 @@ func runPlain(ctx context.Context, opts Options, output io.Writer) error {
 
 	// Page 11: Forge.
 	wln("  step 11/13 — ground station")
-	w("  Forge [codeberg]: ")
-	forgeLine, _ := input.ReadString('\n')
-	if f := strings.TrimSpace(forgeLine); f != "" {
-		state.ForgeType = f
+	forge, err := ask("Forge (codeberg/github/forgejo/gitlab)", "codeberg", func(v string) error {
+		switch v {
+		case "codeberg", "github", "forgejo", "gitlab":
+			return nil
+		}
+		return fmt.Errorf("forge must be codeberg, github, forgejo, or gitlab")
+	})
+	if err != nil {
+		return err
 	}
-	w("  Owner/org: ")
-	orgLine, _ := input.ReadString('\n')
-	state.ForgeOrg = strings.TrimSpace(orgLine)
+	state.ForgeType = forge
+	org, err := ask("Owner/org", "", func(v string) error {
+		if v == "" {
+			return fmt.Errorf("org is required")
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	state.ForgeOrg = org
 
 	// Page 12: Review.
 	wln("  step 12/13 — go/no-go")
@@ -181,9 +288,16 @@ func runPlain(ctx context.Context, opts Options, output io.Writer) error {
 		return nil
 	}
 
-	w("  Apply? [yes]: ")
-	applyLine, _ := input.ReadString('\n')
-	if ans := strings.TrimSpace(applyLine); ans != "" && ans != "yes" && ans != "y" {
+	confirm, err := ask("Apply? (yes/no)", "no", func(v string) error {
+		if v != "yes" && v != "y" && v != "no" && v != "n" {
+			return fmt.Errorf("answer yes or no")
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	if confirm != "yes" && confirm != "y" {
 		return installer.ErrInterrupted
 	}
 
@@ -191,7 +305,10 @@ func runPlain(ctx context.Context, opts Options, output io.Writer) error {
 	wln("  step 13/13 — ignition")
 	wln("  Applying...")
 
-	state.Config.BinaryVersion = "dev"
+	state.Config.BinaryVersion = opts.BinaryVersion
+	if state.Config.BinaryVersion == "" {
+		state.Config.BinaryVersion = "dev"
+	}
 	state.Config.SecretStoreUndecided = !state.Config.InstallSecretStore && !state.Config.InstallSecretStoreDev
 	return installer.Execute(ctx, state.Config, installer.InstallDeps{
 		Output: output,

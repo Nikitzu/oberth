@@ -44,6 +44,10 @@ func runSetup(ctx context.Context, arguments []string, _ io.Reader, output io.Wr
 		}
 	}
 
+	// Thread the binary version so an apply resolves the same chart
+	// version `oberth install` would (never a hardcoded placeholder).
+	opts.BinaryVersion = version
+
 	return setuptui.Run(ctx, opts, output)
 }
 

@@ -9,6 +9,7 @@ import (
 
 type modePage struct {
 	cursor int // 0 = dev, 1 = production
+	errMsg string
 }
 
 func newModePage() *modePage {
@@ -35,13 +36,22 @@ func (p *modePage) update(msg tea.Msg, state *WizardState) (page, tea.Cmd) {
 			if p.cursor > 0 {
 				p.cursor--
 			}
+			p.errMsg = ""
 		case "down", "j":
 			if p.cursor < 1 {
 				p.cursor++
 			}
+			p.errMsg = ""
 		case "enter":
-			state.Config.Dev = p.cursor == 0
-			state.Config.Production = p.cursor == 1
+			// The production profile is a disabled option, not a selectable
+			// one — `oberth install --production` is not implemented and the
+			// wizard must not build a config the installer cannot honor.
+			if p.cursor == 1 {
+				p.errMsg = "production profile is not implemented yet — choose dev / evaluation"
+				return p, nil
+			}
+			state.Config.Dev = true
+			state.Config.Production = false
 			return p, func() tea.Msg { return pageCompleteMsg{} }
 		case "escape":
 			return p, func() tea.Msg { return pageBackMsg{} }
@@ -89,6 +99,10 @@ func (p *modePage) view(state *WizardState, _, _ int) string {
 
 		b.WriteString(cursor + radioStyled + " " + label + "\n")
 		b.WriteString("          " + desc + "\n\n")
+	}
+
+	if p.errMsg != "" {
+		b.WriteString("  " + sFail.Render(p.errMsg) + "\n")
 	}
 
 	return b.String()

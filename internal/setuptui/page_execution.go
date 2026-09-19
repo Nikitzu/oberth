@@ -44,10 +44,15 @@ func (p *executionPage) question() string { return "Execution and network." }
 
 func (p *executionPage) init(state *WizardState) tea.Cmd {
 	if state.Config.NetworkPolicy != "" {
-		for i, opt := range p.fields[1].options {
-			if opt == state.Config.NetworkPolicy {
-				p.fields[1].optionIndex = i
-				p.fields[1].value = opt
+		// Config holds the installer vocabulary (auto|true|false); the page
+		// displays friendlier labels. Reverse-map for round-tripping.
+		display := map[string]string{"true": "strict", "auto": "auto", "false": "off"}
+		if label, ok := display[state.Config.NetworkPolicy]; ok {
+			for i, opt := range p.fields[1].options {
+				if opt == label {
+					p.fields[1].optionIndex = i
+					p.fields[1].value = opt
+				}
 			}
 		}
 	}
@@ -87,7 +92,15 @@ func (p *executionPage) update(msg tea.Msg, state *WizardState) (page, tea.Cmd) 
 				p.errMsg = err
 				return p, nil
 			}
-			state.Config.NetworkPolicy = p.fields[1].value
+			// Write the installer's vocabulary, never the display label —
+			// installer.Config rejects anything but auto|true|false, and the
+			// --dry-mode command must be a valid `oberth install` invocation.
+			if np, ok := canonicalNetworkPolicy(p.fields[1].value); ok {
+				state.Config.NetworkPolicy = np
+			} else {
+				p.errMsg = "network policy must be strict, auto, or off"
+				return p, nil
+			}
 			state.Config.InstallRekor = p.fields[2].value == "on"
 			return p, func() tea.Msg { return pageCompleteMsg{} }
 		case "escape":

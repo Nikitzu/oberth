@@ -49,6 +49,14 @@ func newApplyPage() *applyPage {
 	}
 }
 
+// wipeSecrets zeros every secret this page or its ceremony still holds.
+// Called on every teardown path — acknowledged, aborted, or interrupted —
+// so no exit route leaves token bytes live on the heap (S2/S10).
+func (p *applyPage) wipeSecrets() {
+	p.ceremony.zeroToken()
+	p.masker.wipe()
+}
+
 func (p *applyPage) title() string {
 	if p.holdState {
 		return "ignition"
@@ -123,9 +131,11 @@ func (p *applyPage) update(msg tea.Msg, _ *WizardState) (page, tea.Cmd) {
 
 	case ceremonyTokenMsg:
 		// The token ceremony interrupts the apply after the mint step.
-		// Register with the masker for log-tail safety (S3), then hand
-		// the token to the ceremony page for display.
-		p.masker.register(string(msg.token))
+		// Register with the masker for log-tail safety (S3) first — the
+		// masker copies — then hand the buffer to the ceremony page, which
+		// copies and ZEROS the source (S2: no stray copy survives on the
+		// message value).
+		p.masker.register(msg.token)
 		p.ceremony.setToken(msg.token)
 		return p, nil
 

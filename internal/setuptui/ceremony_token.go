@@ -29,9 +29,16 @@ func (p *ceremonyPage) init(_ *WizardState) tea.Cmd {
 	return nil
 }
 
+// setToken takes ownership of the token: it copies the bytes into the
+// ceremony's own buffer and ZEROS THE SOURCE (S2 — the token is held once;
+// the message buffer that delivered it must not linger on the heap).
 func (p *ceremonyPage) setToken(token []byte) {
+	p.zeroToken() // drop any previous token first
 	p.token = make([]byte, len(token))
 	copy(p.token, token)
+	for i := range token {
+		token[i] = 0
+	}
 	p.revealed = false
 	p.copied = false
 	p.acknowledged = false

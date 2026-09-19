@@ -6,26 +6,49 @@ import "strings"
 // every secret it holds; values are registered with the masker before first
 // use. Pattern-matching output is explicitly avoided — only known handles
 // are masked.
+//
+// Secrets are held as []byte, not string, so wipe() can actually zero them
+// (S2: a secret held in an immutable string can never be erased from the
+// heap). mask() necessarily creates a transient string per comparison; that
+// copy is short-lived garbage, unlike a map key that pins the value for the
+// program's lifetime.
 type masker struct {
-	secrets map[string]struct{}
+	secrets [][]byte
 }
 
 func newMasker() *masker {
-	return &masker{secrets: make(map[string]struct{})}
+	return &masker{}
 }
 
-// register adds a secret value to the masker. Empty values are ignored.
-func (m *masker) register(secret string) {
-	if secret == "" {
+// register adds a copy of a secret value to the masker. Empty values are
+// ignored. The caller keeps ownership of its own buffer.
+func (m *masker) register(secret []byte) {
+	if len(secret) == 0 {
 		return
 	}
-	m.secrets[secret] = struct{}{}
+	cp := make([]byte, len(secret))
+	copy(cp, secret)
+	m.secrets = append(m.secrets, cp)
 }
 
 // mask replaces all registered secret values in s with "********".
 func (m *masker) mask(s string) string {
-	for secret := range m.secrets {
-		s = strings.ReplaceAll(s, secret, "********")
+	for _, secret := range m.secrets {
+		if len(secret) == 0 {
+			continue
+		}
+		s = strings.ReplaceAll(s, string(secret), "********")
 	}
 	return s
+}
+
+// wipe zeros every registered secret buffer (S2: teardown discipline).
+// After wipe the masker is empty; it can be reused.
+func (m *masker) wipe() {
+	for _, secret := range m.secrets {
+		for i := range secret {
+			secret[i] = 0
+		}
+	}
+	m.secrets = nil
 }

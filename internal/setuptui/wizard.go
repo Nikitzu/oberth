@@ -50,6 +50,9 @@ type Options struct {
 	DryMode    bool // wizard only, print the command, no apply
 	Plain      bool // no TUI, sequential prompts
 	Accessible bool // screen reader mode
+	// BinaryVersion is the oberth binary's version, threaded from main so
+	// an apply resolves the same chart version `oberth install` would.
+	BinaryVersion string
 }
 
 // WizardState holds the wizard's configuration state. It wraps
@@ -93,13 +96,32 @@ func Run(ctx context.Context, opts Options, output io.Writer) error {
 	)
 
 	finalModel, err := p.Run()
+
+	// Defensive teardown regardless of how the program ended: no exit
+	// route may leave secret bytes live on the heap (S2/S10).
+	wiz, isWizard := finalModel.(*wizard)
+	if isWizard {
+		wiz.teardownSecrets()
+	}
+
 	if err != nil {
 		return fmt.Errorf("setup wizard: %w", err)
 	}
 
 	// Check if the wizard was aborted.
-	if wiz, ok := finalModel.(*wizard); ok && wiz.aborted {
+	if isWizard && wiz.aborted {
 		return installer.ErrInterrupted
+	}
+
+	// --dry-mode: print the equivalent non-interactive command on the
+	// primary buffer (the alt screen is gone, so this lands in normal
+	// scrollback — it contains no secret by construction: BuildCommandLine
+	// reads only non-secret installer.Config fields).
+	if isWizard && wiz.dryDone && opts.DryMode {
+		_, _ = fmt.Fprintln(output, "--dry-mode: no changes applied. Equivalent command:")
+		_, _ = fmt.Fprintln(output)
+		_, _ = fmt.Fprintln(output, "  "+BuildCommandLine(&wiz.state))
+		return nil
 	}
 
 	return nil
@@ -107,18 +129,19 @@ func Run(ctx context.Context, opts Options, output io.Writer) error {
 
 // wizard is the root tea.Model that routes between pages.
 type wizard struct {
-	opts     Options
-	state    WizardState
-	masker   *masker
-	band     progress.Model
-	page     int // 0-indexed current page
-	width    int
-	height   int
-	pages    []page
-	showHelp bool
-	aborted  bool
-	quitting bool
-	started  time.Time
+	opts        Options
+	state       WizardState
+	band        progress.Model
+	page        int // 0-indexed current page
+	width       int
+	height      int
+	pages       []page
+	showHelp    bool
+	aborted     bool
+	quitting    bool
+	confirmQuit bool // first ctrl+c arms, second aborts (S10: confirmed abort)
+	dryDone     bool // --dry-mode: wizard completed through review
+	started     time.Time
 }
 
 // page is implemented by each wizard page.
@@ -133,7 +156,6 @@ type page interface {
 func newWizard(opts Options) *wizard {
 	w := &wizard{
 		opts:    opts,
-		masker:  newMasker(),
 		band:    newBand(),
 		started: time.Now(),
 		state: WizardState{
@@ -186,9 +208,21 @@ func (w *wizard) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return w, nil
 
 	case tea.KeyPressMsg:
+		// Any key other than a second ctrl+c disarms the abort confirmation.
+		if msg.String() != "ctrl+c" {
+			w.confirmQuit = false
+		}
+
 		// Global keys handled before page delegation.
 		switch msg.String() {
 		case "ctrl+c":
+			// S10: abort is confirmed, never instant. The first ctrl+c arms;
+			// the second aborts, after zeroing every secret still held.
+			if !w.confirmQuit {
+				w.confirmQuit = true
+				return w, nil
+			}
+			w.teardownSecrets()
 			w.aborted = true
 			w.quitting = true
 			return w, tea.Quit
@@ -247,6 +281,15 @@ func (w *wizard) advance() (*wizard, tea.Cmd) {
 		nextPage = 7 // skip to TLS page
 	}
 
+	// --dry-mode: the review page is the last stop. The apply page must
+	// never start; Run prints the equivalent `oberth install` command on
+	// the primary buffer after the program exits.
+	if nextPage == totalPages-1 && w.opts.DryMode {
+		w.dryDone = true
+		w.quitting = true
+		return w, tea.Quit
+	}
+
 	if nextPage >= len(w.pages) {
 		// Past the last page — check for done page.
 		w.quitting = true
@@ -256,6 +299,17 @@ func (w *wizard) advance() (*wizard, tea.Cmd) {
 	w.page = nextPage
 	cmd := w.pages[w.page].init(&w.state)
 	return w, cmd
+}
+
+// teardownSecrets zeros every secret any page still holds. Idempotent;
+// called on the confirmed-abort path and again defensively after the
+// program exits (S2/S10: no exit route leaves secret bytes live).
+func (w *wizard) teardownSecrets() {
+	for _, p := range w.pages {
+		if ap, ok := p.(*applyPage); ok {
+			ap.wipeSecrets()
+		}
+	}
 }
 
 func (w *wizard) goBack() (*wizard, tea.Cmd) {
@@ -351,6 +405,11 @@ func (w *wizard) renderContent() string {
 }
 
 func (w *wizard) keyLine() string {
+	if w.confirmQuit {
+		return " " + sFail.Render("ctrl+c again to abort") + " " +
+			sMuted.Render("· any other key continues")
+	}
+
 	keys := []string{}
 
 	switch w.page {
@@ -489,7 +548,11 @@ func BuildCommandLine(state *WizardState) string {
 	for _, ip := range state.Config.TLSExtraIPs {
 		args = append(args, fmt.Sprintf("--tls-extra-ip=%s", ip))
 	}
-	if !state.ClusterInfo.isLocal {
+	// --yes suppresses the installer's own remote-cluster consent gate.
+	// Recommend it ONLY when a probe positively identified a remote
+	// cluster — never because detection failed or was skipped (the zero
+	// value of ClusterInfo must not read as "remote, consent granted").
+	if state.ClusterInfo.err == nil && state.ClusterInfo.context != "" && !state.ClusterInfo.isLocal {
 		args = append(args, "--yes")
 	}
 

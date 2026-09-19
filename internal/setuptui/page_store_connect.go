@@ -116,16 +116,9 @@ func (p *storeConnectPage) update(msg tea.Msg, state *WizardState) (page, tea.Cm
 }
 
 func (p *storeConnectPage) validateFields() string {
-	addr := p.fields[0].value
-	if addr == "" {
-		return "address is required"
-	}
-	// S7: https only at the field level.
-	if strings.HasPrefix(addr, "http://") {
-		return "https required — tls 1.3 is a product invariant"
-	}
-	if !strings.HasPrefix(addr, "https://") {
-		return "address must start with https://"
+	// S7: https only at the field level — shared with the plain path (S12).
+	if err := validateStoreAddress(p.fields[0].value); err != nil {
+		return err.Error()
 	}
 	return ""
 }
