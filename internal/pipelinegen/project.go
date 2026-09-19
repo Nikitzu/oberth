@@ -64,8 +64,10 @@ type Project struct {
 
 	// PrivateRegistry reports that installing dependencies needs a credential,
 	// and Registry names the host that wants it.
-	PrivateRegistry bool
-	Registry        string
+	PrivateRegistry  bool
+	MavenSettings    string
+	MavenSettingsEnv []string
+	Registry         string
 
 	// Org is the upstream organization, which is what scopes the secret the
 	// private registry needs. Repo is the repository name Oberth catalogs it
@@ -175,6 +177,16 @@ func DetectProject(root string) Project {
 			project.Registry = "maven.pkg.github.com"
 			project.note("pom.xml: parent " + parent + " is not a public group, so the build needs a credentialed Maven repository")
 		}
+	}
+	for _, candidate := range []string{".github/settings.xml", ".mvn/settings.xml"} {
+		raw, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(candidate)))
+		if err != nil {
+			continue
+		}
+		project.MavenSettings = candidate
+		project.MavenSettingsEnv = settingsEnvNames(string(raw))
+		project.note(candidate + ": repository-owned Maven settings, used as-is with its ${env.*} credentials exported")
+		break
 	}
 
 	// go.mod outranks both, which is the precedence this command has always
@@ -426,4 +438,18 @@ func pnpmMajorForLockfile(version string) string {
 	default:
 		return ""
 	}
+}
+
+var settingsEnvPattern = regexp.MustCompile(`\$\{env\.([A-Za-z_][A-Za-z0-9_]*)\}`)
+
+func settingsEnvNames(settings string) []string {
+	var names []string
+	seen := map[string]bool{}
+	for _, match := range settingsEnvPattern.FindAllStringSubmatch(settings, -1) {
+		if !seen[match[1]] {
+			seen[match[1]] = true
+			names = append(names, match[1])
+		}
+	}
+	return names
 }
