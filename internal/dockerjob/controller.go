@@ -51,6 +51,10 @@ const DefaultArtifactsLimitBytes = 256 << 20
 type Config struct {
 	// Docker is the CLI binary; empty selects "docker".
 	Docker string
+	// Testcontainers says this deployment starts a socket proxy for runs
+	// that declare oberth.ci/testcontainers. Off, the annotation is refused
+	// at submission; the engine never starts a proxy nobody asked for.
+	Testcontainers bool
 	// RunnerImagePrefixes is the administrator allowlist handed to admission.
 	RunnerImagePrefixes []string
 	MaxRunLogBytes      int64
@@ -88,6 +92,10 @@ type Request struct {
 	Credentialed bool
 	SecretPaths  []string
 	Files        map[argoworkflow.FileRef]argoworkflow.SeededFile
+	// Testcontainers says the document declared oberth.ci/testcontainers and
+	// the deployment offers it. The engine is told, exactly as with
+	// Credentialed, so admission and execution cannot disagree.
+	Testcontainers bool
 }
 
 // StepResult is one executed step in Oberth's vocabulary.
@@ -618,6 +626,9 @@ func (controller *Controller) createArguments(request Request, step Step, attemp
 			arguments = append(arguments, "--add-host", gateway+":host-gateway")
 		}
 	}
+	if request.Testcontainers {
+		arguments = append(arguments, "--add-host", controller.gatewayName()+":host-gateway")
+	}
 	arguments = append(arguments,
 		"--label", labelJob+"="+request.Name,
 		"--label", labelRun+"="+request.RunID,
@@ -733,6 +744,9 @@ func (controller *Controller) stepEnvironment(request Request, step Step) []stri
 		environment = append(environment,
 			"OBERTH_RELEASE_TAG="+request.Ref,
 			"OBERTH_RELEASE_SHA="+request.SHA)
+	}
+	if request.Testcontainers {
+		environment = append(environment, controller.testcontainersEnvironment(step)...)
 	}
 	return append(environment,
 		"OBERTH_REPO="+request.Repo,
