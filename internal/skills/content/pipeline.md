@@ -39,6 +39,17 @@ host, or another tenant's identity.
   `$OBERTH_RUN_ID`
 - A node-local build cache, split by trust tier
 
+## Tests that start containers
+
+Declare `oberth.ci/testcontainers: "true"` on the workflow. The server then
+answers the Docker API at `tcp://kubedock:2475` on both engines (kubedock on
+a cluster, a socket proxy on the docker engine) and sets `DOCKER_HOST`,
+`TESTCONTAINERS_RYUK_DISABLED` and `TESTCONTAINERS_HOST_OVERRIDE` unless the
+document sets them. Test containers are removed when the run ends. A server
+that does not offer it refuses the pipeline at admission and names the
+install flag. `oberth onboard` writes the annotation for Maven and Gradle
+projects that depend on `org.testcontainers`.
+
 ## Declaring size
 
 `oberth.ci/size` is `S`, `M`, `L` or `XL` and decides the run's scheduling
