@@ -12,6 +12,10 @@ import (
 // dns1123LabelRegexp validates a DNS-1123 label.
 var dns1123LabelRegexp = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
 
+// namespaceRule is the human reading of dns1123LabelRegexp, shared by the
+// TUI and plain paths so a rejected name is explained the same way twice.
+const namespaceRule = "lowercase letters, digits and dashes only — start and end with a letter or digit"
+
 type namespacesPage struct {
 	fields [3]fieldState
 	focus  int
@@ -28,9 +32,9 @@ type fieldState struct {
 func newNamespacesPage() *namespacesPage {
 	return &namespacesPage{
 		fields: [3]fieldState{
-			{label: "oberth", defaultVal: "oberth", description: "main oberth namespace"},
-			{label: "pipelines", defaultVal: "oberth-pipelines", description: "pipeline jobs run here under trigger-tier service accounts"},
-			{label: "openbao", defaultVal: "openbao", description: "openbao secret store namespace"},
+			{label: "oberth", defaultVal: "oberth", description: "where oberth itself runs"},
+			{label: "pipelines", defaultVal: "oberth-pipelines", description: "where CI jobs run — kept apart from oberth itself"},
+			{label: "openbao", defaultVal: "openbao", description: "where the secret store runs"},
 		},
 	}
 }
@@ -38,7 +42,7 @@ func newNamespacesPage() *namespacesPage {
 func (p *namespacesPage) title() string    { return "flight plan" }
 func (p *namespacesPage) question() string { return "Name the namespaces." }
 func (p *namespacesPage) keys() string {
-	return sKey.Render("tab") + " fields · " + sKey.Render("enter") + " continue · " + sKey.Render("esc") + " back"
+	return sKey.Render("↑/↓") + " fields · " + sKey.Render("enter") + " continue · " + sKey.Render("esc") + " back"
 }
 
 func (p *namespacesPage) init(state *WizardState) tea.Cmd {
@@ -66,10 +70,10 @@ func (p *namespacesPage) update(msg tea.Msg, state *WizardState) (page, tea.Cmd)
 	switch msg := msg.(type) {
 	case tea.KeyPressMsg:
 		switch msg.String() {
-		case "tab":
+		case "tab", "down":
 			p.focus = (p.focus + 1) % 3
 			p.errMsg = ""
-		case "shift+tab":
+		case "shift+tab", "up":
 			p.focus = (p.focus + 2) % 3
 			p.errMsg = ""
 		case "enter":
@@ -101,7 +105,7 @@ func (p *namespacesPage) update(msg tea.Msg, state *WizardState) (page, tea.Cmd)
 func (p *namespacesPage) validate() string {
 	for _, f := range p.fields {
 		if !dns1123LabelRegexp.MatchString(f.value) {
-			return fmt.Sprintf("%s: must be a valid DNS-1123 label", f.label)
+			return fmt.Sprintf("%s: %s", f.label, namespaceRule)
 		}
 	}
 	// Namespaces must be distinct.
@@ -130,14 +134,11 @@ func (p *namespacesPage) view(_ *WizardState, _, _ int) string {
 			labelStyle = lipgloss.NewStyle().Foreground(cPurple)
 		}
 
-		// Field with value rendered on Current Line bg.
-		input := lipgloss.NewStyle().
-			Background(cLine).
-			Foreground(cFg).
-			Padding(0, 1).
-			Render(f.value)
+		input := inputBox(f.value, f.defaultVal, i == p.focus)
 
-		_, _ = fmt.Fprintf(&b, "  %s%-14s %s\n", cursor, labelStyle.Render(f.label), input)
+		// Pad the plain label, then style it — padding a styled string
+		// counts the escape codes and the columns drift.
+		_, _ = fmt.Fprintf(&b, "  %s%s %s\n", cursor, labelStyle.Render(fmt.Sprintf("%-14s", f.label)), input)
 
 		// Description under focused field.
 		if i == p.focus && f.description != "" {

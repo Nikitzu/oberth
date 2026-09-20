@@ -96,7 +96,7 @@ func goStatus(valid bool) string {
 	return "HOLD"
 }
 
-func (p *reviewPage) view(state *WizardState, _, _ int) string {
+func (p *reviewPage) view(state *WizardState, width, _ int) string {
 	var b strings.Builder
 
 	b.WriteString("  " + sQuestion.Render(p.question()) + "\n\n")
@@ -109,20 +109,28 @@ func (p *reviewPage) view(state *WizardState, _, _ int) string {
 
 	rows := p.buildRows(state)
 
+	// One summary column: every status lands at the same visible column so
+	// the eight rows scan as a table, not as eight sentences. The column is
+	// as wide as the longest summary, capped so a long store address cannot
+	// push GO/HOLD off the screen.
+	summaryWidth := 0
+	for _, row := range rows {
+		summaryWidth = max(summaryWidth, lipgloss.Width(row.summary))
+	}
+	summaryWidth = min(summaryWidth, max(20, width-30))
+
 	for _, row := range rows {
 		numStr := sKey.Render(fmt.Sprintf("  %d", row.num))
 		labelStr := lipgloss.NewStyle().Foreground(cPurple).Render(fmt.Sprintf("  %-12s", row.label))
-		summaryStr := sText.Render(row.summary)
+		summaryStr := padTo(sText.Render(truncateRunes(row.summary, summaryWidth)), summaryWidth)
 
 		statusStyle := sGo
 		if row.status == "HOLD" {
 			statusStyle = sHold
 		}
-		statusStr := statusStyle.Render(fmt.Sprintf("%6s", row.status))
+		statusStr := statusStyle.Render(fmt.Sprintf("%4s", row.status))
 
-		b.WriteString(numStr + labelStr + summaryStr)
-		// Right-align the status.
-		b.WriteString("  " + statusStr + "\n")
+		b.WriteString(numStr + labelStr + summaryStr + "  " + statusStr + "\n")
 
 		if row.note != "" {
 			b.WriteString("     " + sHold.Render("! "+row.note) + "\n")
@@ -208,7 +216,7 @@ func formatNetworkSummary(state *WizardState) string {
 	if state.Config.InstallRekor {
 		anchoring = "on"
 	}
-	return "30022 / 30443 · " + np + " · anchoring " + anchoring
+	return "policy " + np + " · anchoring " + anchoring
 }
 
 func formatStoreSummary(state *WizardState) string {
@@ -235,8 +243,12 @@ func formatTLSSummary(state *WizardState) string {
 	if state.ProxyEnabled {
 		proxy = "on"
 	}
-	sans := len(state.Config.TLSExtraDNSNames) + len(state.Config.TLSExtraIPs)
-	return mode + " · " + fmt.Sprintf("%d sans", sans) + " · proxy " + proxy
+	names := len(state.Config.TLSExtraDNSNames) + len(state.Config.TLSExtraIPs)
+	plural := "names"
+	if names == 1 {
+		plural = "name"
+	}
+	return mode + fmt.Sprintf(" · valid for %d %s · proxy %s", names, plural, proxy)
 }
 
 func formatUplinkSummary(state *WizardState) string {
@@ -250,5 +262,6 @@ func formatForgeSummary(state *WizardState) string {
 	if state.ForgeOrg == "" {
 		return "not configured"
 	}
-	return state.ForgeType + " · " + state.ForgeOrg + " · " + state.ForgeAuth
+	auth := strings.ReplaceAll(state.ForgeAuth, "-", " ")
+	return state.ForgeType + " / " + state.ForgeOrg + " · " + auth
 }

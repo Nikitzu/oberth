@@ -82,9 +82,9 @@ func (p *storePage) view(_ *WizardState, _, _ int) string {
 		label       string
 		description string
 	}{
-		{"install openbao — dev", "evaluation only · auto-unseal"},
-		{"install openbao — production", "in-cluster · file storage · manual unseal"},
-		{"connect existing openbao / vault", "bring your own store — EU-hosted"},
+		{"install openbao — dev", "evaluation only · unseals itself"},
+		{"install openbao — production", "runs in this cluster · you hold the unseal keys"},
+		{"connect existing openbao / vault", "bring your own store — reachable over https"},
 	}
 
 	for i, opt := range options {

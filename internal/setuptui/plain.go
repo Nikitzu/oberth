@@ -65,7 +65,7 @@ func runPlain(ctx context.Context, opts Options, output io.Writer) error {
 
 	validNamespace := func(v string) error {
 		if !dns1123LabelRegexp.MatchString(v) {
-			return fmt.Errorf("%q must be a valid DNS-1123 label", v)
+			return fmt.Errorf("%q: %s", v, namespaceRule)
 		}
 		return nil
 	}
@@ -103,7 +103,7 @@ func runPlain(ctx context.Context, opts Options, output io.Writer) error {
 	wln("  step 3/13 — flight plan")
 	if _, err := ask("Mode", "dev", func(v string) error {
 		if v == "production" {
-			return fmt.Errorf("production profile is not implemented yet — choose dev")
+			return fmt.Errorf("production is coming soon — choose dev for now")
 		}
 		if v != "dev" {
 			return fmt.Errorf("mode must be dev")
@@ -241,8 +241,11 @@ func runPlain(ctx context.Context, opts Options, output io.Writer) error {
 
 	// Page 10: Git (informational).
 	wln("  step 10/13 — comms check")
-	wln("  Push over SSH to NodePort 30022 — smart protocol only.")
-	wln("  clone: ssh://git@localhost:30022/<repo>.git")
+	wln("  Push to Oberth over SSH — every push is linked to your identity.")
+	wln("  clone: ssh://git@localhost:30022/<repo>.git   (from this machine)")
+	wln("         ssh://git@<node-ip>:30022/<repo>.git   (from your network)")
+	wln("  push → CI runs → green publishes upstream · red opens an issue")
+	wln("  Tags are immutable — only green branches reach the upstream forge.")
 
 	// Page 11: Forge.
 	wln("  step 11/13 — ground station")

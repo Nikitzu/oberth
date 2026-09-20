@@ -25,6 +25,11 @@ type pageBackMsg struct{}
 // pageJumpMsg requests a jump to a specific page (1-based, from review).
 type pageJumpMsg struct{ page int }
 
+// switchModeMsg asks the wizard to leave the TUI and continue in the
+// sequential flow — "plain" or "accessible" — the welcome page advertises
+// on a / p. The TUI program exits; Run hands the same options to runPlain.
+type switchModeMsg struct{ mode string }
+
 // applyStepMsg reports progress from the apply phase.
 type applyStepMsg struct {
 	step     int
@@ -133,6 +138,17 @@ func Run(ctx context.Context, opts Options, output io.Writer) error {
 		return installer.ErrInterrupted
 	}
 
+	// a / p on the welcome page: the TUI has torn down (terminal restored,
+	// alt screen gone), so the sequential flow can own stdin/stdout now.
+	if isWizard && wiz.switchMode != "" {
+		if wiz.switchMode == "accessible" {
+			opts.Accessible = true
+		} else {
+			opts.Plain = true
+		}
+		return runPlain(ctx, opts, output)
+	}
+
 	// --dry-mode: print the equivalent non-interactive command on the
 	// primary buffer (the alt screen is gone, so this lands in normal
 	// scrollback — it contains no secret by construction: BuildCommandLine
@@ -159,8 +175,9 @@ type wizard struct {
 	showHelp    bool
 	aborted     bool
 	quitting    bool
-	confirmQuit bool // first ctrl+c arms, second aborts (S10: confirmed abort)
-	dryDone     bool // --dry-mode: wizard completed through review
+	confirmQuit bool   // first ctrl+c arms, second aborts (S10: confirmed abort)
+	dryDone     bool   // --dry-mode: wizard completed through review
+	switchMode  string // "plain" / "accessible": continue sequentially after the TUI exits
 	started     time.Time
 }
 
@@ -285,6 +302,11 @@ func (w *wizard) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return w, cmd
 		}
 		return w, nil
+
+	case switchModeMsg:
+		w.switchMode = msg.mode
+		w.quitting = true
+		return w, tea.Quit
 	}
 
 	// Delegate to current page.
@@ -501,11 +523,11 @@ func (w *wizard) keyLine() string {
 func (w *wizard) overlayHelp(backdrop string) string {
 	helpContent := lipgloss.JoinVertical(lipgloss.Left,
 		"",
-		sKey.Render("navigate")+"   "+sMuted.Render("up/down or j/k · tab/shift+tab fields · left/right options · / filter"),
-		sKey.Render("advance")+"    "+sMuted.Render("enter continue · esc back one page (answers kept)"),
-		sKey.Render("pages")+"      "+sMuted.Render("1..8 jump (review) · d dry-mode / discovery · v verify"),
-		sKey.Render("modes")+"      "+sMuted.Render("a accessible (screen reader) · p plain (no color/motion)"),
-		sKey.Render("escape")+"     "+sMuted.Render("ctrl+c abort — confirmed; states what already exists"),
+		sKey.Render("navigate")+"   "+sMuted.Render("up/down move · left/right pick · tab next field"),
+		sKey.Render("advance")+"    "+sMuted.Render("enter continue · esc back (answers kept)"),
+		sKey.Render("review")+"     "+sMuted.Render("1..8 revisit a section · d preview the command"),
+		sKey.Render("modes")+"      "+sMuted.Render("welcome screen: a accessible · p plain"),
+		sKey.Render("abort")+"      "+sMuted.Render("ctrl+c twice — the first press only asks"),
 		"",
 		sMuted.Render("the wizard is a skin over ")+sInfo.Render("oberth install")+sMuted.Render(" — every answer maps to"),
 		sMuted.Render("a flag; --dry-mode prints the equivalent non-interactive command."),

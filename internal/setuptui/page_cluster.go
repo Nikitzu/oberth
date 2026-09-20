@@ -32,7 +32,7 @@ func newClusterPage() *clusterPage {
 func (p *clusterPage) title() string    { return "launch site" }
 func (p *clusterPage) question() string { return "Where will oberth run?" }
 func (p *clusterPage) keys() string {
-	return sKey.Render("↑/↓") + " move · " + sKey.Render("/") + " filter · " + sKey.Render("enter") + " select · " + sKey.Render("esc") + " back"
+	return sKey.Render("↑/↓") + " move · " + sKey.Render("enter") + " select · " + sKey.Render("esc") + " back"
 }
 
 func (p *clusterPage) init(state *WizardState) tea.Cmd {
@@ -135,7 +135,14 @@ func (p *clusterPage) view(_ *WizardState, width, _ int) string {
 		return b.String()
 	}
 
-	// Build the bordered list.
+	// Build the bordered list. Names are padded to one column width before
+	// styling, so local/remote lines up whatever the context names are.
+	nameWidth := 0
+	for _, ctx := range p.contexts {
+		nameWidth = max(nameWidth, lipgloss.Width(ctx.name))
+	}
+	nameWidth = min(nameWidth, 40)
+
 	var listContent strings.Builder
 	for i, ctx := range p.contexts {
 		cursor := "  "
@@ -150,7 +157,7 @@ func (p *clusterPage) view(_ *WizardState, width, _ int) string {
 			locality = sHold.Render("remote")
 		}
 
-		line := fmt.Sprintf("%s %-24s %s", cursor, nameStyle.Render(ctx.name), locality)
+		line := fmt.Sprintf("%s %s %s", cursor, nameStyle.Render(padTo(truncateRunes(ctx.name, nameWidth), nameWidth)), locality)
 		if ctx.version != "" {
 			line += "    " + sMuted.Render(ctx.version)
 		}

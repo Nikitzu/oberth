@@ -62,6 +62,10 @@ func (p *welcomePage) update(msg tea.Msg, state *WizardState) (page, tea.Cmd) {
 		switch msg.String() {
 		case "enter":
 			return p, func() tea.Msg { return pageCompleteMsg{} }
+		case "a":
+			return p, func() tea.Msg { return switchModeMsg{mode: "accessible"} }
+		case "p":
+			return p, func() tea.Msg { return switchModeMsg{mode: "plain"} }
 		case "q", "esc":
 			return p, tea.Quit
 		}
@@ -83,9 +87,9 @@ func (p *welcomePage) view(_ *WizardState, width, height int) string {
 	}
 
 	prompt := sKey.Render("enter") + sMuted.Render(" begin setup")
-	modes := sMuted.Render("a") + sMuted.Render(" accessible · ") +
-		sMuted.Render("p") + sMuted.Render(" plain · ") +
-		sMuted.Render("q") + sMuted.Render(" quit")
+	modes := sKey.Render("a") + sMuted.Render(" accessible · ") +
+		sKey.Render("p") + sMuted.Render(" plain · ") +
+		sKey.Render("q") + sMuted.Render(" quit")
 
 	content := lipgloss.JoinVertical(lipgloss.Center,
 		"",

@@ -27,18 +27,19 @@ func newExecutionPage() *executionPage {
 	return &executionPage{
 		fields: [2]execField{
 			{label: "network policy", value: "strict", fieldType: "select",
-				options: []string{"strict", "auto", "off"}, optionIndex: 0},
+				options: []string{"strict", "auto", "off"}, optionIndex: 0,
+				description: "strict — firewall CI jobs' network egress · auto — where supported · off"},
 			{label: "external anchoring", value: "off", fieldType: "select",
 				options: []string{"off", "on"}, optionIndex: 0,
-				description: "off — a default install contacts no external service"},
+				description: "off — contacts no external service · on — local Rekor log as audit witness"},
 		},
 	}
 }
 
 func (p *executionPage) title() string    { return "flight plan" }
-func (p *executionPage) question() string { return "Execution and network." }
+func (p *executionPage) question() string { return "Network and audit." }
 func (p *executionPage) keys() string {
-	return sKey.Render("tab") + " fields · " + sKey.Render("←/→") + " options · " + sKey.Render("enter") + " continue · " + sKey.Render("esc") + " back"
+	return sKey.Render("↑/↓") + " fields · " + sKey.Render("←/→") + " options · " + sKey.Render("enter") + " continue · " + sKey.Render("esc") + " back"
 }
 
 func (p *executionPage) init(state *WizardState) tea.Cmd {
@@ -68,10 +69,10 @@ func (p *executionPage) update(msg tea.Msg, state *WizardState) (page, tea.Cmd) 
 	switch msg := msg.(type) {
 	case tea.KeyPressMsg:
 		switch msg.String() {
-		case "tab":
+		case "tab", "down":
 			p.focus = (p.focus + 1) % len(p.fields)
 			p.errMsg = ""
-		case "shift+tab":
+		case "shift+tab", "up":
 			p.focus = (p.focus + len(p.fields) - 1) % len(p.fields)
 			p.errMsg = ""
 		case "left":
@@ -134,7 +135,7 @@ func (p *executionPage) view(_ *WizardState, _, _ int) string {
 				Render(f.value)
 		}
 
-		_, _ = fmt.Fprintf(&b, "  %s%-22s %s\n", cursor, labelStyle.Render(f.label), input)
+		_, _ = fmt.Fprintf(&b, "  %s%s %s\n", cursor, labelStyle.Render(fmt.Sprintf("%-20s", f.label)), input)
 
 		if i == p.focus && f.description != "" {
 			b.WriteString("    " + sMuted.Render("· "+f.description) + "\n")

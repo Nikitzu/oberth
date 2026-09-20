@@ -4,6 +4,8 @@
 package setuptui
 
 import (
+	"strings"
+
 	"charm.land/bubbles/v2/progress"
 	"charm.land/lipgloss/v2"
 )
@@ -66,6 +68,57 @@ var (
 
 // brandMark is the triangle logomark used in the top bar.
 const brandMark = "▲" // ▲
+
+// sectionLabel renders a page section heading. The focused section is the
+// one keyboard input lands in, so it is the only one drawn in brand Purple —
+// no second cursor glyph competing with the selection marker inside the
+// section (the forge page used to show ❯ for both, which read as two
+// unrelated cursors).
+func sectionLabel(label string, focused bool) string {
+	if focused {
+		return lipgloss.NewStyle().Foreground(cPurple).Bold(true).Render(label)
+	}
+	return sMuted.Render(label)
+}
+
+// inputBox renders a text field value on the Current Line background. A
+// focused field carries a visible text cursor so it is obvious where typing
+// lands; an empty unfocused field shows its placeholder muted.
+func inputBox(value, placeholder string, focused bool) string {
+	box := lipgloss.NewStyle().Background(cLine).Foreground(cFg).Padding(0, 1)
+	if value == "" && !focused && placeholder != "" {
+		return box.Foreground(cComment).Render(placeholder)
+	}
+	if focused {
+		return box.Render(value + "▏")
+	}
+	return box.Render(value)
+}
+
+// padTo right-pads a possibly ANSI-styled string to a visible width, so
+// columns line up regardless of the escape sequences inside the cells.
+func padTo(s string, width int) string {
+	if w := lipgloss.Width(s); w < width {
+		return s + strings.Repeat(" ", width-w)
+	}
+	return s
+}
+
+// truncateRunes shortens plain (unstyled) text to at most n runes, marking
+// the cut with an ellipsis. Used on review summaries before styling.
+func truncateRunes(s string, n int) string {
+	if n <= 0 {
+		return ""
+	}
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	if n == 1 {
+		return "…"
+	}
+	return string(r[:n-1]) + "…"
+}
 
 // newBand creates the apt-style progress band: solid Purple fill with full
 // block characters, no gradient, no percentage text, no easing (design 4.4).

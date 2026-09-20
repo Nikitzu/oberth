@@ -180,7 +180,7 @@ func probeVault(_ string, _ string) tea.Cmd {
 		return vaultVerifyMsg{
 			reachable:  false,
 			releaseLeg: "pending",
-			err:        fmt.Errorf("vault verification not yet implemented in the setup wizard"),
+			err:        fmt.Errorf("checking the connection from here is coming soon — the install verifies the store before it finishes"),
 		}
 	}
 }
@@ -190,7 +190,7 @@ func probeVault(_ string, _ string) tea.Cmd {
 func probeForge(_, _ string) tea.Cmd {
 	return func() tea.Msg {
 		return forgeDiscoveryMsg{
-			err: fmt.Errorf("forge discovery not yet implemented in the setup wizard"),
+			err: fmt.Errorf("looking up repositories from here is coming soon — the install discovers them in your organization"),
 		}
 	}
 }

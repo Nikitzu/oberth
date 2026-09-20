@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 
 	"github.com/oberthci/oberth/internal/installer"
 )
@@ -1062,5 +1063,360 @@ func TestApplyHoldJumpUsesReviewSectionMap(t *testing.T) {
 	}
 	if msg.page != reviewSectionPages[8] {
 		t.Fatalf("HOLD jump 8 → page %d, want %d (review's forge section)", msg.page, reviewSectionPages[8])
+	}
+}
+
+// --- UX polish: arrow keys work on every page, copy stays approachable ---
+
+func upKey() tea.KeyPressMsg    { return tea.KeyPressMsg(tea.Key{Code: tea.KeyUp}) }
+func downKey() tea.KeyPressMsg  { return tea.KeyPressMsg(tea.Key{Code: tea.KeyDown}) }
+func leftKey() tea.KeyPressMsg  { return tea.KeyPressMsg(tea.Key{Code: tea.KeyLeft}) }
+func rightKey() tea.KeyPressMsg { return tea.KeyPressMsg(tea.Key{Code: tea.KeyRight}) }
+
+// The pages switch on Key.String(); pin the names the runtime produces so a
+// Bubble Tea upgrade that renames them fails here, not in a user's terminal.
+func TestArrowKeyNames(t *testing.T) {
+	cases := map[string]tea.KeyPressMsg{
+		"up": upKey(), "down": downKey(), "left": leftKey(), "right": rightKey(),
+		"tab":       tea.KeyPressMsg(tea.Key{Code: tea.KeyTab}),
+		"shift+tab": tea.KeyPressMsg(tea.Key{Code: tea.KeyTab, Mod: tea.ModShift}),
+	}
+	for want, key := range cases {
+		if got := key.String(); got != want {
+			t.Errorf("key %q renders as %q", want, got)
+		}
+	}
+}
+
+func TestArrowKeysMoveBetweenFieldsOnFieldPages(t *testing.T) {
+	state := &WizardState{}
+
+	ns := newNamespacesPage()
+	ns.init(state)
+	ns.update(downKey(), state)
+	if ns.focus != 1 {
+		t.Fatalf("namespaces: down must focus the next field, got %d", ns.focus)
+	}
+	ns.update(downKey(), state)
+	ns.update(downKey(), state)
+	if ns.focus != 0 {
+		t.Fatalf("namespaces: down past the last field must wrap like tab, got %d", ns.focus)
+	}
+	ns.update(upKey(), state)
+	if ns.focus != 2 {
+		t.Fatalf("namespaces: up from the first field must wrap like shift+tab, got %d", ns.focus)
+	}
+
+	ex := newExecutionPage()
+	ex.init(state)
+	ex.update(downKey(), state)
+	if ex.focus != 1 {
+		t.Fatalf("execution: down must focus the next field, got %d", ex.focus)
+	}
+	ex.update(upKey(), state)
+	if ex.focus != 0 {
+		t.Fatalf("execution: up must focus the previous field, got %d", ex.focus)
+	}
+
+	sc := newStoreConnectPage()
+	sc.init(state)
+	for i := 0; i < 3; i++ {
+		sc.update(downKey(), state)
+	}
+	if sc.focus != 3 {
+		t.Fatalf("store-connect: three downs must reach the actions row, got %d", sc.focus)
+	}
+	sc.update(downKey(), state)
+	if sc.focus != 0 {
+		t.Fatalf("store-connect: down past the actions row must wrap, got %d", sc.focus)
+	}
+	sc.update(upKey(), state)
+	if sc.focus != 3 {
+		t.Fatalf("store-connect: up from the first field must wrap to the actions row, got %d", sc.focus)
+	}
+}
+
+func TestArrowKeysMoveBetweenSectionsOnForgePage(t *testing.T) {
+	p := newForgePage()
+	state := &WizardState{}
+	p.init(state)
+
+	steps := []struct {
+		key       tea.KeyPressMsg
+		wantFocus int
+		wantAuth  int
+	}{
+		{downKey(), forgeFocusOrg, 0},
+		{downKey(), forgeFocusAuth, 0},
+		{downKey(), forgeFocusAuth, 1},  // walks the auth list first
+		{downKey(), forgeFocusForge, 1}, // then wraps to the first section
+		{upKey(), forgeFocusAuth, 1},
+		{upKey(), forgeFocusAuth, 0},
+		{upKey(), forgeFocusOrg, 0},
+		{upKey(), forgeFocusForge, 0},
+	}
+	for i, s := range steps {
+		p.update(s.key, state)
+		if p.focusField != s.wantFocus || p.authCursor != s.wantAuth {
+			t.Fatalf("step %d (%s): focus=%d auth=%d, want focus=%d auth=%d",
+				i, s.key.String(), p.focusField, p.authCursor, s.wantFocus, s.wantAuth)
+		}
+	}
+
+	// left/right pick the forge only while the forge section is focused.
+	p.update(rightKey(), state)
+	if p.forgeCursor != 1 {
+		t.Fatalf("right on the forge section must move the forge cursor, got %d", p.forgeCursor)
+	}
+	p.update(downKey(), state) // organization
+	p.update(rightKey(), state)
+	if p.forgeCursor != 1 {
+		t.Fatalf("right on the organization field must not touch the forge cursor, got %d", p.forgeCursor)
+	}
+	p.update(leftKey(), state)
+	if p.forgeCursor != 1 {
+		t.Fatalf("left on the organization field must not touch the forge cursor, got %d", p.forgeCursor)
+	}
+}
+
+func TestForgeComingSoonAuthIsVisibleButNotSelectable(t *testing.T) {
+	p := newForgePage()
+	state := &WizardState{ForgeType: "codeberg", ForgeAuth: "deploy-key"}
+	p.init(state)
+	p.org = "oberthci"
+	p.focusField = forgeFocusAuth
+
+	p.update(downKey(), state)
+	if p.authCursor != 1 {
+		t.Fatalf("down must let the cursor rest on the coming-soon option, got %d", p.authCursor)
+	}
+	_, cmd := p.update(enterKey(), state)
+	if cmd != nil {
+		t.Fatal("enter on the coming-soon auth option must not advance")
+	}
+	if !strings.Contains(p.errMsg, "coming soon") || strings.Contains(p.errMsg, "not yet implemented") {
+		t.Fatalf("error must use the coming-soon register, got %q", p.errMsg)
+	}
+	if state.ForgeAuth != "deploy-key" {
+		t.Fatalf("ForgeAuth must be untouched, got %q", state.ForgeAuth)
+	}
+
+	p.update(upKey(), state)
+	_, cmd = p.update(enterKey(), state)
+	if cmd == nil {
+		t.Fatal("enter on deploy key must advance")
+	}
+	if msg := cmd(); msg != (pageCompleteMsg{}) {
+		t.Fatalf("expected pageCompleteMsg, got %T", msg)
+	}
+	if state.ForgeAuth != "deploy-key" || state.ForgeOrg != "oberthci" || state.ForgeType != "codeberg" {
+		t.Fatalf("state not written: %q %q %q", state.ForgeType, state.ForgeOrg, state.ForgeAuth)
+	}
+}
+
+func TestForgePageViewHasLabelledSections(t *testing.T) {
+	p := newForgePage()
+	state := &WizardState{}
+	p.init(state)
+	p.org = "oberthci"
+	view := stripAnsi(p.view(state, 100, 40))
+
+	for _, want := range []string{
+		"Forge", "Organization", "Authentication",
+		"❯ codeberg", "oberthci",
+		"(•) deploy key per repo", "( ) forge token via openbao — coming soon",
+	} {
+		if !strings.Contains(view, want) {
+			t.Errorf("forge page missing %q:\n%s", want, view)
+		}
+	}
+	if strings.Contains(view, "not yet implemented") || strings.Contains(view, "->") {
+		t.Errorf("forge page still carries the old register:\n%s", view)
+	}
+	// The only ❯ on the page marks the chosen forge — focus is shown by the
+	// section label, so there is no second cursor to confuse it with.
+	if n := strings.Count(view, "❯"); n != 1 {
+		t.Errorf("expected exactly one ❯ (the chosen forge), got %d:\n%s", n, view)
+	}
+	// The stubbed discovery probe is not advertised.
+	if strings.Contains(stripAnsi(p.keys()), "discovery") {
+		t.Errorf("key line must not advertise the unimplemented discovery key: %s", stripAnsi(p.keys()))
+	}
+}
+
+func TestUplinkArrowsMoveBetweenIdentityAndKeys(t *testing.T) {
+	p := newUplinkPage()
+	state := &WizardState{}
+	p.init(state)
+	p.sshKeys = []sshKey{{path: "/k/a.pub"}, {path: "/k/b.pub"}}
+	p.keyCursor = 0
+	p.focusField = 0
+	p.identity = "dev@box"
+
+	p.update(downKey(), state)
+	if p.focusField != 1 || p.identity != "dev@box" {
+		t.Fatalf("down from identity must enter the key list without typing: focus=%d identity=%q", p.focusField, p.identity)
+	}
+	p.update(downKey(), state)
+	if p.keyCursor != 1 {
+		t.Fatalf("down in the key list must move the cursor, got %d", p.keyCursor)
+	}
+	p.update(upKey(), state)
+	if p.keyCursor != 0 || p.focusField != 1 {
+		t.Fatalf("up in the key list must move the cursor first: cursor=%d focus=%d", p.keyCursor, p.focusField)
+	}
+	p.update(upKey(), state)
+	if p.focusField != 0 {
+		t.Fatalf("up from the first key must return to the identity field, got focus=%d", p.focusField)
+	}
+	p.update(upKey(), state)
+	if p.focusField != 0 || p.identity != "dev@box" {
+		t.Fatalf("up on identity must be a no-op: focus=%d identity=%q", p.focusField, p.identity)
+	}
+}
+
+func TestModePageProductionCopyIsComingSoon(t *testing.T) {
+	p := newModePage()
+	state := &WizardState{}
+	p.init(state)
+	view := stripAnsi(p.view(state, 80, 24))
+	if !strings.Contains(view, "multi-replica, persistent storage, strict isolation — coming soon") {
+		t.Fatalf("production option must describe what is coming:\n%s", view)
+	}
+	if strings.Contains(view, "not implemented") {
+		t.Fatalf("production option must not say 'not implemented':\n%s", view)
+	}
+	p.update(downKey(), state)
+	p.update(enterKey(), state)
+	if !strings.Contains(p.errMsg, "coming soon") {
+		t.Fatalf("selecting production must explain in the coming-soon register, got %q", p.errMsg)
+	}
+}
+
+func TestGitPageIsEssentialsOnly(t *testing.T) {
+	p := newGitPage()
+	state := &WizardState{UplinkIdentity: "dev@playground"}
+	state.ClusterInfo.nodeIP = "10.42.0.48"
+	view := stripAnsi(p.view(state, 100, 30))
+
+	for _, want := range []string{
+		"ssh://git@localhost:30022/<repo>.git",
+		"ssh://git@10.42.0.48:30022/<repo>.git",
+		"linked to your identity (dev@playground)",
+		"green publishes upstream",
+		"red opens an issue",
+		"Tags are immutable",
+	} {
+		if !strings.Contains(view, want) {
+			t.Errorf("git page missing %q:\n%s", want, view)
+		}
+	}
+	for _, banned := range []string{"smart protocol", "stderr", "remote: oberth", "queue", "supersed", "NodePort", "nodeport", "attributed", "r_01"} {
+		if strings.Contains(view, banned) {
+			t.Errorf("git page still explains %q — that belongs in the docs:\n%s", banned, view)
+		}
+	}
+
+	// Without a probed node IP the network URL keeps a readable placeholder.
+	view = stripAnsi(p.view(&WizardState{}, 100, 30))
+	if !strings.Contains(view, "ssh://git@<node-ip>:30022/<repo>.git") {
+		t.Fatalf("git page must fall back to a <node-ip> placeholder:\n%s", view)
+	}
+}
+
+func TestTLSPageInitDoesNotDuplicateNodeIP(t *testing.T) {
+	p := newTLSPage()
+	state := &WizardState{}
+	state.ClusterInfo.nodeIP = "10.42.0.48"
+	// Revisiting the page (esc back, review jump) re-runs init every time.
+	p.init(state)
+	p.init(state)
+	p.init(state)
+	if len(state.Config.TLSExtraIPs) != 1 {
+		t.Fatalf("node IP must be added once, got %v", state.Config.TLSExtraIPs)
+	}
+	if n := strings.Count(BuildCommandLine(state), "--tls-extra-ip=10.42.0.48"); n != 1 {
+		t.Fatalf("dry-mode command must carry the node IP once, got %d", n)
+	}
+}
+
+func TestWelcomeModeKeysSwitchToSequentialFlow(t *testing.T) {
+	for key, want := range map[rune]string{'a': "accessible", 'p': "plain"} {
+		p := newWelcomePage()
+		_, cmd := p.update(keyPress(key, string(key)), &WizardState{})
+		if cmd == nil {
+			t.Fatalf("%q on the welcome page must produce a command", key)
+		}
+		msg, ok := cmd().(switchModeMsg)
+		if !ok || msg.mode != want {
+			t.Fatalf("%q must request the %s flow, got %#v", key, want, msg)
+		}
+		w := newWizard(Options{})
+		_, quit := w.Update(msg)
+		if w.switchMode != want || !w.quitting || quit == nil {
+			t.Fatalf("wizard must record %q and quit: mode=%q quitting=%v cmd=%v", want, w.switchMode, w.quitting, quit != nil)
+		}
+	}
+}
+
+func TestReviewRowsAlignStatusColumn(t *testing.T) {
+	w := newWizard(Options{})
+	state := &w.state
+	state.ClusterInfo = clusterInfoMsg{context: "k3s-playground", version: "v1.33.4+k3s1", isLocal: true}
+	state.UplinkIdentity = "dev@playground"
+	state.ForgeOrg = "oberthci"
+	state.StoreMode = "connect"
+	state.StoreAddress = "https://openbao.example.internal:8200"
+	state.pageValid[1] = true // a GO row among the HOLDs
+	state.pageValid[3] = true
+
+	view := stripAnsi(newReviewPage().view(state, 100, 40))
+	widths := map[int]bool{}
+	rows := 0
+	for _, line := range strings.Split(view, "\n") {
+		trimmed := strings.TrimRight(line, " ")
+		if strings.HasSuffix(trimmed, "GO") || strings.HasSuffix(trimmed, "HOLD") {
+			widths[lipgloss.Width(trimmed)] = true
+			rows++
+		}
+	}
+	if rows != 8 {
+		t.Fatalf("expected 8 review rows, found %d:\n%s", rows, view)
+	}
+	if len(widths) != 1 {
+		t.Fatalf("GO/HOLD must land in one column, saw widths %v:\n%s", widths, view)
+	}
+	for _, banned := range []string{"30022 / 30443", "sans", "deploy-key"} {
+		if strings.Contains(view, banned) {
+			t.Errorf("review page still shows %q:\n%s", banned, view)
+		}
+	}
+}
+
+// Every config page is the first thing a new user reads. None of them may
+// tell the user a feature is "not implemented", and none may advertise a
+// key it does not handle.
+func TestNoWizardPageSaysNotImplemented(t *testing.T) {
+	w := newWizard(Options{})
+	state := &w.state
+	state.ClusterInfo = clusterInfoMsg{context: "k3s-playground", version: "v1.33.4+k3s1", nodeIP: "10.42.0.48", nodeName: "playground"}
+	state.UplinkIdentity = "dev@playground"
+	state.ForgeOrg = "oberthci"
+
+	for i, p := range w.pages {
+		if _, isApply := p.(*applyPage); isApply {
+			continue // init would start a real install
+		}
+		_ = p.init(state)
+		view := strings.ToLower(stripAnsi(p.view(state, 100, 40)))
+		if strings.Contains(view, "not implemented") || strings.Contains(view, "not yet implemented") {
+			t.Errorf("page %d (%s) says 'not implemented':\n%s", i, p.title(), view)
+		}
+		keys := stripAnsi(p.keys())
+		for _, dead := range []string{"filter", "edit sans", "discovery"} {
+			if strings.Contains(keys, dead) {
+				t.Errorf("page %d (%s) advertises %q, which it does not handle: %s", i, p.title(), dead, keys)
+			}
+		}
 	}
 }

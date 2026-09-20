@@ -20,16 +20,18 @@ type storeConnectPage struct {
 }
 
 type storeField struct {
-	label string
-	value string
+	label       string
+	value       string
+	placeholder string
+	description string
 }
 
 func newStoreConnectPage() *storeConnectPage {
 	return &storeConnectPage{
 		fields: [3]storeField{
-			{label: "address"},
-			{label: "ca certificate"},
-			{label: "allowed paths"},
+			{label: "address", placeholder: "https://…", description: "where your OpenBao or Vault answers — https only"},
+			{label: "ca certificate", placeholder: "optional", description: "path to the CA bundle — only needed for a private CA"},
+			{label: "allowed paths", description: "the secret paths releases may read"},
 		},
 		allowedPaths: []string{"oberth/data/release/*", "oberth/upstream/*"},
 	}
@@ -38,7 +40,7 @@ func newStoreConnectPage() *storeConnectPage {
 func (p *storeConnectPage) title() string    { return "propellant" }
 func (p *storeConnectPage) question() string { return "Connect the store." }
 func (p *storeConnectPage) keys() string {
-	return sKey.Render("tab") + " fields · " + sKey.Render("enter") + " continue · " + sKey.Render("esc") + " back"
+	return sKey.Render("↑/↓") + " fields · " + sKey.Render("enter") + " continue · " + sKey.Render("esc") + " back"
 }
 
 func (p *storeConnectPage) init(state *WizardState) tea.Cmd {
@@ -70,10 +72,10 @@ func (p *storeConnectPage) update(msg tea.Msg, state *WizardState) (page, tea.Cm
 
 	case tea.KeyPressMsg:
 		switch msg.String() {
-		case "tab":
+		case "tab", "down":
 			p.focus = (p.focus + 1) % 4 // address(0), CA cert(1), paths(2), actions(3)
 			p.errMsg = ""
-		case "shift+tab":
+		case "shift+tab", "up":
 			p.focus = (p.focus + 3) % 4
 			p.errMsg = ""
 		case "v":
@@ -178,13 +180,12 @@ func (p *storeConnectPage) view(_ *WizardState, _, _ int) string {
 			labelStyle = lipgloss.NewStyle().Foreground(cPurple)
 		}
 
-		input := lipgloss.NewStyle().
-			Background(cLine).
-			Foreground(cFg).
-			Padding(0, 1).
-			Render(f.value)
+		input := inputBox(f.value, f.placeholder, i == p.focus)
 
-		_, _ = fmt.Fprintf(&b, "  %s%-16s %s\n", cursor, labelStyle.Render(f.label), input)
+		_, _ = fmt.Fprintf(&b, "  %s%s %s\n", cursor, labelStyle.Render(fmt.Sprintf("%-16s", f.label)), input)
+		if i == p.focus && f.description != "" {
+			b.WriteString("    " + sMuted.Render("· "+f.description) + "\n")
+		}
 		b.WriteString("\n")
 	}
 
@@ -195,19 +196,24 @@ func (p *storeConnectPage) view(_ *WizardState, _, _ int) string {
 		pathCursor = lipgloss.NewStyle().Foreground(cPurple).Render("❯ ")
 		pathLabelStyle = lipgloss.NewStyle().Foreground(cPurple)
 	}
-	_, _ = fmt.Fprintf(&b, "  %s%-16s ", pathCursor, pathLabelStyle.Render("allowed paths"))
+	_, _ = fmt.Fprintf(&b, "  %s%s ", pathCursor, pathLabelStyle.Render(fmt.Sprintf("%-16s", "allowed paths")))
 	for i, path := range p.allowedPaths {
 		if i > 0 {
 			b.WriteString("  ")
 		}
-		b.WriteString(lipgloss.NewStyle().Background(cLine).Foreground(cFg).Padding(0, 1).Render(path))
+		// The last path is the one typing lands in when this row is focused.
+		b.WriteString(inputBox(path, "", p.focus == 2 && i == len(p.allowedPaths)-1))
+	}
+	b.WriteString("\n")
+	if p.focus == 2 {
+		b.WriteString("    " + sMuted.Render("· "+p.fields[2].description) + "\n")
 	}
 	b.WriteString("\n")
 
 	// Auth note.
-	b.WriteString("  " + sMuted.Render("auth is kubernetes (role oberth-secretstore) — oberth ") +
-		sText.Render("never") + sMuted.Render(" asks for a store") + "\n")
-	b.WriteString("  " + sMuted.Render("admin token; store-side policy is setup-secretstore.sh in your own session") + "\n\n")
+	b.WriteString("  " + sMuted.Render("oberth signs in with its own kubernetes identity (role oberth-secretstore)") + "\n")
+	b.WriteString("  " + sMuted.Render("and ") + sText.Render("never") +
+		sMuted.Render(" asks for an admin token — grant the role with setup-secretstore.sh") + "\n\n")
 
 	// Actions row (focus index 3): v verify, n add path.
 	actionStyle := sMuted

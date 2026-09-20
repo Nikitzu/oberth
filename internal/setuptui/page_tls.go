@@ -1,6 +1,7 @@
 package setuptui
 
 import (
+	"slices"
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
@@ -23,7 +24,7 @@ func newTLSPage() *tlsPage {
 func (p *tlsPage) title() string    { return "heat shield" }
 func (p *tlsPage) question() string { return "How should oberth serve TLS?" }
 func (p *tlsPage) keys() string {
-	return sKey.Render("↑/↓") + " choose · " + sKey.Render("n") + " edit sans · " + sKey.Render("enter") + " continue · " + sKey.Render("esc") + " back"
+	return sKey.Render("↑/↓") + " choose · " + sKey.Render("←/→") + " proxy · " + sKey.Render("enter") + " continue · " + sKey.Render("esc") + " back"
 }
 
 func (p *tlsPage) init(state *WizardState) tea.Cmd {
@@ -51,8 +52,11 @@ func (p *tlsPage) init(state *WizardState) tea.Cmd {
 	if state.ClusterInfo.nodeName != "" {
 		p.sans = append(p.sans, state.ClusterInfo.nodeName)
 	}
-	if state.ClusterInfo.nodeIP != "" {
-		state.Config.TLSExtraIPs = append(state.Config.TLSExtraIPs, state.ClusterInfo.nodeIP)
+	// The node IP is a SAN too. init runs again on every revisit (esc back,
+	// review jump), so only add it once — a duplicate would show up as an
+	// extra --tls-extra-ip in the dry-mode command and in the review count.
+	if ip := state.ClusterInfo.nodeIP; ip != "" && !slices.Contains(state.Config.TLSExtraIPs, ip) {
+		state.Config.TLSExtraIPs = append(state.Config.TLSExtraIPs, ip)
 	}
 	if state.ProxyEnabled {
 		p.sans = append(p.sans, "watch.oberth.ci")
@@ -99,20 +103,23 @@ func (p *tlsPage) update(msg tea.Msg, state *WizardState) (page, tea.Cmd) {
 	return p, nil
 }
 
-func (p *tlsPage) view(_ *WizardState, _, _ int) string {
+func (p *tlsPage) view(state *WizardState, _, _ int) string {
 	var b strings.Builder
 
 	b.WriteString("  " + sQuestion.Render(p.question()) + "\n\n")
+
+	// Every name and address the certificate will be valid for.
+	validFor := append(slices.Clone(p.sans), state.Config.TLSExtraIPs...)
 
 	// TLS mode selection.
 	options := []struct {
 		label string
 		desc  string
 	}{
-		{"generate self-signed (ed25519)",
-			"sans: " + strings.Join(p.sans, " · ")},
-		{"bring certificate + key",
-			"pem paths — contents never displayed"},
+		{"generate a self-signed certificate (ed25519)",
+			"valid for: " + strings.Join(validFor, " · ")},
+		{"bring your own certificate + key",
+			"you point at the files — their contents are never shown"},
 	}
 
 	for i, opt := range options {
@@ -143,12 +150,12 @@ func (p *tlsPage) view(_ *WizardState, _, _ int) string {
 	} else {
 		proxyNo = lipgloss.NewStyle().Foreground(cPurple).Render("(•)")
 	}
-	b.WriteString("  " + sMuted.Render("serve via watch.oberth.ci proxy") + "    " +
-		proxyYes + " " + sText.Render("yes — publicly trusted tls") + "   " +
+	b.WriteString("  " + sMuted.Render("Also serve through the watch.oberth.ci proxy?") + "\n")
+	b.WriteString("    " + proxyYes + " " + sText.Render("yes") + sMuted.Render(" — publicly trusted certificate") + "      " +
 		proxyNo + " " + sText.Render("no") + "\n\n")
 
 	// Fingerprint note.
-	b.WriteString("  " + sMuted.Render("the fingerprint appears on the final screen — verify it out of band") + "\n")
+	b.WriteString("  " + sMuted.Render("the fingerprint appears on the final screen — verify it before you trust it") + "\n")
 
 	if p.errMsg != "" {
 		b.WriteString("\n  " + sFail.Render(p.errMsg) + "\n")

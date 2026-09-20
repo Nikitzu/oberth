@@ -32,7 +32,7 @@ func newUplinkPage() *uplinkPage {
 func (p *uplinkPage) title() string    { return "crew manifest" }
 func (p *uplinkPage) question() string { return "Who are you?" }
 func (p *uplinkPage) keys() string {
-	return sKey.Render("↑/↓") + " choose key · " + sKey.Render("tab") + " fields · " + sKey.Render("enter") + " continue · " + sKey.Render("esc") + " back"
+	return sKey.Render("↑/↓") + " move · " + sKey.Render("enter") + " continue · " + sKey.Render("esc") + " back"
 }
 
 func (p *uplinkPage) init(state *WizardState) tea.Cmd {
@@ -80,20 +80,30 @@ func (p *uplinkPage) update(msg tea.Msg, state *WizardState) (page, tea.Cmd) {
 			p.focusField = (p.focusField + 1) % 2
 		case "up", "k":
 			// Guard: 'k' is text input when the identity field is focused.
-			if p.focusField == 0 && msg.String() == "k" {
-				p.identity += "k"
-				return p, nil
+			if p.focusField == 0 {
+				if msg.String() == "k" {
+					p.identity += "k"
+				}
+				return p, nil // identity is the top of the page — nowhere further up
 			}
-			if p.focusField == 1 && p.keyCursor > 0 {
+			// In the key list: walk up, and leave the list from its first
+			// entry back into the identity field.
+			if p.keyCursor > 0 {
 				p.keyCursor--
+			} else {
+				p.focusField = 0
 			}
 		case "down", "j":
 			// Guard: 'j' is text input when the identity field is focused.
-			if p.focusField == 0 && msg.String() == "j" {
-				p.identity += "j"
+			if p.focusField == 0 {
+				if msg.String() == "j" {
+					p.identity += "j"
+					return p, nil
+				}
+				p.focusField = 1 // down from identity enters the key list
 				return p, nil
 			}
-			if p.focusField == 1 && p.keyCursor < len(p.sshKeys)-1 {
+			if p.keyCursor < len(p.sshKeys)-1 {
 				p.keyCursor++
 			}
 		case "enter":
@@ -136,13 +146,9 @@ func (p *uplinkPage) view(_ *WizardState, _, _ int) string {
 		idCursor = lipgloss.NewStyle().Foreground(cPurple).Render("❯ ")
 		idLabelStyle = lipgloss.NewStyle().Foreground(cPurple)
 	}
-	idInput := lipgloss.NewStyle().
-		Background(cLine).
-		Foreground(cFg).
-		Padding(0, 1).
-		Render(p.identity)
-	_, _ = fmt.Fprintf(&b, "  %s%-12s %s", idCursor, idLabelStyle.Render("identity"), idInput)
-	b.WriteString("                      " + sMuted.Render("<identity>@<host>") + "\n\n")
+	idInput := inputBox(p.identity, "name@machine", p.focusField == 0)
+	_, _ = fmt.Fprintf(&b, "  %s%s %s\n", idCursor, idLabelStyle.Render(fmt.Sprintf("%-12s", "identity")), idInput)
+	b.WriteString("    " + sMuted.Render("· name@machine — every push you make is recorded under this identity") + "\n\n")
 
 	// SSH public key list.
 	b.WriteString("  " + sMuted.Render("ssh public key") + "   " +
@@ -151,22 +157,32 @@ func (p *uplinkPage) view(_ *WizardState, _, _ int) string {
 	if len(p.sshKeys) == 0 {
 		b.WriteString("  " + sFail.Render("  no public keys found in ~/.ssh") + "\n")
 	} else {
+		// Size the name column to the longest key file so every row's
+		// algorithm and fingerprint start in the same column.
+		nameWidth := 0
+		for _, k := range p.sshKeys {
+			nameWidth = max(nameWidth, lipgloss.Width(filepath.Base(k.path)))
+		}
+		nameWidth = min(nameWidth, 32)
+
 		var listContent strings.Builder
 		for i, k := range p.sshKeys {
 			cursor := "  "
 			if i == p.keyCursor {
 				cursor = lipgloss.NewStyle().Foreground(cPurple).Render("❯ ")
 			}
-			name := filepath.Base(k.path)
-			algo := sInfo.Render(k.algorithm)
+			name := padTo(truncateRunes(filepath.Base(k.path), nameWidth), nameWidth)
+			algo := sInfo.Render(fmt.Sprintf("%-8s", k.algorithm))
 			fp := sText.Render(k.fingerprint)
-			// Consistent 2-space indent on every line (M2: match page_cluster.go
-			// per-line prefix pattern).
-			_, _ = fmt.Fprintf(&listContent, "  %s%-20s %s    %s\n", cursor, name, algo, fp)
+			_, _ = fmt.Fprintf(&listContent, "  %s%s %s  %s\n", cursor, name, algo, fp)
 		}
 
+		// Indent every line of the box, not just the first — a bordered
+		// block is several lines, and the border must stay one column.
 		box := sListBox.Render(listContent.String())
-		b.WriteString("  " + box + "\n")
+		for _, line := range strings.Split(box, "\n") {
+			b.WriteString("  " + line + "\n")
+		}
 	}
 
 	// Command preview.

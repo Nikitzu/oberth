@@ -50,7 +50,7 @@ func (p *modePage) update(msg tea.Msg, state *WizardState) (page, tea.Cmd) {
 			// one — `oberth install --production` is not implemented and the
 			// wizard must not build a config the installer cannot honor.
 			if p.cursor == 1 {
-				p.errMsg = "production profile is not implemented yet — choose dev / evaluation"
+				p.errMsg = "production is coming soon — choose dev / evaluation for now"
 				return p, nil
 			}
 			state.Config.Dev = true
@@ -79,7 +79,7 @@ func (p *modePage) view(state *WizardState, _, _ int) string {
 		},
 		{
 			label:       "production",
-			description: "hardened profile — not implemented yet",
+			description: "multi-replica, persistent storage, strict isolation — coming soon",
 			disabled:    true,
 		},
 	}
