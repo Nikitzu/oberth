@@ -106,7 +106,7 @@ func (p *applyPage) keys() string {
 		return sKey.Render("r") + " reveal · " + sKey.Render("c") + " copy · " + sKey.Render("enter") + " acknowledge"
 	}
 	if p.holdState {
-		return sKey.Render("r") + " retry · " + sKey.Render("1..8") + " revisit page · " + sKey.Render("l") + " full log · " + sKey.Render("ctrl+c") + " abort"
+		return sKey.Render("r") + " retry · " + sKey.Render(fmt.Sprintf("1..%d", len(reviewSectionPages))) + " revisit page · " + sKey.Render("l") + " full log · " + sKey.Render("ctrl+c") + " abort"
 	}
 	return sKey.Render("l") + " full log · " + sKey.Render("ctrl+c") + " abort"
 }
@@ -545,10 +545,10 @@ func (p *applyPage) update(msg tea.Msg, state *WizardState) (page, tea.Cmd) {
 				return p, func() tea.Msg { return pageBackMsg{} }
 			}
 		// Number keys in HOLD state to jump back to a page — the SAME
-		// section numbering the review page teaches (1..8 → cluster, mode,
+		// section numbering the review page teaches (1..7 → cluster,
 		// namespaces, network, store, tls, uplink, forge), not raw page
 		// indices: the two must never drift apart again.
-		case "1", "2", "3", "4", "5", "6", "7", "8":
+		case "1", "2", "3", "4", "5", "6", "7":
 			if p.holdState {
 				section := int(msg.String()[0] - '0')
 				if target, ok := reviewSectionPages[section]; ok {

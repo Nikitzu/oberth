@@ -19,6 +19,9 @@ import (
 func runPlain(ctx context.Context, opts Options, output io.Writer) error {
 	w := func(format string, a ...any) { _, _ = fmt.Fprintf(output, format, a...) }
 	wln := func(a ...any) { _, _ = fmt.Fprintln(output, a...) }
+	// step prints the same "step n/N — stage" header the TUI's top bar
+	// shows, with N derived from the page table so the two never drift.
+	step := func(n int, stage string) { w("  step %d/%d — %s\n", n, totalPages, stage) }
 
 	input := bufio.NewReader(os.Stdin)
 	state := &WizardState{
@@ -75,14 +78,14 @@ func runPlain(ctx context.Context, opts Options, output io.Writer) error {
 	wln("  OBERTH SETUP")
 	wln("  Machine-speed code. Human-grade control.")
 	wln("")
-	wln("  step 1/13 — mission briefing")
+	step(1, "mission briefing")
 	wln("")
 
 	// Page 2: Cluster. The installer targets the CURRENT kubeconfig
 	// context — there is no --context flag — so naming a different context
 	// here must stop the wizard rather than silently install into whatever
 	// context happens to be current (wrong-cluster hazard).
-	wln("  step 2/13 — launch site")
+	step(2, "launch site")
 	currentContext := ""
 	if raw, err := clientcmd.NewDefaultClientConfigLoadingRules().Load(); err == nil {
 		currentContext = raw.CurrentContext
@@ -99,25 +102,10 @@ func runPlain(ctx context.Context, opts Options, output io.Writer) error {
 	}
 	state.SelectedContext = ctxAnswer
 
-	// Page 3: Mode.
-	wln("  step 3/13 — flight plan")
-	if _, err := ask("Mode", "dev", func(v string) error {
-		if v == "production" {
-			return fmt.Errorf("production is coming soon — choose dev for now")
-		}
-		if v != "dev" {
-			return fmt.Errorf("mode must be dev")
-		}
-		return nil
-	}); err != nil {
-		return err
-	}
-	state.Config.Dev = true
-	state.Config.Production = false
-
-	// Page 4: Namespaces — DNS-1123 validated and pairwise distinct, the
-	// same rules the TUI page enforces.
-	wln("  step 4/13 — flight plan")
+	// Page 3: Namespaces — DNS-1123 validated and pairwise distinct, the
+	// same rules the TUI page enforces. (There is no mode page: the wizard
+	// installs the dev / evaluation profile, the only one that exists.)
+	step(3, "flight plan")
 	ns, err := ask("Oberth namespace", "oberth", validNamespace)
 	if err != nil {
 		return err
@@ -150,8 +138,8 @@ func runPlain(ctx context.Context, opts Options, output io.Writer) error {
 	}
 	state.Config.OpenBaoNamespace = baoNS
 
-	// Page 5: Execution.
-	wln("  step 5/13 — flight plan")
+	// Page 4: Execution.
+	step(4, "flight plan")
 	np, err := ask("Network policy (auto/strict/off)", "auto", func(v string) error {
 		if _, ok := canonicalNetworkPolicy(v); !ok {
 			return fmt.Errorf("network policy must be auto, strict, or off")
@@ -175,8 +163,8 @@ func runPlain(ctx context.Context, opts Options, output io.Writer) error {
 	}
 	state.Config.InstallRekor = anchor == "on"
 
-	// Page 6: Secret store.
-	wln("  step 6/13 — propellant")
+	// Page 5: Secret store.
+	step(5, "propellant")
 	wln("  [1] Install OpenBao — dev")
 	wln("  [2] Install OpenBao — production")
 	wln("  [3] Connect existing")
@@ -195,8 +183,8 @@ func runPlain(ctx context.Context, opts Options, output io.Writer) error {
 		state.StoreMode = "install-dev"
 	case "3":
 		state.StoreMode = "connect"
-		// Page 7: Store connect — same S7 validator as the TUI field.
-		wln("  step 7/13 — propellant")
+		// Page 6: Store connect — same S7 validator as the TUI field.
+		step(6, "propellant")
 		addr, err := ask("Vault address (https://…)", "", func(v string) error {
 			return validateStoreAddress(v)
 		})
@@ -210,8 +198,8 @@ func runPlain(ctx context.Context, opts Options, output io.Writer) error {
 		state.StoreMode = "install-prod"
 	}
 
-	// Page 8: TLS.
-	wln("  step 8/13 — heat shield")
+	// Page 7: TLS.
+	step(7, "heat shield")
 	tlsMode, err := ask("TLS mode (self-signed/byo)", "self-signed", func(v string) error {
 		if v != "self-signed" && v != "byo" {
 			return fmt.Errorf("answer self-signed or byo")
@@ -223,8 +211,8 @@ func runPlain(ctx context.Context, opts Options, output io.Writer) error {
 	}
 	state.TLSMode = tlsMode
 
-	// Page 9: Uplink.
-	wln("  step 9/13 — crew manifest")
+	// Page 8: Uplink.
+	step(8, "crew manifest")
 	user := os.Getenv("USER")
 	if user == "" {
 		user = "admin"
@@ -239,16 +227,16 @@ func runPlain(ctx context.Context, opts Options, output io.Writer) error {
 	}
 	state.UplinkIdentity = identity
 
-	// Page 10: Git (informational).
-	wln("  step 10/13 — comms check")
+	// Page 9: Git (informational).
+	step(9, "comms check")
 	wln("  Push to Oberth over SSH — every push is linked to your identity.")
 	wln("  clone: ssh://git@localhost:30022/<repo>.git   (from this machine)")
 	wln("         ssh://git@<node-ip>:30022/<repo>.git   (from your network)")
 	wln("  push → CI runs → green publishes upstream · red opens an issue")
 	wln("  Tags are immutable — only green branches reach the upstream forge.")
 
-	// Page 11: Forge.
-	wln("  step 11/13 — ground station")
+	// Page 10: Forge.
+	step(10, "ground station")
 	forge, err := ask("Forge (codeberg/github/forgejo/gitlab)", "codeberg", func(v string) error {
 		switch v {
 		case "codeberg", "github", "forgejo", "gitlab":
@@ -271,12 +259,11 @@ func runPlain(ctx context.Context, opts Options, output io.Writer) error {
 	}
 	state.ForgeOrg = org
 
-	// Page 12: Review.
-	wln("  step 12/13 — go/no-go")
+	// Page 11: Review.
+	step(11, "go/no-go")
 	wln("  Review the plan:")
 	wln("")
 	w("  cluster:    %s\n", state.SelectedContext)
-	w("  mode:       %s\n", formatModeSummary(state))
 	w("  namespaces: %s\n", formatNamespacesSummary(state))
 	w("  store:      %s\n", formatStoreSummary(state))
 	w("  tls:        %s\n", state.TLSMode)
@@ -304,8 +291,8 @@ func runPlain(ctx context.Context, opts Options, output io.Writer) error {
 		return installer.ErrInterrupted
 	}
 
-	// Page 13: Apply.
-	wln("  step 13/13 — ignition")
+	// Page 12: Apply.
+	step(12, "ignition")
 	wln("  Applying...")
 
 	state.Config.BinaryVersion = opts.BinaryVersion

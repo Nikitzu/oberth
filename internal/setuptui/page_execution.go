@@ -138,7 +138,7 @@ func (p *executionPage) view(_ *WizardState, _, _ int) string {
 		_, _ = fmt.Fprintf(&b, "  %s%s %s\n", cursor, labelStyle.Render(fmt.Sprintf("%-20s", f.label)), input)
 
 		if i == p.focus && f.description != "" {
-			b.WriteString("    " + sMuted.Render("· "+f.description) + "\n")
+			b.WriteString("    " + sMuted.Render(f.description) + "\n")
 		}
 		b.WriteString("\n")
 	}

@@ -20,7 +20,7 @@ func newReviewPage() *reviewPage {
 func (p *reviewPage) title() string    { return "go/no-go" }
 func (p *reviewPage) question() string { return "Review the plan." }
 func (p *reviewPage) keys() string {
-	return sKey.Render("1..8") + " revisit · " + sKey.Render("d") + " preview command · " + sKey.Render("enter") + " apply · " + sKey.Render("esc") + " back"
+	return sKey.Render(fmt.Sprintf("1..%d", len(reviewSectionPages))) + " revisit · " + sKey.Render("d") + " preview command · " + sKey.Render("enter") + " apply · " + sKey.Render("esc") + " back"
 }
 
 func (p *reviewPage) init(_ *WizardState) tea.Cmd {
@@ -45,9 +45,9 @@ func (p *reviewPage) update(msg tea.Msg, state *WizardState) (page, tea.Cmd) {
 				p.dryRunText = BuildCommandLine(state)
 			}
 			return p, nil
-		// Jump keys 1-8 → corresponding pages, via the shared section map
+		// Jump keys 1..7 → corresponding pages, via the shared section map
 		// (the apply page's HOLD state uses the same table).
-		case "1", "2", "3", "4", "5", "6", "7", "8":
+		case "1", "2", "3", "4", "5", "6", "7":
 			section := int(msg.String()[0] - '0')
 			if target, ok := reviewSectionPages[section]; ok {
 				return p, func() tea.Msg { return pageJumpMsg{page: target} }
@@ -76,15 +76,16 @@ type reviewRow struct {
 }
 
 func (p *reviewPage) buildRows(state *WizardState) []reviewRow {
+	// Section numbers are the keys of reviewSectionPages; validity comes
+	// from the page each section revisits.
 	rows := []reviewRow{
-		{1, "cluster", formatClusterSummary(state), goStatus(state.pageValid[1]), ""},
-		{2, "mode", formatModeSummary(state), goStatus(state.pageValid[2]), ""},
-		{3, "namespaces", formatNamespacesSummary(state), goStatus(state.pageValid[3]), ""},
-		{4, "network", formatNetworkSummary(state), goStatus(state.pageValid[4]), ""},
-		{5, "store", formatStoreSummary(state), goStatus(state.pageValid[5] || state.pageValid[6]), ""},
-		{6, "tls", formatTLSSummary(state), goStatus(state.pageValid[7]), ""},
-		{7, "uplink", formatUplinkSummary(state), goStatus(state.pageValid[8]), ""},
-		{8, "forge", formatForgeSummary(state), goStatus(state.pageValid[10]), ""},
+		{1, "cluster", formatClusterSummary(state), goStatus(state.pageValid[pageCluster]), ""},
+		{2, "namespaces", formatNamespacesSummary(state), goStatus(state.pageValid[pageNamespaces]), ""},
+		{3, "network", formatNetworkSummary(state), goStatus(state.pageValid[pageExecution]), ""},
+		{4, "store", formatStoreSummary(state), goStatus(state.pageValid[pageStore] || state.pageValid[pageStoreConnect]), ""},
+		{5, "tls", formatTLSSummary(state), goStatus(state.pageValid[pageTLS]), ""},
+		{6, "uplink", formatUplinkSummary(state), goStatus(state.pageValid[pageUplink]), ""},
+		{7, "forge", formatForgeSummary(state), goStatus(state.pageValid[pageForge]), ""},
 	}
 	return rows
 }
@@ -177,13 +178,6 @@ func formatClusterSummary(state *WizardState) string {
 	return strings.Join(parts, " · ")
 }
 
-func formatModeSummary(state *WizardState) string {
-	if state.Config.Dev {
-		return "dev / evaluation"
-	}
-	return "production"
-}
-
 func formatNamespacesSummary(state *WizardState) string {
 	ns := state.Config.Namespace
 	if ns == "" {
@@ -239,16 +233,12 @@ func formatTLSSummary(state *WizardState) string {
 	if mode == "" {
 		mode = "self-signed"
 	}
-	proxy := "off"
-	if state.ProxyEnabled {
-		proxy = "on"
-	}
 	names := len(state.Config.TLSExtraDNSNames) + len(state.Config.TLSExtraIPs)
 	plural := "names"
 	if names == 1 {
 		plural = "name"
 	}
-	return mode + fmt.Sprintf(" · valid for %d %s · proxy %s", names, plural, proxy)
+	return mode + fmt.Sprintf(" · valid for %d %s", names, plural)
 }
 
 func formatUplinkSummary(state *WizardState) string {

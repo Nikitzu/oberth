@@ -82,7 +82,6 @@ func (p *donePage) saveReport(state *WizardState) bool {
 		fmt.Fprintf(&b, "Store: %s\n", state.StoreAddress)
 	}
 	fmt.Fprintf(&b, "TLS: %s\n", state.TLSMode)
-	fmt.Fprintf(&b, "Mode: %s\n", formatModeSummary(state))
 	b.WriteString("\nFingerprints\n")
 	b.WriteString(strings.Repeat("-", 40) + "\n")
 	if p.fingerprint != "" {

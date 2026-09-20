@@ -292,23 +292,61 @@ func TestApplyPageTokenRegistrationAndWipe(t *testing.T) {
 	}
 }
 
-// --- unimplemented production profile must not be selectable ---
+// --- there is no mode page: the wizard installs the dev profile, and the
+// --- page table is the single source of truth for page positions ---
 
-func TestModePageBlocksProduction(t *testing.T) {
-	p := newModePage()
-	state := &WizardState{}
-	state.Config.Dev = true
+func TestPageOrderMatchesIndexConstants(t *testing.T) {
+	w := newWizard(Options{})
+	if len(w.pages) != pageDone+1 {
+		t.Fatalf("expected %d pages, got %d", pageDone+1, len(w.pages))
+	}
+	checks := []struct {
+		idx  int
+		want string
+	}{
+		{pageWelcome, "*setuptui.welcomePage"},
+		{pageCluster, "*setuptui.clusterPage"},
+		{pageNamespaces, "*setuptui.namespacesPage"},
+		{pageExecution, "*setuptui.executionPage"},
+		{pageStore, "*setuptui.storePage"},
+		{pageStoreConnect, "*setuptui.storeConnectPage"},
+		{pageTLS, "*setuptui.tlsPage"},
+		{pageUplink, "*setuptui.uplinkPage"},
+		{pageGit, "*setuptui.gitPage"},
+		{pageForge, "*setuptui.forgePage"},
+		{pageReview, "*setuptui.reviewPage"},
+		{pageApply, "*setuptui.applyPage"},
+		{pageDone, "*setuptui.donePage"},
+	}
+	for _, c := range checks {
+		if got := fmt.Sprintf("%T", w.pages[c.idx]); got != c.want {
+			t.Errorf("pages[%d] is %s, want %s", c.idx, got, c.want)
+		}
+	}
+	if totalPages != pageApply+1 {
+		t.Fatalf("totalPages = %d, want %d (welcome through apply)", totalPages, pageApply+1)
+	}
+}
 
-	_, _ = p.update(keyPress('j', "j"), state) // cursor → production
-	_, cmd := p.update(enterKey(), state)
-	if cmd != nil {
-		t.Fatal("selecting the unimplemented production profile must not advance")
+func TestWizardInstallsDevProfileWithoutAskingForAMode(t *testing.T) {
+	w := newWizard(Options{})
+	for i, p := range w.pages {
+		if p.question() == "Which mode?" {
+			t.Fatalf("page %d still asks for a mode", i)
+		}
 	}
-	if p.errMsg == "" {
-		t.Fatal("expected an inline error for production")
+	if !w.state.Config.Dev {
+		t.Fatal("the wizard must install the dev / evaluation profile")
 	}
-	if state.Config.Production {
-		t.Fatal("Config.Production must stay false")
+	cmd := BuildCommandLine(&w.state)
+	if !strings.Contains(cmd, "--dev") || strings.Contains(cmd, "--production") {
+		t.Fatalf("dry-mode command must carry --dev and never --production: %s", cmd)
+	}
+	// Every review section revisits a real config page.
+	for section, page := range reviewSectionPages {
+		if page < pageCluster+1 || page > pageForge+1 {
+			t.Errorf("section %d maps to page %d, outside the config pages", section, page)
+		}
 	}
 }
 
@@ -316,12 +354,12 @@ func TestModePageBlocksProduction(t *testing.T) {
 
 func TestWizardDryModeStopsBeforeApply(t *testing.T) {
 	w := newWizard(Options{DryMode: true})
-	w.page = totalPages - 2 // review page
+	w.page = pageReview
 	_, cmd := w.advance()
 	if !w.dryDone || !w.quitting {
 		t.Fatal("dry-mode advance from review must complete the wizard without applying")
 	}
-	if w.page != totalPages-2 {
+	if w.page != pageReview {
 		t.Fatal("dry-mode must never enter the apply page")
 	}
 	if cmd == nil {
@@ -350,7 +388,7 @@ func TestWizardCtrlCConfirmedAbort(t *testing.T) {
 	}
 
 	// Arm again, seed a token, confirm: aborted and wiped.
-	ap, ok := w.pages[totalPages-1].(*applyPage)
+	ap, ok := w.pages[pageApply].(*applyPage)
 	if !ok {
 		t.Fatal("last page must be the apply page")
 	}
@@ -373,15 +411,14 @@ func escKey() tea.KeyPressMsg {
 
 func TestEscKeyNavigatesBack(t *testing.T) {
 	w := newWizard(Options{})
-	// Start on page 2 (cluster page, index 1).
-	w.page = 2
+	w.page = pageNamespaces
 	state := &w.state
 
-	// Esc on the mode page (index 2) must produce pageBackMsg.
-	p := w.pages[2]
+	// Esc on the namespaces page must produce pageBackMsg.
+	p := w.pages[pageNamespaces]
 	_, cmd := p.update(escKey(), state)
 	if cmd == nil {
-		t.Fatal("esc on the mode page must produce a command")
+		t.Fatal("esc on the namespaces page must produce a command")
 	}
 	msg := cmd()
 	if _, ok := msg.(pageBackMsg); !ok {
@@ -394,17 +431,8 @@ func TestEscKeyWorksOnAllConfigPages(t *testing.T) {
 	// Pages that must respond to esc with pageBackMsg (all config pages
 	// except welcome and apply/done).
 	escPages := []int{
-		1,  // cluster
-		2,  // mode
-		3,  // namespaces
-		4,  // execution
-		5,  // store
-		6,  // store-connect
-		7,  // tls
-		8,  // uplink
-		9,  // git
-		10, // forge
-		11, // review
+		pageCluster, pageNamespaces, pageExecution, pageStore, pageStoreConnect,
+		pageTLS, pageUplink, pageGit, pageForge, pageReview,
 	}
 	for _, idx := range escPages {
 		p := w.pages[idx]
@@ -422,7 +450,7 @@ func TestEscKeyWorksOnAllConfigPages(t *testing.T) {
 
 func TestEscOnWelcomeQuits(t *testing.T) {
 	w := newWizard(Options{})
-	p := w.pages[0] // welcome page
+	p := w.pages[pageWelcome]
 	_, cmd := p.update(escKey(), &w.state)
 	if cmd == nil {
 		t.Fatal("esc on welcome must produce a quit command")
@@ -1027,10 +1055,10 @@ func TestDonePageShowsCompleteWhenAllGreen(t *testing.T) {
 func TestDonePageBandReflectsGreenCount(t *testing.T) {
 	w := newWizard(Options{})
 	// Set up the done page with partial success.
-	dp := w.pages[len(w.pages)-1].(*donePage)
+	dp := w.pages[pageDone].(*donePage)
 	dp.totalSteps = 10
 	dp.greenCount = 7
-	w.page = len(w.pages) - 1
+	w.page = pageDone
 
 	// The renderContent method uses bandPercent. We cannot easily test
 	// renderContent without a window size, but we can verify the
@@ -1052,17 +1080,21 @@ func TestApplyHoldJumpUsesReviewSectionMap(t *testing.T) {
 	state := &WizardState{}
 	p.holdState = true
 
-	// Section 8 is "forge" on the review page → 1-based page 11.
-	_, cmd := p.update(keyPress('8', "8"), state)
+	// Section 7 is "forge" on the review page → the forge page.
+	_, cmd := p.update(keyPress('7', "7"), state)
 	if cmd == nil {
-		t.Fatal("'8' in HOLD must jump")
+		t.Fatal("'7' in HOLD must jump")
 	}
 	msg, ok := cmd().(pageJumpMsg)
 	if !ok {
 		t.Fatalf("expected pageJumpMsg, got %T", msg)
 	}
-	if msg.page != reviewSectionPages[8] {
-		t.Fatalf("HOLD jump 8 → page %d, want %d (review's forge section)", msg.page, reviewSectionPages[8])
+	if msg.page != reviewSectionPages[7] || msg.page != pageForge+1 {
+		t.Fatalf("HOLD jump 7 → page %d, want %d (review's forge section)", msg.page, pageForge+1)
+	}
+	// A number past the last section must not jump anywhere.
+	if _, cmd := p.update(keyPress('8', "8"), state); cmd != nil {
+		t.Fatal("'8' has no section and must be ignored")
 	}
 }
 
@@ -1275,21 +1307,48 @@ func TestUplinkArrowsMoveBetweenIdentityAndKeys(t *testing.T) {
 	}
 }
 
-func TestModePageProductionCopyIsComingSoon(t *testing.T) {
-	p := newModePage()
+func TestTLSPageHasNoProxyToggle(t *testing.T) {
+	p := newTLSPage()
+	state := &WizardState{}
+	state.ClusterInfo.nodeName = "playground"
+	p.init(state)
+	view := strings.ToLower(stripAnsi(p.view(state, 100, 30)))
+	for _, banned := range []string{"proxy", "watch.oberth.ci", "nodeport"} {
+		if strings.Contains(view, banned) {
+			t.Errorf("tls page must not mention %q:\n%s", banned, view)
+		}
+	}
+	if strings.Contains(stripAnsi(p.keys()), "proxy") {
+		t.Errorf("tls key line must not advertise a proxy toggle: %s", stripAnsi(p.keys()))
+	}
+	// left/right have nothing left to toggle.
+	before := p.tlsCursor
+	p.update(leftKey(), state)
+	p.update(rightKey(), state)
+	if p.tlsCursor != before {
+		t.Fatal("left/right must not change the certificate choice")
+	}
+	// The certificate never grows a proxy hostname.
+	_, _ = p.update(enterKey(), state)
+	for _, san := range state.Config.TLSExtraDNSNames {
+		if strings.Contains(san, "oberth.ci") {
+			t.Fatalf("no proxy hostname may be added to the certificate: %v", state.Config.TLSExtraDNSNames)
+		}
+	}
+}
+
+func TestUplinkIdentityHintIsPlainHelpText(t *testing.T) {
+	p := newUplinkPage()
 	state := &WizardState{}
 	p.init(state)
-	view := stripAnsi(p.view(state, 80, 24))
-	if !strings.Contains(view, "multi-replica, persistent storage, strict isolation — coming soon") {
-		t.Fatalf("production option must describe what is coming:\n%s", view)
+	view := stripAnsi(p.view(state, 100, 30))
+	if !strings.Contains(view, "name@machine — every push is linked to this identity") {
+		t.Fatalf("identity hint missing:\n%s", view)
 	}
-	if strings.Contains(view, "not implemented") {
-		t.Fatalf("production option must not say 'not implemented':\n%s", view)
-	}
-	p.update(downKey(), state)
-	p.update(enterKey(), state)
-	if !strings.Contains(p.errMsg, "coming soon") {
-		t.Fatalf("selecting production must explain in the coming-soon register, got %q", p.errMsg)
+	for _, line := range strings.Split(view, "\n") {
+		if strings.Contains(line, "name@machine") && strings.Contains(line, "·") {
+			t.Fatalf("identity hint must read as help text, not a bulleted list item: %q", line)
+		}
 	}
 }
 
@@ -1367,8 +1426,8 @@ func TestReviewRowsAlignStatusColumn(t *testing.T) {
 	state.ForgeOrg = "oberthci"
 	state.StoreMode = "connect"
 	state.StoreAddress = "https://openbao.example.internal:8200"
-	state.pageValid[1] = true // a GO row among the HOLDs
-	state.pageValid[3] = true
+	state.pageValid[pageCluster] = true // GO rows among the HOLDs
+	state.pageValid[pageExecution] = true
 
 	view := stripAnsi(newReviewPage().view(state, 100, 40))
 	widths := map[int]bool{}
@@ -1380,13 +1439,13 @@ func TestReviewRowsAlignStatusColumn(t *testing.T) {
 			rows++
 		}
 	}
-	if rows != 8 {
-		t.Fatalf("expected 8 review rows, found %d:\n%s", rows, view)
+	if rows != len(reviewSectionPages) {
+		t.Fatalf("expected %d review rows, found %d:\n%s", len(reviewSectionPages), rows, view)
 	}
 	if len(widths) != 1 {
 		t.Fatalf("GO/HOLD must land in one column, saw widths %v:\n%s", widths, view)
 	}
-	for _, banned := range []string{"30022 / 30443", "sans", "deploy-key"} {
+	for _, banned := range []string{"30022 / 30443", "sans", "deploy-key", "proxy", "production"} {
 		if strings.Contains(view, banned) {
 			t.Errorf("review page still shows %q:\n%s", banned, view)
 		}

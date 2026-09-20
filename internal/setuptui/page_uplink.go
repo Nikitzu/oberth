@@ -148,7 +148,7 @@ func (p *uplinkPage) view(_ *WizardState, _, _ int) string {
 	}
 	idInput := inputBox(p.identity, "name@machine", p.focusField == 0)
 	_, _ = fmt.Fprintf(&b, "  %s%s %s\n", idCursor, idLabelStyle.Render(fmt.Sprintf("%-12s", "identity")), idInput)
-	b.WriteString("    " + sMuted.Render("· name@machine — every push you make is recorded under this identity") + "\n\n")
+	b.WriteString("    " + sMuted.Render("name@machine — every push is linked to this identity") + "\n\n")
 
 	// SSH public key list.
 	b.WriteString("  " + sMuted.Render("ssh public key") + "   " +

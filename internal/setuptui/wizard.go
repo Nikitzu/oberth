@@ -15,7 +15,28 @@ import (
 	"github.com/oberthci/oberth/internal/installer"
 )
 
-const totalPages = 13
+// Page indices into wizard.pages. The step counter and the band count the
+// pages from welcome through apply (totalPages); the done page sits after
+// them and shows no counter. Every place that needs "which page" uses these
+// names, never a bare number — adding or removing a page must not silently
+// shift the skip logic, the review sections, or the validity tracking.
+const (
+	pageWelcome = iota
+	pageCluster
+	pageNamespaces
+	pageExecution
+	pageStore
+	pageStoreConnect
+	pageTLS
+	pageUplink
+	pageGit
+	pageForge
+	pageReview
+	pageApply
+	pageDone
+
+	totalPages = pageApply + 1
+)
 
 // ---------- typed messages for page transitions ----------
 
@@ -54,20 +75,19 @@ type ceremonyTokenMsg struct {
 	token []byte
 }
 
-// reviewSectionPages maps the review page's section numbers (1..8) to
+// reviewSectionPages maps the review page's section numbers (1..7) to
 // 1-based wizard pages for pageJumpMsg. The apply page's HOLD state uses
-// the SAME numbering — one table, no drift. Section 5 (store) targets the
+// the SAME numbering — one table, no drift. Section 4 (store) targets the
 // store-mode page; store-connect is reached from it when the mode is
 // "connect", matching forward navigation.
 var reviewSectionPages = map[int]int{
-	1: 2,  // cluster
-	2: 3,  // mode
-	3: 4,  // namespaces
-	4: 5,  // network / execution
-	5: 6,  // store
-	6: 8,  // tls
-	7: 9,  // uplink
-	8: 11, // forge
+	1: pageCluster + 1,
+	2: pageNamespaces + 1,
+	3: pageExecution + 1, // network
+	4: pageStore + 1,
+	5: pageTLS + 1,
+	6: pageUplink + 1,
+	7: pageForge + 1,
 }
 
 // Options holds the CLI-level options for the setup wizard.
@@ -96,7 +116,6 @@ type WizardState struct {
 	ForgeOrg        string
 	ForgeAuth       string // deploy-key, token
 	TLSMode         string // self-signed, byo
-	ProxyEnabled    bool
 	StoreMode       string // install-dev, install-prod, connect
 	StoreAddress    string
 	StoreCACert     string
@@ -214,21 +233,21 @@ func newWizard(opts Options) *wizard {
 		w.state.Config.BinaryVersion = opts.BinaryVersion
 	}
 
+	// Order is load-bearing: it must match the page* index constants.
 	w.pages = []page{
-		newWelcomePage(),      // 1
-		newClusterPage(),      // 2
-		newModePage(),         // 3
-		newNamespacesPage(),   // 4
-		newExecutionPage(),    // 5
-		newStorePage(),        // 6
-		newStoreConnectPage(), // 7
-		newTLSPage(),          // 8
-		newUplinkPage(),       // 9
-		newGitPage(),          // 10
-		newForgePage(),        // 11
-		newReviewPage(),       // 12
-		newApplyPage(),        // 13
-		&donePage{},           // done (after apply)
+		newWelcomePage(),      // pageWelcome
+		newClusterPage(),      // pageCluster
+		newNamespacesPage(),   // pageNamespaces
+		newExecutionPage(),    // pageExecution
+		newStorePage(),        // pageStore
+		newStoreConnectPage(), // pageStoreConnect
+		newTLSPage(),          // pageTLS
+		newUplinkPage(),       // pageUplink
+		newGitPage(),          // pageGit
+		newForgePage(),        // pageForge
+		newReviewPage(),       // pageReview
+		newApplyPage(),        // pageApply
+		&donePage{},           // pageDone (after apply, no step counter)
 	}
 
 	return w
@@ -238,8 +257,8 @@ func (w *wizard) Init() tea.Cmd {
 	cmds := []tea.Cmd{
 		tea.RequestWindowSize,
 	}
-	if len(w.pages) > 0 {
-		cmds = append(cmds, w.pages[0].init(&w.state))
+	if len(w.pages) > pageWelcome {
+		cmds = append(cmds, w.pages[pageWelcome].init(&w.state))
 	}
 	return tea.Batch(cmds...)
 }
@@ -325,16 +344,16 @@ func (w *wizard) advance() (*wizard, tea.Cmd) {
 		w.state.pageValid[w.page] = true
 	}
 
-	// Skip store-connect page (7, index 6) when installing OpenBao.
+	// Skip the store-connect page when installing OpenBao.
 	nextPage := w.page + 1
-	if nextPage == 6 && w.state.StoreMode != "connect" {
-		nextPage = 7 // skip to TLS page
+	if nextPage == pageStoreConnect && w.state.StoreMode != "connect" {
+		nextPage = pageTLS
 	}
 
 	// --dry-mode: the review page is the last stop. The apply page must
 	// never start; Run prints the equivalent `oberth install` command on
 	// the primary buffer after the program exits.
-	if nextPage == totalPages-1 && w.opts.DryMode {
+	if nextPage == pageApply && w.opts.DryMode {
 		w.dryDone = true
 		w.quitting = true
 		return w, tea.Quit
@@ -349,9 +368,9 @@ func (w *wizard) advance() (*wizard, tea.Cmd) {
 	// When advancing from apply to done, populate step results from the
 	// apply page so the done page shows real counts instead of fabricated
 	// "11/11 green" (P4-3).
-	if nextPage == len(w.pages)-1 { // entering the done page
-		if ap, ok := w.pages[nextPage-1].(*applyPage); ok {
-			if dp, ok := w.pages[nextPage].(*donePage); ok {
+	if nextPage == pageDone {
+		if ap, ok := w.pages[pageApply].(*applyPage); ok {
+			if dp, ok := w.pages[pageDone].(*donePage); ok {
 				dp.totalSteps = len(ap.steps)
 				dp.greenCount = 0
 				for _, s := range ap.steps {
@@ -389,9 +408,9 @@ func (w *wizard) goBack() (*wizard, tea.Cmd) {
 	}
 	prevPage := w.page - 1
 
-	// Skip store-connect page going backwards too.
-	if prevPage == 6 && w.state.StoreMode != "connect" {
-		prevPage = 5
+	// Skip the store-connect page going backwards too.
+	if prevPage == pageStoreConnect && w.state.StoreMode != "connect" {
+		prevPage = pageStore
 	}
 
 	w.page = prevPage
@@ -413,8 +432,8 @@ func (w *wizard) renderContent() string {
 	var b strings.Builder
 
 	// The welcome page has no chrome.
-	if w.page == 0 {
-		pageView := w.pages[0].view(&w.state, w.width, w.height)
+	if w.page == pageWelcome {
+		pageView := w.pages[pageWelcome].view(&w.state, w.width, w.height)
 		b.WriteString(pageView)
 
 		// Pad to fill the screen (no band on welcome).
@@ -429,13 +448,13 @@ func (w *wizard) renderContent() string {
 		return b.String()
 	}
 
-	// Top bar: ▲ oberth setup — <stage>                         step n/13
+	// Top bar: ▲ oberth setup — <stage>                         step n/12
 	topLeft := fmt.Sprintf(" %s %s",
 		lipgloss.NewStyle().Foreground(cPurple).Render(brandMark),
 		sTopBar.Render(fmt.Sprintf("oberth setup — %s", w.pages[w.page].title())),
 	)
 	var topRight string
-	if w.page+1 > totalPages {
+	if w.page > pageApply {
 		topRight = "" // done page — no step counter
 	} else {
 		topRight = sTopBar.Render(fmt.Sprintf("step %d/%d ", w.page+1, totalPages))
@@ -467,10 +486,10 @@ func (w *wizard) renderContent() string {
 	w.band.SetWidth(w.width)
 	var bandPercent float64
 	switch {
-	case w.page < totalPages-1:
-		// Config pages: band = page / 13.
+	case w.page < pageApply:
+		// Config pages: band = page / totalPages.
 		bandPercent = float64(w.page+1) / float64(totalPages)
-	case w.page == totalPages-1:
+	case w.page == pageApply:
 		// Apply page: band tracks apply step progress.
 		if ap, ok := w.pages[w.page].(*applyPage); ok {
 			bandPercent = ap.bandPercent()
@@ -525,7 +544,7 @@ func (w *wizard) overlayHelp(backdrop string) string {
 		"",
 		sKey.Render("navigate")+"   "+sMuted.Render("up/down move · left/right pick · tab next field"),
 		sKey.Render("advance")+"    "+sMuted.Render("enter continue · esc back (answers kept)"),
-		sKey.Render("review")+"     "+sMuted.Render("1..8 revisit a section · d preview the command"),
+		sKey.Render("review")+"     "+sMuted.Render(fmt.Sprintf("1..%d revisit a section · d preview the command", len(reviewSectionPages))),
 		sKey.Render("modes")+"      "+sMuted.Render("welcome screen: a accessible · p plain"),
 		sKey.Render("abort")+"      "+sMuted.Render("ctrl+c twice — the first press only asks"),
 		"",
@@ -583,9 +602,6 @@ func BuildCommandLine(state *WizardState) string {
 
 	if state.Config.Dev {
 		args = append(args, "--dev")
-	}
-	if state.Config.Production {
-		args = append(args, "--production")
 	}
 	if state.Config.Namespace != "" && state.Config.Namespace != "oberth" {
 		args = append(args, fmt.Sprintf("--namespace=%s", state.Config.Namespace))

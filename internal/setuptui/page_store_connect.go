@@ -184,7 +184,7 @@ func (p *storeConnectPage) view(_ *WizardState, _, _ int) string {
 
 		_, _ = fmt.Fprintf(&b, "  %s%s %s\n", cursor, labelStyle.Render(fmt.Sprintf("%-16s", f.label)), input)
 		if i == p.focus && f.description != "" {
-			b.WriteString("    " + sMuted.Render("· "+f.description) + "\n")
+			b.WriteString("    " + sMuted.Render(f.description) + "\n")
 		}
 		b.WriteString("\n")
 	}
@@ -206,7 +206,7 @@ func (p *storeConnectPage) view(_ *WizardState, _, _ int) string {
 	}
 	b.WriteString("\n")
 	if p.focus == 2 {
-		b.WriteString("    " + sMuted.Render("· "+p.fields[2].description) + "\n")
+		b.WriteString("    " + sMuted.Render(p.fields[2].description) + "\n")
 	}
 	b.WriteString("\n")
 

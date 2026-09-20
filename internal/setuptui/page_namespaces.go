@@ -142,7 +142,7 @@ func (p *namespacesPage) view(_ *WizardState, _, _ int) string {
 
 		// Description under focused field.
 		if i == p.focus && f.description != "" {
-			b.WriteString("    " + sMuted.Render("· "+f.description) + "\n")
+			b.WriteString("    " + sMuted.Render(f.description) + "\n")
 		}
 		b.WriteString("\n")
 	}

@@ -9,22 +9,19 @@ import (
 )
 
 type tlsPage struct {
-	tlsCursor   int // 0=self-signed, 1=byo
-	proxyCursor int // 0=yes, 1=no
-	sans        []string
-	errMsg      string
+	tlsCursor int // 0=self-signed, 1=byo
+	sans      []string
+	errMsg    string
 }
 
 func newTLSPage() *tlsPage {
-	return &tlsPage{
-		proxyCursor: 0,
-	}
+	return &tlsPage{}
 }
 
 func (p *tlsPage) title() string    { return "heat shield" }
 func (p *tlsPage) question() string { return "How should oberth serve TLS?" }
 func (p *tlsPage) keys() string {
-	return sKey.Render("↑/↓") + " choose · " + sKey.Render("←/→") + " proxy · " + sKey.Render("enter") + " continue · " + sKey.Render("esc") + " back"
+	return sKey.Render("↑/↓") + " choose · " + sKey.Render("enter") + " continue · " + sKey.Render("esc") + " back"
 }
 
 func (p *tlsPage) init(state *WizardState) tea.Cmd {
@@ -33,11 +30,6 @@ func (p *tlsPage) init(state *WizardState) tea.Cmd {
 		p.tlsCursor = 1
 	default:
 		p.tlsCursor = 0
-	}
-	if !state.ProxyEnabled {
-		p.proxyCursor = 1
-	} else {
-		p.proxyCursor = 0
 	}
 
 	// Pre-fill SANs from cluster info: service DNS, node name, node IP.
@@ -58,9 +50,6 @@ func (p *tlsPage) init(state *WizardState) tea.Cmd {
 	if ip := state.ClusterInfo.nodeIP; ip != "" && !slices.Contains(state.Config.TLSExtraIPs, ip) {
 		state.Config.TLSExtraIPs = append(state.Config.TLSExtraIPs, ip)
 	}
-	if state.ProxyEnabled {
-		p.sans = append(p.sans, "watch.oberth.ci")
-	}
 
 	p.errMsg = ""
 	return nil
@@ -78,14 +67,6 @@ func (p *tlsPage) update(msg tea.Msg, state *WizardState) (page, tea.Cmd) {
 			if p.tlsCursor < 1 {
 				p.tlsCursor++
 			}
-		case "left":
-			if p.proxyCursor > 0 {
-				p.proxyCursor--
-			}
-		case "right":
-			if p.proxyCursor < 1 {
-				p.proxyCursor++
-			}
 		case "enter":
 			switch p.tlsCursor {
 			case 0:
@@ -93,7 +74,6 @@ func (p *tlsPage) update(msg tea.Msg, state *WizardState) (page, tea.Cmd) {
 			case 1:
 				state.TLSMode = "byo"
 			}
-			state.ProxyEnabled = p.proxyCursor == 0
 			state.Config.TLSExtraDNSNames = p.sans
 			return p, func() tea.Msg { return pageCompleteMsg{} }
 		case "esc":
@@ -111,7 +91,6 @@ func (p *tlsPage) view(state *WizardState, _, _ int) string {
 	// Every name and address the certificate will be valid for.
 	validFor := append(slices.Clone(p.sans), state.Config.TLSExtraIPs...)
 
-	// TLS mode selection.
 	options := []struct {
 		label string
 		desc  string
@@ -134,25 +113,13 @@ func (p *tlsPage) view(state *WizardState, _, _ int) string {
 		label := sText.Render(opt.label)
 		descStyle := sMuted
 		if i == 1 {
-			descStyle = sHold // "contents never displayed" in Orange
+			descStyle = sHold // "contents are never shown" in Orange
 		}
 		desc := descStyle.Render(opt.desc)
 
 		b.WriteString(cursor + radioStyled + " " + label + "\n")
 		b.WriteString("          " + desc + "\n\n")
 	}
-
-	// Proxy toggle.
-	proxyYes := "( )"
-	proxyNo := "( )"
-	if p.proxyCursor == 0 {
-		proxyYes = lipgloss.NewStyle().Foreground(cPurple).Render("(•)")
-	} else {
-		proxyNo = lipgloss.NewStyle().Foreground(cPurple).Render("(•)")
-	}
-	b.WriteString("  " + sMuted.Render("Also serve through the watch.oberth.ci proxy?") + "\n")
-	b.WriteString("    " + proxyYes + " " + sText.Render("yes") + sMuted.Render(" — publicly trusted certificate") + "      " +
-		proxyNo + " " + sText.Render("no") + "\n\n")
 
 	// Fingerprint note.
 	b.WriteString("  " + sMuted.Render("the fingerprint appears on the final screen — verify it before you trust it") + "\n")
