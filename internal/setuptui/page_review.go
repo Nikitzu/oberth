@@ -45,23 +45,13 @@ func (p *reviewPage) update(msg tea.Msg, state *WizardState) (page, tea.Cmd) {
 				p.dryRunText = BuildCommandLine(state)
 			}
 			return p, nil
-		// Jump keys 1-8 → corresponding pages (1-indexed).
-		case "1":
-			return p, func() tea.Msg { return pageJumpMsg{page: 2} }
-		case "2":
-			return p, func() tea.Msg { return pageJumpMsg{page: 3} }
-		case "3":
-			return p, func() tea.Msg { return pageJumpMsg{page: 4} }
-		case "4":
-			return p, func() tea.Msg { return pageJumpMsg{page: 5} }
-		case "5":
-			return p, func() tea.Msg { return pageJumpMsg{page: 6} }
-		case "6":
-			return p, func() tea.Msg { return pageJumpMsg{page: 8} }
-		case "7":
-			return p, func() tea.Msg { return pageJumpMsg{page: 9} }
-		case "8":
-			return p, func() tea.Msg { return pageJumpMsg{page: 11} }
+		// Jump keys 1-8 → corresponding pages, via the shared section map
+		// (the apply page's HOLD state uses the same table).
+		case "1", "2", "3", "4", "5", "6", "7", "8":
+			section := int(msg.String()[0] - '0')
+			if target, ok := reviewSectionPages[section]; ok {
+				return p, func() tea.Msg { return pageJumpMsg{page: target} }
+			}
 		}
 	}
 	return p, nil

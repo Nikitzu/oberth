@@ -7,12 +7,24 @@ import (
 	"charm.land/lipgloss/v2"
 )
 
-// ceremonyPage handles the bearer token shown-once ceremony (S1/S2/S8).
-// The token lives in one []byte owned by this model. It is never
-// fmt-formatted, never logged, never placed in WizardState, and is zeroed
-// when this page is dismissed.
+// ceremonyEntry is one once-only credential held by the ceremony: the uplink
+// bearer token, the OpenBao root token, or an unseal key. The value lives in
+// one []byte owned by this model — never fmt-formatted into an immortal
+// string, never logged, never placed in WizardState — and is zeroed when the
+// ceremony is acknowledged or torn down.
+type ceremonyEntry struct {
+	label string
+	value []byte
+}
+
+// ceremonyPage handles the once-only credential ceremony (S1/S2/S8). A
+// production install can mint several credentials (root token, unseal keys,
+// bearer token); every one of them is delivered here structurally via the
+// installer's CredentialSink — never parsed back out of the output stream —
+// and every one is zeroed on acknowledge and on every teardown path.
 type ceremonyPage struct {
-	token        []byte
+	entries      []ceremonyEntry
+	cursor       int // selected entry for 'c' copy
 	revealed     bool
 	copied       bool
 	acknowledged bool
@@ -25,47 +37,66 @@ func newCeremonyPage() *ceremonyPage {
 func (p *ceremonyPage) title() string    { return "crew manifest" }
 func (p *ceremonyPage) question() string { return "" }
 func (p *ceremonyPage) keys() string {
-	return sKey.Render("r") + " reveal · " + sKey.Render("c") + " copy · " + sKey.Render("enter") + " acknowledge (no esc — explicit ack required)"
+	nav := ""
+	if len(p.entries) > 1 {
+		nav = sKey.Render("↑/↓") + " select · "
+	}
+	return nav + sKey.Render("r") + " reveal · " + sKey.Render("c") + " copy · " + sKey.Render("enter") + " acknowledge (no esc — explicit ack required)"
 }
 
 func (p *ceremonyPage) init(_ *WizardState) tea.Cmd {
 	return nil
 }
 
-// setToken takes ownership of the token: it copies the bytes into the
-// ceremony's own buffer and ZEROS THE SOURCE (S2 — the token is held once;
-// the message buffer that delivered it must not linger on the heap).
-func (p *ceremonyPage) setToken(token []byte) {
-	p.zeroToken() // drop any previous token first
-	p.token = make([]byte, len(token))
-	copy(p.token, token)
-	for i := range token {
-		token[i] = 0
+// addCredential takes ownership of one credential value: it copies the bytes
+// into the ceremony's own buffer and ZEROS THE SOURCE (S2 — the buffer that
+// delivered it must not linger on the heap). Multiple credentials accumulate;
+// acknowledgment covers and zeros all of them.
+func (p *ceremonyPage) addCredential(label string, value []byte) {
+	cp := make([]byte, len(value))
+	copy(cp, value)
+	for i := range value {
+		value[i] = 0
 	}
-	p.revealed = false
-	p.copied = false
+	p.entries = append(p.entries, ceremonyEntry{label: label, value: cp})
 	p.acknowledged = false
+}
+
+// hasCredentials reports whether any un-zeroed credential is held.
+func (p *ceremonyPage) hasCredentials() bool {
+	return len(p.entries) > 0
 }
 
 func (p *ceremonyPage) update(msg tea.Msg, _ *WizardState) (page, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyPressMsg:
 		switch msg.String() {
+		case "up", "k":
+			if p.cursor > 0 {
+				p.cursor--
+			}
+			return p, nil
+		case "down", "j":
+			if p.cursor < len(p.entries)-1 {
+				p.cursor++
+			}
+			return p, nil
 		case "r":
 			p.revealed = true
 			return p, nil
 		case "c":
-			if len(p.token) > 0 {
+			if p.cursor < len(p.entries) && len(p.entries[p.cursor].value) > 0 {
 				p.copied = true
 				p.revealed = true
-				// OSC 52 clipboard copy (S8: opt-in only, explicitly warned).
-				return p, tea.SetClipboard(string(p.token))
+				// OSC 52 clipboard copy of the SELECTED credential
+				// (S8: opt-in only, explicitly warned).
+				return p, tea.SetClipboard(string(p.entries[p.cursor].value))
 			}
 		case "enter":
 			if p.revealed || p.copied {
 				p.acknowledged = true
-				// Zero the token (S2).
-				p.zeroToken()
+				// Zero every credential (S2).
+				p.zeroAll()
 				return p, func() tea.Msg { return pageCompleteMsg{} }
 			}
 			// Cannot acknowledge without reveal or copy.
@@ -79,25 +110,42 @@ func (p *ceremonyPage) update(msg tea.Msg, _ *WizardState) (page, tea.Cmd) {
 func (p *ceremonyPage) view(_ *WizardState, width, _ int) string {
 	var b strings.Builder
 
-	b.WriteString("  " + sText.Render("Store this token now — it will not exist again.") + "\n\n")
+	plural := "token"
+	if len(p.entries) > 1 {
+		plural = "credentials"
+	}
+	b.WriteString("  " + sText.Render("Store the "+plural+" now — they will not exist again.") + "\n\n")
 
-	// Token ceremony box (double border, Red — the one heavy border).
+	// Credential ceremony box (double border, Red — the one heavy border).
 	var boxContent strings.Builder
 	boxContent.WriteString("\n")
-	boxContent.WriteString(sMuted.Render("stored server-side as a digest only. this screen is the only copy that will exist.") + "\n\n")
+	boxContent.WriteString(sMuted.Render("stored server-side as digests only. this screen is the only copy that will exist.") + "\n\n")
 
-	// Token display.
-	tokenDisplay := sHighlight.Render(strings.Repeat("█", 40))
-	if p.revealed && len(p.token) > 0 {
-		tokenDisplay = lipgloss.NewStyle().
-			Background(cLine).
-			Foreground(cFg).
-			Render(string(p.token))
+	labelWidth := 0
+	for _, e := range p.entries {
+		if len(e.label) > labelWidth {
+			labelWidth = len(e.label)
+		}
 	}
-	boxContent.WriteString("  " + sMuted.Render("token") + "   " + tokenDisplay)
-	boxContent.WriteString("            " + sKey.Render("r") + " reveal · " + sKey.Render("c") + " copy\n\n")
 
-	boxContent.WriteString("  " + sMuted.Render("destination: ") +
+	for i, e := range p.entries {
+		display := sHighlight.Render(strings.Repeat("█", 40))
+		if p.revealed && len(e.value) > 0 {
+			display = lipgloss.NewStyle().
+				Background(cLine).
+				Foreground(cFg).
+				Render(string(e.value))
+		}
+		marker := "  "
+		if len(p.entries) > 1 && i == p.cursor {
+			marker = lipgloss.NewStyle().Foreground(cPurple).Render("❯ ")
+		}
+		label := e.label + strings.Repeat(" ", labelWidth-len(e.label))
+		boxContent.WriteString(marker + sMuted.Render(label) + "   " + display + "\n")
+	}
+	boxContent.WriteString("\n            " + sKey.Render("r") + " reveal · " + sKey.Render("c") + " copy selected\n\n")
+
+	boxContent.WriteString("  " + sMuted.Render("bearer token destination: ") +
 		sInfo.Render(".claude/settings.local.json") +
 		sMuted.Render(" — you paste it; oberth never writes it") + "\n")
 	boxContent.WriteString("  " + sMuted.Render("clipboard (osc 52) is outside oberth's control — prefer reveal-and-type") + "\n\n")
@@ -105,9 +153,9 @@ func (p *ceremonyPage) view(_ *WizardState, width, _ int) string {
 	// Acknowledge button.
 	if p.revealed || p.copied {
 		boxContent.WriteString("  " + sKey.Render("enter") +
-			sMuted.Render(" — i have stored the token") + "\n")
+			sMuted.Render(" — i have stored every value above") + "\n")
 	} else {
-		boxContent.WriteString("  " + sMuted.Render("enter — i have stored the token") +
+		boxContent.WriteString("  " + sMuted.Render("enter — i have stored every value above") +
 			sMuted.Render("             (enabled after reveal or copy)") + "\n")
 	}
 
@@ -123,15 +171,19 @@ func (p *ceremonyPage) view(_ *WizardState, width, _ int) string {
 		b.WriteString(strings.Repeat(" ", pad) + line + "\n")
 	}
 
-	b.WriteString("\n  " + sGo.Render("leaving this screen discards the token — alt buffer: no scrollback, no logs") + "\n")
+	b.WriteString("\n  " + sGo.Render("leaving this screen discards the values — alt buffer: no scrollback, no logs") + "\n")
 
 	return b.String()
 }
 
-// zeroToken securely zeros the token bytes (S2).
-func (p *ceremonyPage) zeroToken() {
-	for i := range p.token {
-		p.token[i] = 0
+// zeroAll securely zeros every credential buffer (S2).
+func (p *ceremonyPage) zeroAll() {
+	for i := range p.entries {
+		for j := range p.entries[i].value {
+			p.entries[i].value[j] = 0
+		}
+		p.entries[i].value = nil
 	}
-	p.token = nil
+	p.entries = nil
+	p.cursor = 0
 }

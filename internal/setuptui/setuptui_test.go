@@ -2,6 +2,7 @@ package setuptui
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"strings"
@@ -9,6 +10,8 @@ import (
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+
+	"github.com/oberthci/oberth/internal/installer"
 )
 
 func keyPress(code rune, text string) tea.KeyPressMsg {
@@ -176,13 +179,13 @@ func TestMaskerIgnoresEmpty(t *testing.T) {
 	}
 }
 
-// --- S2: token ceremony lifecycle ---
+// --- S2: credential ceremony lifecycle ---
 
-func TestCeremonySetTokenZerosSource(t *testing.T) {
+func TestCeremonyAddCredentialZerosSource(t *testing.T) {
 	p := newCeremonyPage()
 	src := []byte("bearer-token-value")
-	p.setToken(src)
-	if !bytes.Equal(p.token, []byte("bearer-token-value")) {
+	p.addCredential("Bearer token", src)
+	if len(p.entries) != 1 || !bytes.Equal(p.entries[0].value, []byte("bearer-token-value")) {
 		t.Fatal("ceremony did not take a faithful copy")
 	}
 	for i, b := range src {
@@ -194,23 +197,23 @@ func TestCeremonySetTokenZerosSource(t *testing.T) {
 
 func TestCeremonyRequiresRevealBeforeAck(t *testing.T) {
 	p := newCeremonyPage()
-	p.setToken([]byte("tok"))
+	p.addCredential("Bearer token", []byte("tok"))
 
 	// Enter before reveal/copy must not complete and must not zero.
 	_, cmd := p.update(enterKey(), nil)
 	if cmd != nil {
 		t.Fatal("enter before reveal must not complete the ceremony")
 	}
-	if p.acknowledged || len(p.token) == 0 {
-		t.Fatal("token must survive an unacknowledged enter")
+	if p.acknowledged || !p.hasCredentials() {
+		t.Fatal("credentials must survive an unacknowledged enter")
 	}
 
-	// Reveal, then enter: acknowledged, token zeroed, page completes.
+	// Reveal, then enter: acknowledged, all values zeroed, page completes.
 	_, _ = p.update(keyPress('r', "r"), nil)
 	if !p.revealed {
 		t.Fatal("r must reveal")
 	}
-	held := p.token
+	held := p.entries[0].value
 	_, cmd = p.update(enterKey(), nil)
 	if cmd == nil {
 		t.Fatal("acknowledged ceremony must emit a completion cmd")
@@ -218,24 +221,41 @@ func TestCeremonyRequiresRevealBeforeAck(t *testing.T) {
 	if msg := cmd(); msg != (pageCompleteMsg{}) {
 		t.Fatalf("expected pageCompleteMsg, got %T", msg)
 	}
-	if p.token != nil {
-		t.Fatal("token must be nil after acknowledgment")
+	if p.hasCredentials() {
+		t.Fatal("no credential may remain after acknowledgment")
 	}
 	for i, b := range held {
 		if b != 0 {
-			t.Fatalf("token bytes not zeroed at %d", i)
+			t.Fatalf("credential bytes not zeroed at %d", i)
 		}
 	}
 }
 
-func TestCeremonyReplacementZerosPreviousToken(t *testing.T) {
+// A production install mints several once-only credentials (root token,
+// unseal keys, bearer token); the ceremony must hold them ALL and zeroAll
+// must leave no live byte from any of them (S2 across every entry, the
+// property the single-token replacement path used to guarantee).
+func TestCeremonyAccumulatesAndZeroAllWipesEverything(t *testing.T) {
 	p := newCeremonyPage()
-	p.setToken([]byte("first-token"))
-	first := p.token
-	p.setToken([]byte("second-token"))
-	for i, b := range first {
-		if b != 0 {
-			t.Fatalf("previous token not zeroed at %d", i)
+	p.addCredential("Root token", []byte("hvs-root-token"))
+	p.addCredential("Unseal key", []byte("unseal-key-b64"))
+	p.addCredential("Bearer token", []byte("oberth_bearer"))
+	if len(p.entries) != 3 {
+		t.Fatalf("expected 3 held credentials, got %d", len(p.entries))
+	}
+	held := make([][]byte, len(p.entries))
+	for i := range p.entries {
+		held[i] = p.entries[i].value
+	}
+	p.zeroAll()
+	if p.hasCredentials() {
+		t.Fatal("zeroAll must empty the ceremony")
+	}
+	for n, buf := range held {
+		for i, b := range buf {
+			if b != 0 {
+				t.Fatalf("credential %d not zeroed at byte %d", n, i)
+			}
 		}
 	}
 }
@@ -258,13 +278,13 @@ func TestApplyPageTokenRegistrationAndWipe(t *testing.T) {
 		t.Fatalf("masker did not learn the token: %q", got)
 	}
 	// Ceremony holds its own copy.
-	if !bytes.Equal(p.ceremony.token, []byte("mint-token-9f8e")) {
+	if len(p.ceremony.entries) != 1 || !bytes.Equal(p.ceremony.entries[0].value, []byte("mint-token-9f8e")) {
 		t.Fatal("ceremony copy missing or wrong")
 	}
 
 	p.wipeSecrets()
-	if p.ceremony.token != nil {
-		t.Fatal("wipeSecrets must zero the ceremony token")
+	if p.ceremony.hasCredentials() {
+		t.Fatal("wipeSecrets must zero the ceremony credentials")
 	}
 	if got := p.masker.mask("mint-token-9f8e"); got != "mint-token-9f8e" {
 		t.Fatal("wipeSecrets must wipe the masker")
@@ -339,8 +359,8 @@ func TestWizardCtrlCConfirmedAbort(t *testing.T) {
 	if !w.aborted {
 		t.Fatal("second ctrl+c must abort")
 	}
-	if ap.ceremony.token != nil {
-		t.Fatal("confirmed abort must zero the ceremony token")
+	if ap.ceremony.hasCredentials() {
+		t.Fatal("confirmed abort must zero the ceremony credentials")
 	}
 }
 
@@ -570,5 +590,177 @@ func TestDNS1123LabelRegexp(t *testing.T) {
 		if dns1123LabelRegexp.MatchString(v) {
 			t.Errorf("%q should be invalid", v)
 		}
+	}
+}
+
+// --- Critical-1: credentials must reach the ceremony structurally, never
+// --- through the log stream ---
+
+// pumpApply drives the apply page's message loop the way the tea runtime
+// would: execute the pending cmd, feed the message to update, repeat. It
+// stops when no cmd is pending or when the page emits pageCompleteMsg.
+func pumpApply(t *testing.T, p *applyPage, state *WizardState, cmd tea.Cmd, maxSteps int) tea.Msg {
+	t.Helper()
+	for i := 0; i < maxSteps && cmd != nil; i++ {
+		msg := cmd()
+		if _, ok := msg.(pageCompleteMsg); ok {
+			return msg
+		}
+		var next page
+		next, cmd = p.update(msg, state)
+		p = next.(*applyPage)
+	}
+	return nil
+}
+
+func TestApplyCredentialSinkRoutesToCeremonyAndMasksLogs(t *testing.T) {
+	p := newApplyPage()
+	state := &WizardState{}
+
+	const rootToken = "hvs-fake-root-token-value"
+	const bearer = "oberth_fake_bearer_value"
+
+	p.execInstaller = func(_ context.Context, _ installer.Config, deps installer.InstallDeps) error {
+		// The real installer delivers once-only credentials through the
+		// sink; the output stream carries only log-shaped text. A log line
+		// that (defensively) echoes a credential value must come out masked.
+		deps.CredentialSink("Root token", rootToken)
+		deps.CredentialSink("Bearer token", bearer)
+		_, _ = deps.Output.Write([]byte("audit chain verified\n"))
+		_, _ = deps.Output.Write([]byte("echo " + rootToken + " should be masked\n"))
+		return nil
+	}
+
+	cmd := p.startApply(state)
+	done := pumpApply(t, p, state, cmd, 200)
+
+	// The ceremony must hold BOTH credentials, unacknowledged, and the
+	// apply must be waiting on it (not completed past it).
+	if done != nil {
+		t.Fatal("apply must pause on the ceremony, not complete past it")
+	}
+	if !p.showCeremony {
+		t.Fatal("ceremony must be showing after credential delivery")
+	}
+	if len(p.ceremony.entries) != 2 {
+		t.Fatalf("ceremony must hold 2 credentials, got %d", len(p.ceremony.entries))
+	}
+	if p.ceremony.entries[0].label != "Root token" || !bytes.Equal(p.ceremony.entries[0].value, []byte(rootToken)) {
+		t.Fatal("root token entry missing or wrong")
+	}
+	if p.ceremony.entries[1].label != "Bearer token" || !bytes.Equal(p.ceremony.entries[1].value, []byte(bearer)) {
+		t.Fatal("bearer token entry missing or wrong")
+	}
+
+	// No retained log line may carry a raw credential value (S3).
+	for _, line := range p.logLines {
+		if strings.Contains(line, rootToken) || strings.Contains(line, bearer) {
+			t.Fatalf("raw credential leaked into the log lines: %q", line)
+		}
+	}
+	if strings.Contains(p.logTail, rootToken) || strings.Contains(p.logTail, bearer) {
+		t.Fatalf("raw credential leaked into the log tail: %q", p.logTail)
+	}
+
+	// Acknowledge the ceremony: reveal, enter — then the apply completes.
+	_, _ = p.update(keyPress('r', "r"), state)
+	_, cmd = p.update(enterKey(), state)
+	if cmd == nil {
+		t.Fatal("acknowledged ceremony with finished apply must complete the page")
+	}
+	if msg := cmd(); msg != (pageCompleteMsg{}) {
+		t.Fatalf("expected pageCompleteMsg, got %T", msg)
+	}
+	if p.ceremony.hasCredentials() {
+		t.Fatal("acknowledgment must zero all credentials")
+	}
+}
+
+// --- Critical-2: retry after a failed run must re-run the installer on a
+// --- fresh channel — the old code sent on the closed channel and panicked ---
+
+func TestApplyRetryAfterFailureRestartsInstaller(t *testing.T) {
+	p := newApplyPage()
+	state := &WizardState{}
+
+	calls := 0
+	p.execInstaller = func(_ context.Context, _ installer.Config, deps installer.InstallDeps) error {
+		calls++
+		if calls == 1 {
+			_, _ = deps.Output.Write([]byte("Installing Oberth\n"))
+			return errors.New("helm timeout")
+		}
+		_, _ = deps.Output.Write([]byte("audit chain verified\n"))
+		return nil
+	}
+
+	// First run: fails, enters HOLD.
+	cmd := p.startApply(state)
+	if done := pumpApply(t, p, state, cmd, 200); done != nil {
+		t.Fatal("failed run must not complete the page")
+	}
+	if !p.holdState {
+		t.Fatal("failed run must enter HOLD state")
+	}
+
+	// Give the failed run's goroutine time to close its channel — the old
+	// implementation reused that closed channel and panicked on the first
+	// send of the retry.
+	firstCh := p.msgCh
+
+	// Retry: must actually restart the installer and reach done.
+	var next page
+	next, cmd = p.update(keyPress('r', "r"), state)
+	p = next.(*applyPage)
+	if cmd == nil {
+		t.Fatal("'r' in HOLD must return a restart cmd")
+	}
+	if p.msgCh == firstCh {
+		t.Fatal("retry must run on a fresh channel — the old one is closed")
+	}
+	if p.holdState {
+		t.Fatal("retry must clear HOLD state")
+	}
+	done := pumpApply(t, p, state, cmd, 200)
+	if done == nil {
+		t.Fatal("retried run must complete the page")
+	}
+	if calls != 2 {
+		t.Fatalf("installer must have run twice, ran %d times", calls)
+	}
+	if p.holdState {
+		t.Fatal("successful retry must not remain in HOLD")
+	}
+	// The first run's "failed" marker must not survive the retry. (Steps the
+	// output stream skips over remain "pending" — a pre-existing display
+	// quirk of the pattern tracker, not retry state.)
+	for i, s := range p.steps {
+		if s.status == "failed" {
+			t.Fatalf("step %d still marked failed after successful retry", i)
+		}
+	}
+	if p.steps[len(p.steps)-1].status != "done" {
+		t.Fatal("final step must be done after successful retry")
+	}
+}
+
+// --- HOLD jump keys must use the review page's section numbering ---
+
+func TestApplyHoldJumpUsesReviewSectionMap(t *testing.T) {
+	p := newApplyPage()
+	state := &WizardState{}
+	p.holdState = true
+
+	// Section 8 is "forge" on the review page → 1-based page 11.
+	_, cmd := p.update(keyPress('8', "8"), state)
+	if cmd == nil {
+		t.Fatal("'8' in HOLD must jump")
+	}
+	msg, ok := cmd().(pageJumpMsg)
+	if !ok {
+		t.Fatalf("expected pageJumpMsg, got %T", msg)
+	}
+	if msg.page != reviewSectionPages[8] {
+		t.Fatalf("HOLD jump 8 → page %d, want %d (review's forge section)", msg.page, reviewSectionPages[8])
 	}
 }

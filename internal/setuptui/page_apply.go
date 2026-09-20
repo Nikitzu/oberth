@@ -45,8 +45,17 @@ type applyPage struct {
 	// calls cancel() so the installer stops mutating (Bug 7).
 	cancel context.CancelFunc
 
-	// Channel-based message passing from the installer goroutine.
+	// Channel-based message passing from the installer goroutine. A fresh
+	// channel is created per run (startApply): the previous run's channel is
+	// closed by its runInstaller defer, and sending on a closed channel
+	// panics — re-entry after a failed run (r retry, esc → fix → apply
+	// again) MUST get a new one.
 	msgCh chan tea.Msg
+
+	// execInstaller runs the real installer; tests inject a stub so retry
+	// and failure paths are testable without a cluster. Nil selects
+	// installer.Execute.
+	execInstaller func(ctx context.Context, cfg installer.Config, deps installer.InstallDeps) error
 }
 
 func newApplyPage() *applyPage {
@@ -72,9 +81,9 @@ func newApplyPage() *applyPage {
 
 // wipeSecrets zeros every secret this page or its ceremony still holds.
 // Called on every teardown path — acknowledged, aborted, or interrupted —
-// so no exit route leaves token bytes live on the heap (S2/S10).
+// so no exit route leaves credential bytes live on the heap (S2/S10).
 func (p *applyPage) wipeSecrets() {
-	p.ceremony.zeroToken()
+	p.ceremony.zeroAll()
 	p.masker.wipe()
 }
 
@@ -132,9 +141,13 @@ func (p *applyPage) init(state *WizardState) tea.Cmd {
 
 // listenForMsg returns a tea.Cmd that blocks on the message channel and
 // delivers one message. Chained in update() to consume the full stream.
+// The channel is captured HERE, on the update goroutine — the closure runs
+// on a tea worker goroutine, and reading p.msgCh there would race with a
+// retry reassigning it.
 func (p *applyPage) listenForMsg() tea.Cmd {
+	ch := p.msgCh
 	return func() tea.Msg {
-		msg, ok := <-p.msgCh
+		msg, ok := <-ch
 		if !ok {
 			return applyDoneMsg{}
 		}
@@ -177,20 +190,51 @@ func (p *applyPage) startApply(state *WizardState) tea.Cmd {
 	// The user already confirmed on the review page.
 	cfg.Yes = true
 
+	// Reset for this run. A previous run's channel is closed by its
+	// runInstaller defer, and its steps carry terminal state — retry ('r')
+	// and re-entry after esc→fix→apply need a fresh channel (sending on
+	// the closed one panics) and a clean tracker.
+	p.resetForRun()
+
 	// Derive a cancellable context — a confirmed abort calls cancel() so the
 	// installer stops mutating instead of running until process death (Bug 7).
 	ctx, cancel := context.WithCancel(context.Background())
 	p.cancel = cancel
 
+	// Capture the run's own channel: the closures run on other goroutines,
+	// and a later retry reassigns p.msgCh.
+	ch := p.msgCh
+
 	return func() tea.Msg {
-		go p.runInstaller(ctx, cfg)
+		go p.runInstaller(ctx, cfg, ch)
 		// Return the first message from the channel.
-		msg, ok := <-p.msgCh
+		msg, ok := <-ch
 		if !ok {
 			return applyDoneMsg{}
 		}
 		return msg
 	}
+}
+
+// resetForRun prepares the page for a (re)run of the installer: fresh
+// message channel, all steps pending, hold and completion state cleared.
+// Secrets already collected by the ceremony are deliberately kept — a retry
+// after a partial failure must not discard credentials that already exist
+// nowhere else.
+func (p *applyPage) resetForRun() {
+	p.msgCh = make(chan tea.Msg, 64)
+	for i := range p.steps {
+		p.steps[i].status = "pending"
+		p.steps[i].duration = 0
+	}
+	p.currentStep = 0
+	p.holdState = false
+	p.holdError = ""
+	p.holdDetail = ""
+	p.applyDone = false
+	p.logTail = ""
+	p.logLines = nil
+	p.startTime = time.Now()
 }
 
 // stepPatterns maps installer output substrings to step indices. The installer
@@ -228,12 +272,12 @@ var stepPatterns = []struct {
 }
 
 // runInstaller runs the installer in a goroutine and sends progress messages
-// to the channel. It closes the channel when done.
-func (p *applyPage) runInstaller(ctx context.Context, cfg installer.Config) {
-	defer close(p.msgCh)
+// to ch — the channel owned by exactly this run. It closes ch when done.
+func (p *applyPage) runInstaller(ctx context.Context, cfg installer.Config, ch chan tea.Msg) {
+	defer close(ch)
 
 	// Mark the first step as running.
-	p.msgCh <- applyStepMsg{
+	ch <- applyStepMsg{
 		step:   0,
 		total:  len(p.steps),
 		name:   p.steps[0].name,
@@ -241,7 +285,7 @@ func (p *applyPage) runInstaller(ctx context.Context, cfg installer.Config) {
 	}
 
 	w := &applyWriter{
-		ch:          p.msgCh,
+		ch:          ch,
 		masker:      p.masker,
 		currentStep: 0,
 		totalSteps:  len(p.steps),
@@ -249,34 +293,55 @@ func (p *applyPage) runInstaller(ctx context.Context, cfg installer.Config) {
 	}
 	w.stepStarts[0] = time.Now()
 
+	execute := p.execInstaller
+	if execute == nil {
+		execute = installer.Execute
+	}
+
 	// Use a non-interactive reader instead of os.Stdin to prevent stdin
 	// contention with bubbletea's raw mode (Bug 7). IsTerminal returns
 	// false so host.go never wires term.ReadPassword/MakeRaw to os.Stdin,
 	// and the installer enters the pre-filled onboarding path instead of
 	// the interactive prompting path.
-	err := installer.Execute(ctx, cfg, installer.InstallDeps{
+	//
+	// CredentialSink is the S1/S2/S3 load-bearing wire: every once-only
+	// credential (root token, unseal keys, bearer token) arrives here as
+	// structured data. It is registered with the masker FIRST — on this
+	// goroutine, before any later output line could echo it — then handed
+	// to the ceremony, which copies and zeros the delivery buffer. Without
+	// this sink the installer would flush credentials as boxed text into
+	// the log stream, where the bare-line "oberth_" detection can never
+	// match (every box line starts with a border rune) and the raw values
+	// would land in the retained log lines.
+	err := execute(ctx, cfg, installer.InstallDeps{
 		Output:     w,
 		Input:      strings.NewReader(""),
 		IsTerminal: func() bool { return false },
+		CredentialSink: func(label, value string) {
+			b := []byte(value)
+			p.masker.register(b)
+			// Blocking send — credential delivery must never be dropped.
+			ch <- ceremonyTokenMsg{label: label, token: b}
+		},
 	})
 
 	// Mark the last running step as done (or failed).
 	if err != nil {
-		p.msgCh <- applyStepMsg{
+		ch <- applyStepMsg{
 			step:   w.currentStep,
 			total:  len(p.steps),
 			name:   p.steps[min(w.currentStep, len(p.steps)-1)].name,
 			status: "failed",
 			err:    err,
 		}
-		p.msgCh <- applyDoneMsg{err: err}
+		ch <- applyDoneMsg{err: err}
 		return
 	}
 
 	// Complete any remaining running step.
 	if w.currentStep < len(p.steps) {
 		elapsed := time.Since(w.stepStarts[w.currentStep])
-		p.msgCh <- applyStepMsg{
+		ch <- applyStepMsg{
 			step:     w.currentStep,
 			total:    len(p.steps),
 			name:     p.steps[w.currentStep].name,
@@ -287,7 +352,7 @@ func (p *applyPage) runInstaller(ctx context.Context, cfg installer.Config) {
 
 	// Mark all remaining pending steps as done.
 	for i := w.currentStep + 1; i < len(p.steps); i++ {
-		p.msgCh <- applyStepMsg{
+		ch <- applyStepMsg{
 			step:   i,
 			total:  len(p.steps),
 			name:   p.steps[i].name,
@@ -295,7 +360,7 @@ func (p *applyPage) runInstaller(ctx context.Context, cfg installer.Config) {
 		}
 	}
 
-	p.msgCh <- applyDoneMsg{}
+	ch <- applyDoneMsg{}
 }
 
 // applyWriter is an io.Writer that captures installer output, matches step
@@ -378,7 +443,7 @@ func (w *applyWriter) processLine(line string) {
 	}
 }
 
-func (p *applyPage) update(msg tea.Msg, _ *WizardState) (page, tea.Cmd) {
+func (p *applyPage) update(msg tea.Msg, state *WizardState) (page, tea.Cmd) {
 	switch msg := msg.(type) {
 	case applyStepMsg:
 		if msg.step < len(p.steps) {
@@ -411,9 +476,9 @@ func (p *applyPage) update(msg tea.Msg, _ *WizardState) (page, tea.Cmd) {
 			p.holdError = msg.err.Error()
 			return p, nil
 		}
-		// If the ceremony has a token that hasn't been acknowledged,
+		// If the ceremony holds credentials that haven't been acknowledged,
 		// show the ceremony first.
-		if p.ceremony.token != nil && !p.ceremony.acknowledged {
+		if p.ceremony.hasCredentials() && !p.ceremony.acknowledged {
 			p.showCeremony = true
 			return p, nil
 		}
@@ -421,13 +486,19 @@ func (p *applyPage) update(msg tea.Msg, _ *WizardState) (page, tea.Cmd) {
 		return p, func() tea.Msg { return pageCompleteMsg{} }
 
 	case ceremonyTokenMsg:
-		// The token ceremony interrupts the apply after the mint step.
+		// The credential ceremony interrupts the apply as values arrive.
 		// Register with the masker for log-tail safety (S3) first — the
 		// masker copies — then hand the buffer to the ceremony page, which
 		// copies and ZEROS the source (S2: no stray copy survives on the
-		// message value).
+		// message value). The sink path pre-registers on the installer
+		// goroutine; registering again here is a harmless duplicate that
+		// also covers the bare-line backstop path.
 		p.masker.register(msg.token)
-		p.ceremony.setToken(msg.token)
+		label := msg.label
+		if label == "" {
+			label = "Bearer token"
+		}
+		p.ceremony.addCredential(label, msg.token)
 		p.showCeremony = true
 		return p, p.listenForMsg()
 
@@ -452,24 +523,29 @@ func (p *applyPage) update(msg tea.Msg, _ *WizardState) (page, tea.Cmd) {
 			return p, nil
 		case "r":
 			if p.holdState {
-				// Retry the failed step.
-				p.holdState = false
-				p.holdError = ""
-				p.holdDetail = ""
-				if p.currentStep < len(p.steps) {
-					p.steps[p.currentStep].status = "running"
+				// Retry: actually re-run the installer. The previous run's
+				// goroutine has exited and closed its channel; startApply
+				// resets the tracker and creates a fresh channel — flipping
+				// UI state alone would spin forever with nothing running.
+				if p.cancel != nil {
+					p.cancel()
 				}
-				return p, nil
+				return p, p.startApply(state)
 			}
 		case "esc":
 			if p.holdState {
 				return p, func() tea.Msg { return pageBackMsg{} }
 			}
-		// Number keys in HOLD state to jump back to a page.
+		// Number keys in HOLD state to jump back to a page — the SAME
+		// section numbering the review page teaches (1..8 → cluster, mode,
+		// namespaces, network, store, tls, uplink, forge), not raw page
+		// indices: the two must never drift apart again.
 		case "1", "2", "3", "4", "5", "6", "7", "8":
 			if p.holdState {
-				pageNum := int(msg.String()[0] - '0')
-				return p, func() tea.Msg { return pageJumpMsg{page: pageNum + 1} }
+				section := int(msg.String()[0] - '0')
+				if target, ok := reviewSectionPages[section]; ok {
+					return p, func() tea.Msg { return pageJumpMsg{page: target} }
+				}
 			}
 		}
 	}

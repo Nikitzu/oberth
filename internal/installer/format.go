@@ -655,3 +655,30 @@ func (h *heldCredentials) flush(w io.Writer, color bool) {
 		"",
 		h.rows, color)
 }
+
+// deliver hands every held credential to sink exactly once, sharing the
+// shown-once latch with flush: whichever of the two runs first consumes the
+// pool, and the other becomes a no-op.
+func (h *heldCredentials) deliver(sink func(label, value string)) {
+	if h.printed || len(h.rows) == 0 {
+		return
+	}
+	h.printed = true
+	for _, r := range h.rows {
+		sink(r.Label, r.Value)
+	}
+}
+
+// emitCredentials releases the held credential pool through the right
+// channel for the session: a structured CredentialSink when one is wired
+// (the TUI wizard — its Output is a log surface with a tail and retained
+// lines, and a secret value must never transit a log-shaped text stream),
+// otherwise the boxed terminal flush. Exactly-once across both paths via
+// the shared latch.
+func emitCredentials(h *heldCredentials, deps Deps, w io.Writer, color bool) {
+	if deps.CredentialSink != nil {
+		h.deliver(deps.CredentialSink)
+		return
+	}
+	h.flush(w, color)
+}

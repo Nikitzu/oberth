@@ -40,9 +40,29 @@ type applyDoneMsg struct {
 	err error
 }
 
-// ceremonyTokenMsg delivers the bearer token to the ceremony page.
+// ceremonyTokenMsg delivers one once-only credential to the ceremony page.
+// label identifies it ("Bearer token", "Root token", "Unseal key"); an empty
+// label means the bare-line backstop detected an oberth_ token in the
+// output stream and defaults to "Bearer token".
 type ceremonyTokenMsg struct {
+	label string
 	token []byte
+}
+
+// reviewSectionPages maps the review page's section numbers (1..8) to
+// 1-based wizard pages for pageJumpMsg. The apply page's HOLD state uses
+// the SAME numbering — one table, no drift. Section 5 (store) targets the
+// store-mode page; store-connect is reached from it when the mode is
+// "connect", matching forward navigation.
+var reviewSectionPages = map[int]int{
+	1: 2,  // cluster
+	2: 3,  // mode
+	3: 4,  // namespaces
+	4: 5,  // network / execution
+	5: 6,  // store
+	6: 8,  // tls
+	7: 9,  // uplink
+	8: 11, // forge
 }
 
 // Options holds the CLI-level options for the setup wizard.

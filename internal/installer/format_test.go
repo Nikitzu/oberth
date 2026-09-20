@@ -955,3 +955,65 @@ func stripANSI(s string) string {
 	}
 	return result.String()
 }
+
+// --- credential emission: a wired sink must fully replace the boxed flush ---
+//
+// The TUI wizard's Output is a log surface (tail + retained lines). When it
+// wires a CredentialSink, no credential value — root token, unseal key,
+// bearer token — may reach the output stream in any form: the box format
+// wraps every line in border runes, which defeats any output-side token
+// detection, so the only safe contract is "sink set ⇒ zero credential bytes
+// on the writer".
+
+func TestEmitCredentialsPrefersSinkAndWritesNothing(t *testing.T) {
+	var creds heldCredentials
+	creds.add("Root token", "hvs-fake-root")
+	creds.add("Unseal key", "unseal-fake-b64")
+	creds.add("Bearer token", "oberth_fake_bearer")
+
+	var out bytes.Buffer
+	var got [][2]string
+	deps := Deps{CredentialSink: func(label, value string) {
+		got = append(got, [2]string{label, value})
+	}}
+
+	emitCredentials(&creds, deps, &out, false)
+
+	if out.Len() != 0 {
+		t.Fatalf("sink delivery must write NOTHING to the output stream, wrote: %q", out.String())
+	}
+	want := [][2]string{
+		{"Root token", "hvs-fake-root"},
+		{"Unseal key", "unseal-fake-b64"},
+		{"Bearer token", "oberth_fake_bearer"},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("sink received %d credentials, want %d", len(got), len(want))
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("credential %d = %v, want %v", i, got[i], want[i])
+		}
+	}
+
+	// Shown-once latch is shared: neither a second emit nor a direct flush
+	// may release the values again.
+	got = nil
+	emitCredentials(&creds, deps, &out, false)
+	creds.flush(&out, false)
+	if len(got) != 0 || out.Len() != 0 {
+		t.Fatal("credentials released twice — the shown-once latch must cover sink and flush")
+	}
+}
+
+func TestEmitCredentialsWithoutSinkFlushesBox(t *testing.T) {
+	var creds heldCredentials
+	creds.add("Bearer token", "oberth_fake_bearer")
+
+	var out bytes.Buffer
+	emitCredentials(&creds, Deps{}, &out, false)
+
+	if !strings.Contains(out.String(), "oberth_fake_bearer") {
+		t.Fatal("without a sink the boxed flush must still print the credential")
+	}
+}

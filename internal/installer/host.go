@@ -56,6 +56,14 @@ type InstallDeps struct {
 	MkdirAll       func(string, fs.FileMode) error
 	LoadKubeConfig func(contextName string) (kubernetes.Interface, *rest.Config, string, error)
 	RunHelm        func(ctx context.Context, args []string) ([]byte, error)
+	// CredentialSink, when non-nil, receives every held once-only credential
+	// (OpenBao root token, unseal keys, uplink bearer token) as structured
+	// label/value pairs INSTEAD of the boxed terminal flush. The TUI wizard
+	// sets it: its Output is a log surface (tail + retained lines), and a
+	// secret value must never transit a log-shaped text stream — it must
+	// reach the masker and the shown-once ceremony as data, not as text to
+	// be re-parsed out of box-drawing characters.
+	CredentialSink func(label, value string)
 }
 
 func (deps InstallDeps) withDefaults() InstallDeps {
@@ -202,6 +210,7 @@ func Execute(ctx context.Context, cfg Config, deps InstallDeps) error {
 		KindClusterName: kindClusterName,
 		ReadPassword:    readPw,
 		MakeRaw:         makeRaw,
+		CredentialSink:  deps.CredentialSink,
 	})
 }
 

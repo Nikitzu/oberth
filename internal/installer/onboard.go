@@ -301,8 +301,9 @@ func runOnboarding(ctx context.Context, cfg Config, deps Deps, tw *tableWriter, 
 		return err
 	}
 
-	// Flush credentials after the table is fully closed.
-	creds.flush(w, color)
+	// Release credentials after the table is fully closed — through the
+	// structured sink when one is wired (TUI), else the boxed flush.
+	emitCredentials(creds, deps, w, color)
 
 	_, _ = fmt.Fprintf(deps.Output, "\nWaiting for Oberth to become ready...\n")
 	if err := WaitForReady(ctx, cfg, deps); err != nil {

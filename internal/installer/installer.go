@@ -366,6 +366,11 @@ type Deps struct {
 	// it nil to exercise the text-based fallback. Nil means no raw-mode
 	// capability (non-interactive session or pipe).
 	MakeRaw func() (restore func(), err error)
+	// CredentialSink, when non-nil, receives every held once-only credential
+	// (label, value) instead of the boxed terminal flush — see
+	// InstallDeps.CredentialSink. Output-stream text must never be the
+	// delivery channel for a secret when this is set.
+	CredentialSink func(label, value string)
 }
 
 // ClusterInfo describes the target Kubernetes cluster.
@@ -594,11 +599,13 @@ func Run(ctx context.Context, cfg Config, deps Deps) error {
 	var creds heldCredentials
 
 	// Safety net: if any later step errors out or panics, captured
-	// credentials are still printed. Registered before the secret-store
+	// credentials are still released. Registered before the secret-store
 	// setup because a fresh `operator init` can succeed while a later step
 	// still fails — after init the credentials exist nowhere but this
-	// process, and losing them locks the store permanently.
-	defer creds.flush(w, color)
+	// process, and losing them locks the store permanently. Emission goes
+	// through emitCredentials so a wired CredentialSink (TUI wizard)
+	// receives values structurally instead of through the output stream.
+	defer emitCredentials(&creds, deps, w, color)
 
 	var openbao OpenBaoResult
 	var rekor RekorResult
