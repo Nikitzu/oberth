@@ -371,6 +371,11 @@ type Deps struct {
 	// InstallDeps.CredentialSink. Output-stream text must never be the
 	// delivery channel for a secret when this is set.
 	CredentialSink func(label, value string)
+	// StepProgressSink, when non-nil, receives structured step completion
+	// events for TUI progress tracking. Step names are stable identifiers
+	// (e.g., "deploy oberth", "rollout ready") matched by the TUI's
+	// stepNameToIndex map. Status is "done".
+	StepProgressSink func(step, status string)
 }
 
 // ClusterInfo describes the target Kubernetes cluster.
@@ -594,6 +599,14 @@ func Run(ctx context.Context, cfg Config, deps Deps) error {
 	w := deps.Output
 	color := isColor(deps)
 
+	// Step progress helper — reports structured step completions to the
+	// TUI when a sink is wired, no-op otherwise.
+	stepDone := func(step string) {
+		if deps.StepProgressSink != nil {
+			deps.StepProgressSink(step, "done")
+		}
+	}
+
 	_, _ = fmt.Fprintf(w, "oberth install %s\n", displayVersion(cfg.BinaryVersion))
 
 	var creds heldCredentials
@@ -641,6 +654,8 @@ func Run(ctx context.Context, cfg Config, deps Deps) error {
 		}
 	}
 
+	stepDone("render chart")
+
 	if cfg.wantsSecretStore() {
 		quietDeps := deps
 		quietDeps.Output = io.Discard
@@ -648,11 +663,13 @@ func Run(ctx context.Context, cfg Config, deps Deps) error {
 		if err != nil {
 			return fmt.Errorf("install OpenBao: %w", err)
 		}
+		stepDone("install openbao")
 
 		if cfg.InstallSecretStoreDev {
 			if err := SetupDevSecretStore(ctx, cfg, quietDeps, openbao); err != nil {
 				return fmt.Errorf("set up dev secret store: %w", err)
 			}
+			stepDone("secretstore server")
 		} else {
 			// Production setup captures credentials into the held pool
 			// instead of printing them immediately; they are displayed in a
@@ -668,6 +685,8 @@ func Run(ctx context.Context, cfg Config, deps Deps) error {
 			}
 			openbao.TrustedTransitVerified = configured.TrustedTransitVerified
 			secretStoreItems = configured.Items
+			stepDone("secretstore server")
+			stepDone("secretstore release")
 		}
 	}
 
@@ -732,6 +751,9 @@ func Run(ctx context.Context, cfg Config, deps Deps) error {
 		return fmt.Errorf("install Oberth: %w", err)
 	}
 	tw.WriteRow("Oberth", displayVersion(oberthResult.TargetVersion), "✓ deployed")
+	stepDone("apply namespace")
+	stepDone("deploy oberth")
+	stepDone("tls fingerprints")
 
 	// Network policy warning row.
 	if cfg.NetworkPolicy == "false" {

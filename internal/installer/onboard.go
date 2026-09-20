@@ -64,6 +64,9 @@ func FinishInstall(ctx context.Context, cfg Config, deps Deps, tw *tableWriter, 
 	if err := waitForPodRunning(ctx, deps, ns, "app.kubernetes.io/instance=oberth", cfg.Timeout); err != nil {
 		return fmt.Errorf("wait for Oberth pod: %w", err)
 	}
+	if deps.StepProgressSink != nil {
+		deps.StepProgressSink("rollout ready", "done")
+	}
 
 	configured, err := upstreamConfigured(ctx, cfg, deps)
 	if err != nil {
@@ -210,6 +213,9 @@ func runOnboarding(ctx context.Context, cfg Config, deps Deps, tw *tableWriter, 
 		return err
 	}
 	tw.AppendRow("Upstream", hostnameFromURL(baseURL), "✓ connected", false)
+	if deps.StepProgressSink != nil {
+		deps.StepProgressSink("upstream discovery", "done")
+	}
 
 	// Show the generated public key as a span row so the user can
 	// copy it to register at their forge.
@@ -278,6 +284,9 @@ func runOnboarding(ctx context.Context, cfg Config, deps Deps, tw *tableWriter, 
 		return nil
 	}
 	tw.AppendRow("Uplink", identity, "✓ registered", false)
+	if deps.StepProgressSink != nil {
+		deps.StepProgressSink("mint uplink", "done")
+	}
 
 	// --- SSH config ---
 	if err := offerSSHConfig(ctx, deps, pubKeyPath, tw); err != nil {
@@ -308,6 +317,9 @@ func runOnboarding(ctx context.Context, cfg Config, deps Deps, tw *tableWriter, 
 	_, _ = fmt.Fprintf(deps.Output, "\nWaiting for Oberth to become ready...\n")
 	if err := WaitForReady(ctx, cfg, deps); err != nil {
 		return err
+	}
+	if deps.StepProgressSink != nil {
+		deps.StepProgressSink("audit genesis", "done")
 	}
 	printReadyWithNextSteps(w, baseURL, sshConfigured, color)
 	return nil

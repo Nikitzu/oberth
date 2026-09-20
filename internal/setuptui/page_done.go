@@ -103,13 +103,17 @@ func (p *donePage) view(state *WizardState, width, _ int) string {
 	_ = width
 	var b strings.Builder
 
-	// Completion line.
+	// Completion line — reflects actual step results, never fabricated.
 	greenStr := fmt.Sprintf("%d/%d", p.greenCount, p.totalSteps)
-	if p.greenCount == p.totalSteps {
-		greenStr = fmt.Sprintf("%d/%d", p.greenCount, p.totalSteps)
+	if p.greenCount >= p.totalSteps && p.totalSteps > 0 {
+		b.WriteString("  " + sText.Render("Setup complete — ") +
+			sGo.Render(greenStr+" steps green") + sText.Render(".") + "\n\n")
+	} else if p.totalSteps > 0 {
+		b.WriteString("  " + sText.Render("Setup finished with errors — ") +
+			sFail.Render(greenStr+" steps green") + sText.Render(".") + "\n\n")
+	} else {
+		b.WriteString("  " + sText.Render("Setup complete.") + "\n\n")
 	}
-	b.WriteString("  " + sText.Render("Setup complete — ") +
-		sGo.Render(greenStr+" steps green") + sText.Render(".") + "\n\n")
 
 	// Running now.
 	ns := state.Config.Namespace

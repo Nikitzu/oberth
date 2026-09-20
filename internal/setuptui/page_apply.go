@@ -237,61 +237,58 @@ func (p *applyPage) resetForRun() {
 	p.startTime = time.Now()
 }
 
-// stepPatterns maps installer output substrings to step indices. The installer
-// writes progress to deps.Output; the applyWriter matches these patterns to
-// advance the step tracker.
-var stepPatterns = []struct {
-	step    int
-	pattern string
-}{
-	{0, "helm"},
-	{1, "namespace"},
-	{2, "Installing Oberth"},
-	{2, "Upgrading Oberth"},
-	{3, "Waiting for"},
-	{3, "rollout"},
-	{4, "Installing OpenBao"},
-	{4, "Upgrading OpenBao"},
-	{5, "secretstore"},
-	{5, "secret store"},
-	{6, "release leg"},
-	{6, "release-tier"},
-	{7, "tls"},
-	{7, "fingerprint"},
-	{7, "SSH host key"},
-	{8, "uplink"},
-	{8, "Uplink"},
-	{9, "upstream"},
-	{9, "Upstream"},
-	{9, "discovery"},
-	{9, "deploy key"},
-	{10, "audit"},
-	{10, "genesis"},
-	{10, "Ready"},
-	{10, "readyz"},
+// stepNameToIndex maps the stable step identifiers emitted by the installer's
+// StepProgressSink to the TUI step tracker indices. Adding a new installer
+// step requires one entry here and one sink call in the installer.
+var stepNameToIndex = map[string]int{
+	"render chart":        0,
+	"apply namespace":     1,
+	"deploy oberth":       2,
+	"rollout ready":       3,
+	"install openbao":     4,
+	"secretstore server":  5,
+	"secretstore release": 6,
+	"tls fingerprints":    7,
+	"mint uplink":         8,
+	"upstream discovery":  9,
+	"audit genesis":       10,
 }
 
 // runInstaller runs the installer in a goroutine and sends progress messages
 // to ch — the channel owned by exactly this run. It closes ch when done.
+//
+// p.steps is owned by the Bubble Tea update goroutine; this method snapshots
+// step names and count into locals before the execute call and tracks
+// completion in a goroutine-local map — never reading p.steps again — to
+// avoid a data race between the two goroutines.
 func (p *applyPage) runInstaller(ctx context.Context, cfg installer.Config, ch chan tea.Msg) {
 	defer close(ch)
+
+	// Snapshot step metadata — after this point p.steps must not be read
+	// from this goroutine.
+	stepNames := make([]string, len(p.steps))
+	for i := range p.steps {
+		stepNames[i] = p.steps[i].name
+	}
+	totalSteps := len(stepNames)
+
+	// Local completion set — tracks which step indices the
+	// StepProgressSink has reported "done", so the error/completion
+	// paths can iterate without touching p.steps.
+	doneSet := make(map[int]bool)
 
 	// Mark the first step as running.
 	ch <- applyStepMsg{
 		step:   0,
-		total:  len(p.steps),
-		name:   p.steps[0].name,
+		total:  totalSteps,
+		name:   stepNames[0],
 		status: "running",
 	}
 
 	w := &applyWriter{
-		ch:          ch,
-		masker:      p.masker,
-		currentStep: 0,
-		totalSteps:  len(p.steps),
-		stepStarts:  make(map[int]time.Time),
+		ch:     ch,
+		masker: p.masker,
 	}
-	w.stepStarts[0] = time.Now()
 
 	execute := p.execInstaller
 	if execute == nil {
@@ -313,6 +310,11 @@ func (p *applyPage) runInstaller(ctx context.Context, cfg installer.Config, ch c
 	// the log stream, where the bare-line "oberth_" detection can never
 	// match (every box line starts with a border rune) and the raw values
 	// would land in the retained log lines.
+	//
+	// StepProgressSink replaces the old substring-pattern matching: the
+	// installer calls the sink with stable step identifiers at logical
+	// completion points; the TUI maps those to step indices via
+	// stepNameToIndex.
 	err := execute(ctx, cfg, installer.InstallDeps{
 		Output:     w,
 		Input:      strings.NewReader(""),
@@ -323,14 +325,37 @@ func (p *applyPage) runInstaller(ctx context.Context, cfg installer.Config, ch c
 			// Blocking send — credential delivery must never be dropped.
 			ch <- ceremonyTokenMsg{label: label, token: b}
 		},
+		StepProgressSink: func(step, status string) {
+			idx, ok := stepNameToIndex[step]
+			if !ok || idx >= totalSteps {
+				return
+			}
+			if status == "done" {
+				doneSet[idx] = true
+			}
+			ch <- applyStepMsg{
+				step:   idx,
+				total:  totalSteps,
+				name:   stepNames[idx],
+				status: status,
+			}
+		},
 	})
 
-	// Mark the last running step as done (or failed).
+	// On failure, mark the first non-done step as failed so the HOLD
+	// view names the step that blocked progress.
 	if err != nil {
+		failStep := totalSteps - 1
+		for i := 0; i < totalSteps; i++ {
+			if !doneSet[i] {
+				failStep = i
+				break
+			}
+		}
 		ch <- applyStepMsg{
-			step:   w.currentStep,
-			total:  len(p.steps),
-			name:   p.steps[min(w.currentStep, len(p.steps)-1)].name,
+			step:   failStep,
+			total:  totalSteps,
+			name:   stepNames[failStep],
 			status: "failed",
 			err:    err,
 		}
@@ -338,41 +363,29 @@ func (p *applyPage) runInstaller(ctx context.Context, cfg installer.Config, ch c
 		return
 	}
 
-	// Complete any remaining running step.
-	if w.currentStep < len(p.steps) {
-		elapsed := time.Since(w.stepStarts[w.currentStep])
-		ch <- applyStepMsg{
-			step:     w.currentStep,
-			total:    len(p.steps),
-			name:     p.steps[w.currentStep].name,
-			status:   "done",
-			duration: elapsed,
-		}
-	}
-
 	// Mark all remaining pending steps as done.
-	for i := w.currentStep + 1; i < len(p.steps); i++ {
-		ch <- applyStepMsg{
-			step:   i,
-			total:  len(p.steps),
-			name:   p.steps[i].name,
-			status: "done",
+	for i := 0; i < totalSteps; i++ {
+		if !doneSet[i] {
+			ch <- applyStepMsg{
+				step:   i,
+				total:  totalSteps,
+				name:   stepNames[i],
+				status: "done",
+			}
 		}
 	}
 
 	ch <- applyDoneMsg{}
 }
 
-// applyWriter is an io.Writer that captures installer output, matches step
-// patterns, detects the bearer token, and sends tea.Msg to the channel.
+// applyWriter is an io.Writer that captures installer output, masks secrets,
+// and sends log lines to the TUI channel. Step tracking is handled by the
+// StepProgressSink, not by output scraping.
 type applyWriter struct {
-	ch          chan tea.Msg
-	masker      *masker
-	mu          sync.Mutex
-	buf         bytes.Buffer
-	currentStep int
-	totalSteps  int
-	stepStarts  map[int]time.Time
+	ch     chan tea.Msg
+	masker *masker
+	mu     sync.Mutex
+	buf    bytes.Buffer
 }
 
 func (w *applyWriter) Write(p []byte) (int, error) {
@@ -397,44 +410,18 @@ func (w *applyWriter) Write(p []byte) (int, error) {
 }
 
 func (w *applyWriter) processLine(line string) {
-	// Check for bearer token: lines starting with "oberth_" or following
-	// "Uplink token for" are token values (see extractUplinkToken).
+	// Check for bearer token: lines starting with "oberth_" are token
+	// values (see extractUplinkToken). This backstop covers the rare case
+	// where a credential appears in the log stream without a CredentialSink
+	// delivery.
 	trimmed := strings.TrimSpace(line)
 	if strings.HasPrefix(trimmed, "oberth_") {
 		w.ch <- ceremonyTokenMsg{token: []byte(trimmed)}
 		return // Never send the token to the log tail.
 	}
 
-	// Match step patterns to advance the tracker.
-	for _, sp := range stepPatterns {
-		if sp.step > w.currentStep && strings.Contains(line, sp.pattern) {
-			// Complete the current step.
-			elapsed := time.Duration(0)
-			if start, ok := w.stepStarts[w.currentStep]; ok {
-				elapsed = time.Since(start)
-			}
-			w.ch <- applyStepMsg{
-				step:     w.currentStep,
-				total:    w.totalSteps,
-				name:     line,
-				status:   "done",
-				duration: elapsed,
-			}
-
-			// Start the new step.
-			w.currentStep = sp.step
-			w.stepStarts[sp.step] = time.Now()
-			w.ch <- applyStepMsg{
-				step:   sp.step,
-				total:  w.totalSteps,
-				name:   line,
-				status: "running",
-			}
-			break
-		}
-	}
-
-	// Send as log tail (masked).
+	// Send as log tail (masked). Step tracking is handled by the
+	// installer's StepProgressSink, not by output scraping.
 	masked := w.masker.mask(trimmed)
 	select {
 	case w.ch <- applyLogMsg{line: masked}:
@@ -509,11 +496,23 @@ func (p *applyPage) update(msg tea.Msg, state *WizardState) (page, tea.Cmd) {
 			p.ceremony = newCeremony.(*ceremonyPage)
 			if p.ceremony.acknowledged {
 				p.showCeremony = false
-				// If the installer has already finished, advance to done.
+				// Bug 1/2: the ceremony must NOT emit pageCompleteMsg.
+				// Check the real apply state after dismissing the overlay.
+				if p.holdState {
+					// Installer failed while the ceremony was showing —
+					// land on the HOLD view so the user sees the error.
+					return p, nil
+				}
 				if p.applyDone {
+					// Installer finished cleanly — advance to done.
 					return p, func() tea.Msg { return pageCompleteMsg{} }
 				}
+				// Installer still running — resume consuming its
+				// messages now that the ceremony overlay is dismissed.
+				return p, p.listenForMsg()
 			}
+			// Not acknowledged — forward non-pageCompleteMsg commands
+			// (clipboard copy, etc.).
 			return p, cmd
 		}
 

@@ -64,6 +64,10 @@ type InstallDeps struct {
 	// reach the masker and the shown-once ceremony as data, not as text to
 	// be re-parsed out of box-drawing characters.
 	CredentialSink func(label, value string)
+	// StepProgressSink, when non-nil, receives structured step completion
+	// events for TUI progress tracking. Step names are stable identifiers
+	// matched by the TUI's stepNameToIndex map.
+	StepProgressSink func(step, status string)
 }
 
 func (deps InstallDeps) withDefaults() InstallDeps {
@@ -198,19 +202,20 @@ func Execute(ctx context.Context, cfg Config, deps InstallDeps) error {
 	}()
 
 	return Run(ctx, cfg, Deps{
-		Output:          deps.Output,
-		Input:           deps.Input,
-		RunHelm:         deps.RunHelm,
-		RunCommand:      deps.RunCommand,
-		RunInteractive:  deps.RunInteractive,
-		IsTerminal:      deps.IsTerminal,
-		KubeClient:      kubeClient,
-		RestConfig:      restConfig,
-		ContextName:     selectedContext,
-		KindClusterName: kindClusterName,
-		ReadPassword:    readPw,
-		MakeRaw:         makeRaw,
-		CredentialSink:  deps.CredentialSink,
+		Output:           deps.Output,
+		Input:            deps.Input,
+		RunHelm:          deps.RunHelm,
+		RunCommand:       deps.RunCommand,
+		RunInteractive:   deps.RunInteractive,
+		IsTerminal:       deps.IsTerminal,
+		KubeClient:       kubeClient,
+		RestConfig:       restConfig,
+		ContextName:      selectedContext,
+		KindClusterName:  kindClusterName,
+		ReadPassword:     readPw,
+		MakeRaw:          makeRaw,
+		CredentialSink:   deps.CredentialSink,
+		StepProgressSink: deps.StepProgressSink,
 	})
 }
 

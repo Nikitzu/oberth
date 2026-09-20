@@ -451,8 +451,14 @@ func (w *wizard) renderContent() string {
 			bandPercent = float64(w.page+1) / float64(totalPages)
 		}
 	default:
-		// Done page: full band.
-		bandPercent = 1.0
+		// Done page: band reflects actual step completion, not a
+		// hardcoded 100%. A partial completion after failures must not
+		// show a full bar.
+		if dp, ok := w.pages[w.page].(*donePage); ok && dp.totalSteps > 0 {
+			bandPercent = float64(dp.greenCount) / float64(dp.totalSteps)
+		} else {
+			bandPercent = 1.0
+		}
 	}
 	b.WriteString(w.band.ViewAs(bandPercent))
 
