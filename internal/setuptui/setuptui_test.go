@@ -772,7 +772,10 @@ func TestCeremonyAckMidApplyResumesListening(t *testing.T) {
 	}
 
 	cmd := p.startApply(state)
-	// Pump until the ceremony appears.
+	// Pump until the ceremony appears. Save the existing listener — in
+	// the real Bubble Tea runtime this cmd would already be running in a
+	// goroutine, consuming the channel.
+	var existingListener tea.Cmd
 	for i := 0; i < 200 && cmd != nil; i++ {
 		msg := cmd()
 		if _, ok := msg.(pageCompleteMsg); ok {
@@ -782,6 +785,7 @@ func TestCeremonyAckMidApplyResumesListening(t *testing.T) {
 		next, cmd = p.update(msg, state)
 		p = next.(*applyPage)
 		if p.showCeremony {
+			existingListener = cmd
 			break
 		}
 	}
@@ -793,14 +797,11 @@ func TestCeremonyAckMidApplyResumesListening(t *testing.T) {
 	_, _ = p.update(keyPress('r', "r"), state)
 	_, cmd = p.update(enterKey(), state)
 
-	// The apply page must NOT have emitted pageCompleteMsg — the
-	// installer is still running.
-	if cmd == nil {
-		t.Fatal("after ceremony ack, a listenForMsg cmd must be returned")
-	}
-	msg := cmd()
-	if _, ok := msg.(pageCompleteMsg); ok {
-		t.Fatal("ceremony ack must not produce pageCompleteMsg while installer runs")
+	// The fix: cmd must be nil — the existing listener chain from the
+	// ceremonyTokenMsg handler is already alive and draining the channel.
+	// Returning another listenForMsg here would create a dual consumer.
+	if cmd != nil {
+		t.Fatal("after ceremony ack mid-apply, cmd must be nil — the existing listener chain is already draining")
 	}
 	if p.showCeremony {
 		t.Fatal("ceremony overlay must be dismissed after ack")
@@ -809,10 +810,73 @@ func TestCeremonyAckMidApplyResumesListening(t *testing.T) {
 	// Let the installer finish.
 	close(installerDone)
 
-	// Pump to completion.
-	done := pumpApply(t, p, state, func() tea.Msg { return msg }, 200)
+	// The existing listener (from before the ceremony overlay) drives
+	// the remaining messages to completion.
+	done := pumpApply(t, p, state, existingListener, 200)
 	if done == nil {
 		t.Fatal("installer should complete after unblocking")
+	}
+}
+
+// --- Dual-consumer defense: ceremony ack mid-apply, then installer fails ---
+
+func TestCeremonyAckMidApplyThenInstallerFailsLandsOnHold(t *testing.T) {
+	p := newApplyPage()
+	state := &WizardState{}
+
+	// Stub installer: delivers a credential, then continues and FAILS.
+	installerDone := make(chan struct{})
+	p.execInstaller = func(_ context.Context, _ installer.Config, deps installer.InstallDeps) error {
+		deps.CredentialSink("Bearer token", "oberth_test_token")
+		if deps.StepProgressSink != nil {
+			deps.StepProgressSink("render chart", "done")
+		}
+		<-installerDone
+		return errors.New("helm timeout after ceremony")
+	}
+
+	cmd := p.startApply(state)
+	// Pump until the ceremony appears; save the existing listener.
+	var existingListener tea.Cmd
+	for i := 0; i < 200 && cmd != nil; i++ {
+		msg := cmd()
+		if _, ok := msg.(pageCompleteMsg); ok {
+			t.Fatal("pageCompleteMsg must not arrive while installer is running")
+		}
+		var next page
+		next, cmd = p.update(msg, state)
+		p = next.(*applyPage)
+		if p.showCeremony {
+			existingListener = cmd
+			break
+		}
+	}
+	if !p.showCeremony {
+		t.Fatal("ceremony must be showing after credential delivery")
+	}
+
+	// Ack the ceremony mid-run.
+	_, _ = p.update(keyPress('r', "r"), state)
+	_, cmd = p.update(enterKey(), state)
+	if cmd != nil {
+		t.Fatal("after ceremony ack mid-apply, cmd must be nil")
+	}
+
+	// Installer fails.
+	close(installerDone)
+
+	// Drain the existing listener through to the failure.
+	done := pumpApply(t, p, state, existingListener, 200)
+
+	// pageCompleteMsg must NOT have arrived — the installer failed.
+	if done != nil {
+		t.Fatal("pageCompleteMsg must not arrive for a failed install after ceremony ack")
+	}
+	if !p.holdState {
+		t.Fatal("page must be in HOLD after installer failure post-ceremony-ack")
+	}
+	if !p.applyDone {
+		t.Fatal("applyDone must be set after installer failure")
 	}
 }
 

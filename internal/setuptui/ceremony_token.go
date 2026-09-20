@@ -60,6 +60,8 @@ func (p *ceremonyPage) addCredential(label string, value []byte) {
 	}
 	p.entries = append(p.entries, ceremonyEntry{label: label, value: cp})
 	p.acknowledged = false
+	p.revealed = false
+	p.copied = false
 }
 
 // hasCredentials reports whether any un-zeroed credential is held.

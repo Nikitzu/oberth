@@ -412,7 +412,12 @@ func (w *wizard) renderContent() string {
 		lipgloss.NewStyle().Foreground(cPurple).Render(brandMark),
 		sTopBar.Render(fmt.Sprintf("oberth setup — %s", w.pages[w.page].title())),
 	)
-	topRight := sTopBar.Render(fmt.Sprintf("step %d/%d ", w.page+1, totalPages))
+	var topRight string
+	if w.page+1 > totalPages {
+		topRight = "" // done page — no step counter
+	} else {
+		topRight = sTopBar.Render(fmt.Sprintf("step %d/%d ", w.page+1, totalPages))
+	}
 	padLen := w.width - lipgloss.Width(topLeft) - lipgloss.Width(topRight)
 	if padLen < 1 {
 		padLen = 1

@@ -458,6 +458,13 @@ func (p *applyPage) update(msg tea.Msg, state *WizardState) (page, tea.Cmd) {
 
 	case applyDoneMsg:
 		p.applyDone = true
+		// Defense-in-depth: if holdState is already set (by a failed
+		// applyStepMsg), no stray nil-error done message can advance
+		// past the HOLD view. This guards against the dual-consumer
+		// bug where a closed channel synthesizes applyDoneMsg{}.
+		if p.holdState {
+			return p, nil
+		}
 		if msg.err != nil {
 			p.holdState = true
 			p.holdError = msg.err.Error()
@@ -507,9 +514,11 @@ func (p *applyPage) update(msg tea.Msg, state *WizardState) (page, tea.Cmd) {
 					// Installer finished cleanly — advance to done.
 					return p, func() tea.Msg { return pageCompleteMsg{} }
 				}
-				// Installer still running — resume consuming its
-				// messages now that the ceremony overlay is dismissed.
-				return p, p.listenForMsg()
+				// Installer still running — the existing listener
+				// chain (from the ceremonyTokenMsg handler) is already
+				// alive and draining the channel. Returning nil avoids
+				// creating a duplicate consumer on p.msgCh.
+				return p, nil
 			}
 			// Not acknowledged — forward non-pageCompleteMsg commands
 			// (clipboard copy, etc.).
