@@ -1,13 +1,16 @@
 package setuptui
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
@@ -1399,22 +1402,118 @@ func TestTLSPageInitDoesNotDuplicateNodeIP(t *testing.T) {
 	}
 }
 
-func TestWelcomeModeKeysSwitchToSequentialFlow(t *testing.T) {
-	for key, want := range map[rune]string{'a': "accessible", 'p': "plain"} {
-		p := newWelcomePage()
-		_, cmd := p.update(keyPress(key, string(key)), &WizardState{})
-		if cmd == nil {
-			t.Fatalf("%q on the welcome page must produce a command", key)
+// --- ctrl+c must always work: a / p are not runtime mode switches, and the
+// --- plain prompt loop honors cancellation (main maps SIGINT into ctx) ---
+
+func TestWelcomeLettersDoNotSwitchMode(t *testing.T) {
+	p := newWelcomePage()
+	state := &WizardState{}
+	for _, r := range []rune{'a', 'p'} {
+		if _, cmd := p.update(keyPress(r, string(r)), state); cmd != nil {
+			t.Fatalf("%q on the welcome page must do nothing, got a command", r)
 		}
-		msg, ok := cmd().(switchModeMsg)
-		if !ok || msg.mode != want {
-			t.Fatalf("%q must request the %s flow, got %#v", key, want, msg)
+	}
+	view := stripAnsi(p.view(state, 100, 30))
+	for _, banned := range []string{"accessible", "plain"} {
+		if strings.Contains(view, banned) {
+			t.Errorf("welcome page must not advertise a %s mode switch:\n%s", banned, view)
 		}
-		w := newWizard(Options{})
-		_, quit := w.Update(msg)
-		if w.switchMode != want || !w.quitting || quit == nil {
-			t.Fatalf("wizard must record %q and quit: mode=%q quitting=%v cmd=%v", want, w.switchMode, w.quitting, quit != nil)
+	}
+	for _, want := range []string{"press enter to begin setup", "q quit · ? help"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("welcome page missing %q:\n%s", want, view)
 		}
+	}
+	if keys := stripAnsi(p.keys()); strings.Contains(keys, "accessible") || strings.Contains(keys, "plain") {
+		t.Errorf("welcome key line must not advertise mode switches: %s", keys)
+	}
+}
+
+func TestNoPageLetterKeyQuitsOrSwitchesMode(t *testing.T) {
+	w := newWizard(Options{})
+	state := &w.state
+	for i, p := range w.pages {
+		if _, isApply := p.(*applyPage); isApply {
+			continue // init would start a real install
+		}
+		_ = p.init(state)
+		for _, r := range []rune{'a', 'p'} {
+			_, cmd := p.update(keyPress(r, string(r)), state)
+			if cmd == nil {
+				continue // nothing, or text typed into a field
+			}
+			switch msg := cmd().(type) {
+			case tea.QuitMsg, pageCompleteMsg, pageBackMsg, pageJumpMsg:
+				t.Errorf("page %d (%s): %q must be text or nothing, got %T", i, p.title(), r, msg)
+			}
+		}
+	}
+}
+
+func TestRuntimeInterruptedClassifiesSignalsOnly(t *testing.T) {
+	cases := []struct {
+		err  error
+		want bool
+	}{
+		{tea.ErrInterrupted, true},
+		{fmt.Errorf("%w: %w", tea.ErrProgramKilled, context.Canceled), true},
+		{fmt.Errorf("%w: %w", tea.ErrProgramKilled, tea.ErrProgramPanic), false},
+		{tea.ErrProgramKilled, false},
+		{errors.New("render failed"), false},
+	}
+	for _, c := range cases {
+		if got := runtimeInterrupted(c.err); got != c.want {
+			t.Errorf("runtimeInterrupted(%v) = %v, want %v", c.err, got, c.want)
+		}
+	}
+}
+
+func TestReadLineReturnsWhenContextIsCanceled(t *testing.T) {
+	pr, pw := io.Pipe() // a terminal with nobody typing
+	defer func() { _ = pw.Close() }()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, err := readLine(ctx, bufio.NewReader(pr))
+		done <- err
+	}()
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, installer.ErrInterrupted) {
+			t.Fatalf("canceled read must report ErrInterrupted, got %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("readLine ignored cancellation — this is the ctrl+c trap")
+	}
+}
+
+func TestReadLineStillDeliversLines(t *testing.T) {
+	line, err := readLine(context.Background(), bufio.NewReader(strings.NewReader("hello\n")))
+	if err != nil || line != "hello\n" {
+		t.Fatalf("readLine = %q, %v", line, err)
+	}
+}
+
+func TestPlainModeStopsAtPromptWhenInterrupted(t *testing.T) {
+	pr, pw := io.Pipe() // nobody ever types
+	defer func() { _ = pw.Close() }()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // ctrl+c arrived: main's signal.NotifyContext cancels ctx
+
+	var out bytes.Buffer
+	done := make(chan error, 1)
+	go func() { done <- Run(ctx, Options{Plain: true}, pr, &out) }()
+	select {
+	case err := <-done:
+		if !errors.Is(err, installer.ErrInterrupted) {
+			t.Fatalf("interrupted plain setup must return ErrInterrupted, got %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("plain setup kept waiting for input after ctrl+c")
+	}
+	if !strings.Contains(out.String(), "launch site") {
+		t.Fatalf("plain setup should have reached its first prompt before stopping:\n%s", out.String())
 	}
 }
 
@@ -1472,7 +1571,7 @@ func TestNoWizardPageSaysNotImplemented(t *testing.T) {
 			t.Errorf("page %d (%s) says 'not implemented':\n%s", i, p.title(), view)
 		}
 		keys := stripAnsi(p.keys())
-		for _, dead := range []string{"filter", "edit sans", "discovery"} {
+		for _, dead := range []string{"filter", "edit sans", "discovery", "accessible", "plain"} {
 			if strings.Contains(keys, dead) {
 				t.Errorf("page %d (%s) advertises %q, which it does not handle: %s", i, p.title(), dead, keys)
 			}

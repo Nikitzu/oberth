@@ -28,7 +28,7 @@ func newWelcomePage() *welcomePage {
 func (p *welcomePage) title() string    { return "mission briefing" }
 func (p *welcomePage) question() string { return "" }
 func (p *welcomePage) keys() string {
-	return sKey.Render("enter") + " begin · " + sKey.Render("a") + " accessible · " + sKey.Render("p") + " plain · " + sKey.Render("q") + " quit"
+	return sKey.Render("enter") + " begin · " + sKey.Render("q") + " quit"
 }
 
 func (p *welcomePage) init(state *WizardState) tea.Cmd {
@@ -62,13 +62,12 @@ func (p *welcomePage) update(msg tea.Msg, state *WizardState) (page, tea.Cmd) {
 		switch msg.String() {
 		case "enter":
 			return p, func() tea.Msg { return pageCompleteMsg{} }
-		case "a":
-			return p, func() tea.Msg { return switchModeMsg{mode: "accessible"} }
-		case "p":
-			return p, func() tea.Msg { return switchModeMsg{mode: "plain"} }
 		case "q", "esc":
 			return p, tea.Quit
 		}
+		// No other letter does anything here. Accessible and plain modes
+		// are startup flags (--accessible, --plain), never a key press: one
+		// stray letter must not change the whole interaction model.
 	}
 	return p, nil
 }
@@ -86,10 +85,8 @@ func (p *welcomePage) view(_ *WizardState, width, height int) string {
 		detected = sMuted.Render(p.detectedLine)
 	}
 
-	prompt := sKey.Render("enter") + sMuted.Render(" begin setup")
-	modes := sKey.Render("a") + sMuted.Render(" accessible · ") +
-		sKey.Render("p") + sMuted.Render(" plain · ") +
-		sKey.Render("q") + sMuted.Render(" quit")
+	prompt := sMuted.Render("press ") + sKey.Render("enter") + sMuted.Render(" to begin setup")
+	hints := sKey.Render("q") + sMuted.Render(" quit · ") + sKey.Render("?") + sMuted.Render(" help")
 
 	content := lipgloss.JoinVertical(lipgloss.Center,
 		"",
@@ -102,7 +99,7 @@ func (p *welcomePage) view(_ *WizardState, width, height int) string {
 		"",
 		prompt,
 		"",
-		modes,
+		hints,
 	)
 
 	// Center content in the available space.

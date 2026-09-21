@@ -2,6 +2,7 @@ package setuptui
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -45,11 +46,6 @@ type pageBackMsg struct{}
 
 // pageJumpMsg requests a jump to a specific page (1-based, from review).
 type pageJumpMsg struct{ page int }
-
-// switchModeMsg asks the wizard to leave the TUI and continue in the
-// sequential flow — "plain" or "accessible" — the welcome page advertises
-// on a / p. The TUI program exits; Run hands the same options to runPlain.
-type switchModeMsg struct{ mode string }
 
 // applyStepMsg reports progress from the apply phase.
 type applyStepMsg struct {
@@ -126,10 +122,12 @@ type WizardState struct {
 }
 
 // Run is the main entry point for the setup wizard. It creates a Bubble Tea
-// program with the wizard model and runs it.
-func Run(ctx context.Context, opts Options, output io.Writer) error {
+// program with the wizard model and runs it. The interaction model is a
+// startup decision: --plain / --accessible (or a non-interactive terminal)
+// select the sequential flow, and nothing inside the TUI can switch to it.
+func Run(ctx context.Context, opts Options, input io.Reader, output io.Writer) error {
 	if opts.Plain || opts.Accessible {
-		return runPlain(ctx, opts, output)
+		return runPlain(ctx, opts, input, output)
 	}
 
 	w := newWizard(opts)
@@ -149,23 +147,15 @@ func Run(ctx context.Context, opts Options, output io.Writer) error {
 	}
 
 	if err != nil {
+		if runtimeInterrupted(err) {
+			return installer.ErrInterrupted
+		}
 		return fmt.Errorf("setup wizard: %w", err)
 	}
 
 	// Check if the wizard was aborted.
 	if isWizard && wiz.aborted {
 		return installer.ErrInterrupted
-	}
-
-	// a / p on the welcome page: the TUI has torn down (terminal restored,
-	// alt screen gone), so the sequential flow can own stdin/stdout now.
-	if isWizard && wiz.switchMode != "" {
-		if wiz.switchMode == "accessible" {
-			opts.Accessible = true
-		} else {
-			opts.Plain = true
-		}
-		return runPlain(ctx, opts, output)
 	}
 
 	// --dry-mode: print the equivalent non-interactive command on the
@@ -182,6 +172,15 @@ func Run(ctx context.Context, opts Options, output io.Writer) error {
 	return nil
 }
 
+// runtimeInterrupted reports whether the TUI program ended because a signal
+// reached it — SIGINT/SIGTERM through main's signal.NotifyContext (Bubble
+// Tea wraps the context error in ErrProgramKilled) or Bubble Tea's own
+// interrupt handling — as opposed to a wizard failure or a panic. A signal
+// is the user's ctrl+c by another route and gets the same silent exit 130.
+func runtimeInterrupted(err error) bool {
+	return errors.Is(err, tea.ErrInterrupted) || errors.Is(err, context.Canceled)
+}
+
 // wizard is the root tea.Model that routes between pages.
 type wizard struct {
 	opts        Options
@@ -194,9 +193,8 @@ type wizard struct {
 	showHelp    bool
 	aborted     bool
 	quitting    bool
-	confirmQuit bool   // first ctrl+c arms, second aborts (S10: confirmed abort)
-	dryDone     bool   // --dry-mode: wizard completed through review
-	switchMode  string // "plain" / "accessible": continue sequentially after the TUI exits
+	confirmQuit bool // first ctrl+c arms, second aborts (S10: confirmed abort)
+	dryDone     bool // --dry-mode: wizard completed through review
 	started     time.Time
 }
 
@@ -321,11 +319,6 @@ func (w *wizard) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return w, cmd
 		}
 		return w, nil
-
-	case switchModeMsg:
-		w.switchMode = msg.mode
-		w.quitting = true
-		return w, tea.Quit
 	}
 
 	// Delegate to current page.
@@ -545,7 +538,6 @@ func (w *wizard) overlayHelp(backdrop string) string {
 		sKey.Render("navigate")+"   "+sMuted.Render("up/down move · left/right pick · tab next field"),
 		sKey.Render("advance")+"    "+sMuted.Render("enter continue · esc back (answers kept)"),
 		sKey.Render("review")+"     "+sMuted.Render(fmt.Sprintf("1..%d revisit a section · d preview the command", len(reviewSectionPages))),
-		sKey.Render("modes")+"      "+sMuted.Render("welcome screen: a accessible · p plain"),
 		sKey.Render("abort")+"      "+sMuted.Render("ctrl+c twice — the first press only asks"),
 		"",
 		sMuted.Render("the wizard is a skin over ")+sInfo.Render("oberth install")+sMuted.Render(" — every answer maps to"),

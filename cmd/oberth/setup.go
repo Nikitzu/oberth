@@ -13,7 +13,7 @@ import (
 	"github.com/oberthci/oberth/internal/setuptui"
 )
 
-func runSetup(ctx context.Context, arguments []string, _ io.Reader, output io.Writer) error {
+func runSetup(ctx context.Context, arguments []string, input io.Reader, output io.Writer) error {
 	flags := flag.NewFlagSet("setup", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 
@@ -48,7 +48,7 @@ func runSetup(ctx context.Context, arguments []string, _ io.Reader, output io.Wr
 	// version `oberth install` would (never a hardcoded placeholder).
 	opts.BinaryVersion = version
 
-	return setuptui.Run(ctx, opts, output)
+	return setuptui.Run(ctx, opts, input, output)
 }
 
 // isTTY reports whether a writer is connected to a terminal.

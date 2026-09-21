@@ -3,6 +3,7 @@ package setuptui
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -15,15 +16,17 @@ import (
 
 // runPlain implements the accessible/plain sequential fallback (S12).
 // Same pages, same order, same validation, same security properties.
-// No TUI, no color, no cursor addressing.
-func runPlain(ctx context.Context, opts Options, output io.Writer) error {
+// No TUI, no color, no cursor addressing. It is reached only through the
+// --plain / --accessible flags (or a non-interactive terminal) — never by a
+// key press inside the TUI.
+func runPlain(ctx context.Context, opts Options, input io.Reader, output io.Writer) error {
 	w := func(format string, a ...any) { _, _ = fmt.Fprintf(output, format, a...) }
 	wln := func(a ...any) { _, _ = fmt.Fprintln(output, a...) }
 	// step prints the same "step n/N — stage" header the TUI's top bar
 	// shows, with N derived from the page table so the two never drift.
 	step := func(n int, stage string) { w("  step %d/%d — %s\n", n, totalPages, stage) }
 
-	input := bufio.NewReader(os.Stdin)
+	reader := bufio.NewReader(input)
 	state := &WizardState{
 		Config: installer.Config{
 			Dev:       true,
@@ -46,7 +49,10 @@ func runPlain(ctx context.Context, opts Options, output io.Writer) error {
 			} else {
 				w("  %s: ", label)
 			}
-			line, err := input.ReadString('\n')
+			line, err := readLine(ctx, reader)
+			if errors.Is(err, installer.ErrInterrupted) {
+				return "", err // ctrl+c: stop here, main exits 130
+			}
 			if err != nil && line == "" {
 				return "", fmt.Errorf("read %s: %w", label, err)
 			}
@@ -302,6 +308,34 @@ func runPlain(ctx context.Context, opts Options, output io.Writer) error {
 	state.Config.SecretStoreUndecided = !state.Config.InstallSecretStore && !state.Config.InstallSecretStoreDev
 	return installer.Execute(ctx, state.Config, installer.InstallDeps{
 		Output: output,
-		Input:  os.Stdin,
+		Input:  input,
 	})
+}
+
+// lineResult carries one line read off the prompt reader.
+type lineResult struct {
+	line string
+	err  error
+}
+
+// readLine reads one line from r and gives up the moment ctx is canceled.
+// main wires SIGINT into ctx (signal.NotifyContext), so ctrl+c at a prompt
+// does not terminate the process by itself — a read that ignored ctx would
+// sit there until the next enter, with every further ctrl+c swallowed too.
+// Cancellation surfaces as installer.ErrInterrupted so main exits 130 the
+// way every other interrupted prompt does. The reading goroutine may stay
+// blocked on the terminal after cancellation; the process is on its way out
+// and nothing reads that stream afterwards.
+func readLine(ctx context.Context, r *bufio.Reader) (string, error) {
+	ch := make(chan lineResult, 1)
+	go func() {
+		line, err := r.ReadString('\n')
+		ch <- lineResult{line: line, err: err}
+	}()
+	select {
+	case <-ctx.Done():
+		return "", installer.ErrInterrupted
+	case res := <-ch:
+		return res.line, res.err
+	}
 }
