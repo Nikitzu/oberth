@@ -161,7 +161,7 @@ func (p *donePage) view(state *WizardState, width, _ int) string {
 	if p.deployKeyPending {
 		b.WriteString("  " + sFail.Render("deploy key pending") + "    " +
 			sText.Render("register it at the forge, then the server will become ready") + "\n")
-		b.WriteString("    " + sInfo.Render("kubectl get secret -n "+ns+" oberth-upstream-key -o jsonpath='{.data.key\\.pub}' | base64 -d") + "\n\n")
+		b.WriteString("    " + sInfo.Render("kubectl get secret -n "+ns+" oberth-upstream-key -o jsonpath='{.data.id_ed25519\\.pub}' | base64 -d") + "\n\n")
 	}
 
 	// Next steps.
