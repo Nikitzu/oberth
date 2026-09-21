@@ -9,160 +9,54 @@ import (
 )
 
 type storeConnectPage struct {
-	fields       [3]storeField
-	allowedPaths []string
-	focus        int
-	errMsg       string
-
-	// Verification state.
-	verifying    bool
-	verifyResult *vaultVerifyMsg
-}
-
-type storeField struct {
-	label       string
-	value       string
-	placeholder string
-	description string
+	address string
+	errMsg  string
 }
 
 func newStoreConnectPage() *storeConnectPage {
-	return &storeConnectPage{
-		fields: [3]storeField{
-			{label: "address", placeholder: "https://…", description: "where your OpenBao or Vault answers — https only"},
-			{label: "ca certificate", placeholder: "optional", description: "path to the CA bundle — only needed for a private CA"},
-			{label: "allowed paths", description: "the secret paths releases may read"},
-		},
-		allowedPaths: []string{"oberth/data/release/*", "oberth/upstream/*"},
-	}
+	return &storeConnectPage{}
 }
 
 func (p *storeConnectPage) title() string    { return "propellant" }
 func (p *storeConnectPage) question() string { return "Connect the store." }
 func (p *storeConnectPage) keys() string {
-	return sKey.Render("↑/↓") + " fields · " + sKey.Render("enter") + " continue · " + sKey.Render("esc") + " back"
+	return sKey.Render("enter") + " continue · " + sKey.Render("esc") + " back"
 }
 
 func (p *storeConnectPage) init(state *WizardState) tea.Cmd {
 	if state.StoreAddress != "" {
-		p.fields[0].value = state.StoreAddress
+		p.address = state.StoreAddress
 	}
-	if state.StoreCACert != "" {
-		p.fields[1].value = state.StoreCACert
-	}
-	if len(state.AllowedPaths) > 0 {
-		p.allowedPaths = state.AllowedPaths
-	}
-	p.fields[2].value = strings.Join(p.allowedPaths, ", ")
-	p.focus = 0
 	p.errMsg = ""
-	p.verifyResult = nil
 	return nil
 }
 
 func (p *storeConnectPage) update(msg tea.Msg, state *WizardState) (page, tea.Cmd) {
 	switch msg := msg.(type) {
-	case vaultVerifyMsg:
-		p.verifying = false
-		p.verifyResult = &msg
-		if msg.err != nil {
-			p.errMsg = msg.err.Error()
-		}
-		return p, nil
-
 	case tea.KeyPressMsg:
 		switch msg.String() {
-		case "tab", "down":
-			p.focus = (p.focus + 1) % 4 // address(0), CA cert(1), paths(2), actions(3)
-			p.errMsg = ""
-		case "shift+tab", "up":
-			p.focus = (p.focus + 3) % 4
-			p.errMsg = ""
-		case "v":
-			// Focus 0-2 are text fields: 'v' is text input.
-			if p.focus == 0 || p.focus == 1 {
-				p.fields[p.focus].value += "v"
-				return p, nil
-			}
-			if p.focus == 2 {
-				if len(p.allowedPaths) > 0 {
-					last := len(p.allowedPaths) - 1
-					p.allowedPaths[last] += "v"
-					p.fields[2].value = strings.Join(p.allowedPaths, ", ")
-				}
-				return p, nil
-			}
-			// Focus 3 (actions row): trigger verify.
-			if err := p.validateFields(); err != "" {
-				p.errMsg = err
-				return p, nil
-			}
-			p.verifying = true
-			p.errMsg = ""
-			return p, probeVault(p.fields[0].value, p.fields[1].value)
-		case "n":
-			// Focus 0-2 are text fields: 'n' is text input.
-			if p.focus == 0 || p.focus == 1 {
-				p.fields[p.focus].value += "n"
-				return p, nil
-			}
-			if p.focus == 2 {
-				if len(p.allowedPaths) > 0 {
-					last := len(p.allowedPaths) - 1
-					p.allowedPaths[last] += "n"
-					p.fields[2].value = strings.Join(p.allowedPaths, ", ")
-				}
-				return p, nil
-			}
-			// Focus 3 (actions row): add a path.
-			p.allowedPaths = append(p.allowedPaths, "")
-			p.fields[2].value = strings.Join(p.allowedPaths, ", ")
-			return p, nil
 		case "enter":
-			if err := p.validateFields(); err != "" {
-				p.errMsg = err
+			if err := validateStoreAddress(p.address); err != nil {
+				p.errMsg = err.Error()
 				return p, nil
 			}
-			state.StoreAddress = p.fields[0].value
-			state.StoreCACert = p.fields[1].value
-			state.AllowedPaths = p.allowedPaths
-			state.Config.ArgoVaultAddress = p.fields[0].value
+			state.StoreAddress = p.address
+			state.Config.ArgoVaultAddress = p.address
 			return p, func() tea.Msg { return pageCompleteMsg{} }
 		case "esc":
 			return p, func() tea.Msg { return pageBackMsg{} }
 		case "backspace":
-			if p.focus < 2 {
-				v := p.fields[p.focus].value
-				if len(v) > 0 {
-					p.fields[p.focus].value = v[:len(v)-1]
-				}
-			} else if p.focus == 2 && len(p.allowedPaths) > 0 {
-				last := len(p.allowedPaths) - 1
-				if len(p.allowedPaths[last]) > 0 {
-					p.allowedPaths[last] = p.allowedPaths[last][:len(p.allowedPaths[last])-1]
-				}
-				p.fields[2].value = strings.Join(p.allowedPaths, ", ")
+			if len(p.address) > 0 {
+				p.address = p.address[:len(p.address)-1]
 			}
 		default:
 			text := msg.String()
-			if p.focus < 2 && len(text) == 1 {
-				p.fields[p.focus].value += text
-			} else if p.focus == 2 && len(text) == 1 && len(p.allowedPaths) > 0 {
-				last := len(p.allowedPaths) - 1
-				p.allowedPaths[last] += text
-				p.fields[2].value = strings.Join(p.allowedPaths, ", ")
+			if len(text) == 1 {
+				p.address += text
 			}
 		}
 	}
 	return p, nil
-}
-
-func (p *storeConnectPage) validateFields() string {
-	// S7: https only at the field level — shared with the plain path (S12).
-	if err := validateStoreAddress(p.fields[0].value); err != nil {
-		return err.Error()
-	}
-	return ""
 }
 
 func (p *storeConnectPage) view(_ *WizardState, _, _ int) string {
@@ -170,83 +64,22 @@ func (p *storeConnectPage) view(_ *WizardState, _, _ int) string {
 
 	b.WriteString("  " + sQuestion.Render(p.question()) + "\n\n")
 
-	// Address and CA certificate fields.
-	for i := 0; i < 2; i++ {
-		f := p.fields[i]
-		cursor := "  "
-		labelStyle := sMuted
-		if i == p.focus {
-			cursor = lipgloss.NewStyle().Foreground(cPurple).Render("❯ ")
-			labelStyle = lipgloss.NewStyle().Foreground(cPurple)
-		}
+	// Address field.
+	cursor := lipgloss.NewStyle().Foreground(cPurple).Render("❯ ")
+	labelStyle := lipgloss.NewStyle().Foreground(cPurple)
+	input := inputBox(p.address, "https://…", true)
 
-		input := inputBox(f.value, f.placeholder, i == p.focus)
-
-		_, _ = fmt.Fprintf(&b, "  %s%s %s\n", cursor, labelStyle.Render(fmt.Sprintf("%-16s", f.label)), input)
-		if i == p.focus && f.description != "" {
-			b.WriteString("    " + sMuted.Render(f.description) + "\n")
-		}
-		b.WriteString("\n")
-	}
-
-	// Allowed paths (editable when focused).
-	pathCursor := "  "
-	pathLabelStyle := sMuted
-	if p.focus == 2 {
-		pathCursor = lipgloss.NewStyle().Foreground(cPurple).Render("❯ ")
-		pathLabelStyle = lipgloss.NewStyle().Foreground(cPurple)
-	}
-	_, _ = fmt.Fprintf(&b, "  %s%s ", pathCursor, pathLabelStyle.Render(fmt.Sprintf("%-16s", "allowed paths")))
-	for i, path := range p.allowedPaths {
-		if i > 0 {
-			b.WriteString("  ")
-		}
-		// The last path is the one typing lands in when this row is focused.
-		b.WriteString(inputBox(path, "", p.focus == 2 && i == len(p.allowedPaths)-1))
-	}
-	b.WriteString("\n")
-	if p.focus == 2 {
-		b.WriteString("    " + sMuted.Render(p.fields[2].description) + "\n")
-	}
-	b.WriteString("\n")
+	_, _ = fmt.Fprintf(&b, "  %s%s %s\n", cursor, labelStyle.Render(fmt.Sprintf("%-16s", "address")), input)
+	b.WriteString("    " + sMuted.Render("where your OpenBao or Vault answers — https only") + "\n\n")
 
 	// Auth note.
 	b.WriteString("  " + sMuted.Render("oberth signs in with its own kubernetes identity (role oberth-secretstore)") + "\n")
 	b.WriteString("  " + sMuted.Render("and ") + sText.Render("never") +
 		sMuted.Render(" asks for an admin token — grant the role with setup-secretstore.sh") + "\n\n")
 
-	// Actions row (focus index 3): v verify, n add path.
-	actionStyle := sMuted
-	if p.focus == 3 {
-		actionStyle = lipgloss.NewStyle().Foreground(cPurple)
-	}
-	b.WriteString("  " + actionStyle.Render("v") + " " + actionStyle.Render("verify") +
-		"  " + actionStyle.Render("n") + " " + actionStyle.Render("add path") + "\n")
-
-	if p.verifying {
-		b.WriteString("    " + lipgloss.NewStyle().Foreground(cPurple).Render("⠸") + " verifying...\n")
-	} else if p.verifyResult != nil {
-		vr := p.verifyResult
-		if vr.reachable {
-			b.WriteString("    " + sGo.Render("✓") + " reachable      " +
-				sMuted.Render(fmt.Sprintf("tls %s · %d ms", vr.tlsVersion, vr.latency.Milliseconds())) + "\n")
-		} else if vr.err != nil {
-			b.WriteString("    " + sFail.Render("✗") + " " + sFail.Render(vr.err.Error()) + "\n")
-		}
-		if vr.serverLegOK {
-			b.WriteString("    " + sGo.Render("✓") + " server leg     " +
-				sMuted.Render(fmt.Sprintf("%d/%d allowed paths readable", vr.pathsOK, vr.pathsTotal)) + "\n")
-		}
-		switch vr.releaseLeg {
-		case "ok":
-			b.WriteString("    " + sGo.Render("✓") + " release leg\n")
-		case "pending":
-			b.WriteString("    " + lipgloss.NewStyle().Foreground(cPurple).Render("⠸") + " release leg    " +
-				sMuted.Render("probe pod · release sa") + "\n")
-		case "failed":
-			b.WriteString("    " + sFail.Render("✗") + " release leg\n")
-		}
-	}
+	// Post-install note.
+	b.WriteString("  " + sMuted.Render("CA certificate and allowed paths are configured after install via") + "\n")
+	b.WriteString("  " + sInfo.Render("oberth install --upgrade") + sMuted.Render(" or helm values") + "\n")
 
 	if p.errMsg != "" {
 		b.WriteString("\n  " + sFail.Render(p.errMsg) + "\n")

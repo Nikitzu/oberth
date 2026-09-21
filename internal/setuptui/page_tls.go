@@ -9,9 +9,8 @@ import (
 )
 
 type tlsPage struct {
-	tlsCursor int // 0=self-signed, 1=byo
-	sans      []string
-	errMsg    string
+	sans   []string
+	errMsg string
 }
 
 func newTLSPage() *tlsPage {
@@ -25,12 +24,9 @@ func (p *tlsPage) keys() string {
 }
 
 func (p *tlsPage) init(state *WizardState) tea.Cmd {
-	switch state.TLSMode {
-	case "byo":
-		p.tlsCursor = 1
-	default:
-		p.tlsCursor = 0
-	}
+	// Self-signed is the only implemented mode; BYO has no installer
+	// backing (no --tls-cert/--tls-key flags exist).
+	state.TLSMode = "self-signed"
 
 	// Pre-fill SANs from cluster info: service DNS, node name, node IP.
 	// The context name ("default", "k3s-tuxbox") is not a useful SAN —
@@ -59,21 +55,8 @@ func (p *tlsPage) update(msg tea.Msg, state *WizardState) (page, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyPressMsg:
 		switch msg.String() {
-		case "up", "k":
-			if p.tlsCursor > 0 {
-				p.tlsCursor--
-			}
-		case "down", "j":
-			if p.tlsCursor < 1 {
-				p.tlsCursor++
-			}
 		case "enter":
-			switch p.tlsCursor {
-			case 0:
-				state.TLSMode = "self-signed"
-			case 1:
-				state.TLSMode = "byo"
-			}
+			state.TLSMode = "self-signed"
 			state.Config.TLSExtraDNSNames = p.sans
 			return p, func() tea.Msg { return pageCompleteMsg{} }
 		case "esc":
@@ -91,38 +74,13 @@ func (p *tlsPage) view(state *WizardState, _, _ int) string {
 	// Every name and address the certificate will be valid for.
 	validFor := append(slices.Clone(p.sans), state.Config.TLSExtraIPs...)
 
-	options := []struct {
-		label string
-		desc  string
-	}{
-		{"generate a self-signed certificate (ed25519)",
-			"valid for: " + strings.Join(validFor, " · ")},
-		{"bring your own certificate + key",
-			"you point at the files — their contents are never shown"},
-	}
-
-	for i, opt := range options {
-		cursor := "      "
-		radio := "( )"
-		if i == p.tlsCursor {
-			cursor = "    " + lipgloss.NewStyle().Foreground(cPurple).Render("❯") + " "
-			radio = "(•)"
-		}
-
-		radioStyled := lipgloss.NewStyle().Foreground(cPurple).Render(radio)
-		label := sText.Render(opt.label)
-		descStyle := sMuted
-		if i == 1 {
-			descStyle = sHold // "contents are never shown" in Orange
-		}
-		desc := descStyle.Render(opt.desc)
-
-		b.WriteString(cursor + radioStyled + " " + label + "\n")
-		b.WriteString("          " + desc + "\n\n")
-	}
+	b.WriteString("    " + lipgloss.NewStyle().Foreground(cPurple).Render("(*)") +
+		" " + sText.Render("generate a self-signed certificate (ed25519)") + "\n")
+	b.WriteString("          " + sMuted.Render("valid for: "+strings.Join(validFor, " · ")) + "\n\n")
 
 	// Fingerprint note.
 	b.WriteString("  " + sMuted.Render("the fingerprint appears on the final screen — verify it before you trust it") + "\n")
+	b.WriteString("  " + sMuted.Render("bring-your-own certificate support is coming soon") + "\n")
 
 	if p.errMsg != "" {
 		b.WriteString("\n  " + sFail.Render(p.errMsg) + "\n")

@@ -2,6 +2,7 @@ package setuptui
 
 import (
 	"errors"
+	"fmt"
 	"net/url"
 	"strings"
 )
@@ -33,6 +34,24 @@ func validateStoreAddress(addr string) error {
 	}
 	if u.Host == "" {
 		return errors.New("address must include a host")
+	}
+	return nil
+}
+
+// validateUplinkIdentityTUI checks that identity is in the required name@host
+// format: exactly one "@", both parts non-empty, no whitespace. The same
+// validation the installer's onboard.go applies interactively — surfaced at
+// the field level so a malformed identity never reaches the apply phase.
+func validateUplinkIdentityTUI(identity string) error {
+	if strings.ContainsAny(identity, " \t") {
+		return fmt.Errorf("identity must be in the form name@host (e.g., alice@laptop)")
+	}
+	if strings.Count(identity, "@") != 1 {
+		return fmt.Errorf("identity must contain exactly one @ (e.g., alice@laptop)")
+	}
+	parts := strings.SplitN(identity, "@", 2)
+	if parts[0] == "" || parts[1] == "" {
+		return fmt.Errorf("identity must have non-empty name and host (e.g., alice@laptop)")
 	}
 	return nil
 }

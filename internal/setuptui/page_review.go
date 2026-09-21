@@ -185,7 +185,7 @@ func formatNamespacesSummary(state *WizardState) string {
 	}
 	argo := state.Config.ArgoNamespace
 	if argo == "" {
-		argo = "oberth-pipelines"
+		argo = "oberth-argo" // must match installer.DefaultArgoNamespace
 	}
 	openbao := state.Config.OpenBaoNamespace
 	if openbao == "" {

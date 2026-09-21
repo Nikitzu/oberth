@@ -50,6 +50,12 @@ var forgeAuthOptions = []struct {
 		description: "coming soon", comingSoon: true},
 }
 
+// forgeComingSoon lists forge types displayed but not yet functional (no URL
+// mapping in forgeUpstreamURL). The cursor may rest on them; enter rejects.
+var forgeComingSoon = map[string]bool{
+	"forgejo": true,
+}
+
 func newForgePage() *forgePage {
 	return &forgePage{
 		forgeOptions: []string{"codeberg", "github", "forgejo", "gitlab"},
@@ -154,6 +160,11 @@ func (p *forgePage) update(msg tea.Msg, state *WizardState) (page, tea.Cmd) {
 				p.errMsg = "organization is required"
 				return p, nil
 			}
+			selectedForge := p.forgeOptions[p.forgeCursor]
+			if forgeComingSoon[selectedForge] {
+				p.errMsg = selectedForge + " support is coming soon — choose codeberg, github, or gitlab"
+				return p, nil
+			}
 			if forgeAuthOptions[p.authCursor].comingSoon {
 				p.errMsg = "forge token via openbao is coming soon — choose deploy key per repo for now"
 				return p, nil
@@ -186,11 +197,22 @@ func (p *forgePage) view(_ *WizardState, _, _ int) string {
 	b.WriteString("  " + sectionLabel("Forge", p.focusField == forgeFocusForge) + "\n")
 	b.WriteString("    ")
 	for i, opt := range p.forgeOptions {
+		label := opt
+		if forgeComingSoon[opt] {
+			label = opt + " (soon)"
+		}
 		if i == p.forgeCursor {
 			chosen := lipgloss.NewStyle().Foreground(cPurple).Bold(p.focusField == forgeFocusForge)
-			b.WriteString(chosen.Render("❯ " + opt))
+			if forgeComingSoon[opt] {
+				chosen = sHold
+			}
+			b.WriteString(chosen.Render("❯ " + label))
 		} else {
-			b.WriteString("  " + sMuted.Render(opt))
+			style := sMuted
+			if forgeComingSoon[opt] {
+				style = sHold
+			}
+			b.WriteString("  " + style.Render(label))
 		}
 		if i < len(p.forgeOptions)-1 {
 			b.WriteString("     ")

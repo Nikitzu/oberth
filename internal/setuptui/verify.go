@@ -29,18 +29,6 @@ type clusterInfoMsg struct {
 	err       error
 }
 
-// vaultVerifyMsg carries the result of a vault/openbao reachability check.
-type vaultVerifyMsg struct {
-	reachable   bool
-	tlsVersion  string
-	latency     time.Duration
-	serverLegOK bool
-	pathsOK     int
-	pathsTotal  int
-	releaseLeg  string // "ok", "pending", "failed"
-	err         error
-}
-
 // forgeDiscoveryMsg carries the result of upstream forge discovery.
 type forgeDiscoveryMsg struct {
 	repos []discoveredRepo
@@ -168,19 +156,6 @@ func probeCluster(contextName string) tea.Cmd {
 			cores:     totalCores,
 			nodeName:  nodeName,
 			nodeIP:    nodeIP,
-		}
-	}
-}
-
-// probeVault returns a tea.Cmd that checks vault/openbao reachability.
-// This is a stub — the real implementation would call secretstore verify.
-func probeVault(_ string, _ string) tea.Cmd {
-	return func() tea.Msg {
-		// Stub: real implementation would probe the vault address.
-		return vaultVerifyMsg{
-			reachable:  false,
-			releaseLeg: "pending",
-			err:        fmt.Errorf("checking the connection from here is coming soon — the install verifies the store before it finishes"),
 		}
 	}
 }

@@ -3,6 +3,7 @@ package setuptui
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -34,7 +35,6 @@ type applyPage struct {
 	holdDetail   string
 	logTail      string
 	logLines     []string
-	showFullLog  bool
 	startTime    time.Time
 	masker       *masker
 	ceremony     *ceremonyPage
@@ -108,7 +108,7 @@ func (p *applyPage) keys() string {
 	if p.holdState {
 		return sKey.Render("r") + " retry · " + sKey.Render(fmt.Sprintf("1..%d", len(reviewSectionPages))) + " revisit page · " + sKey.Render("l") + " full log · " + sKey.Render("ctrl+c") + " abort"
 	}
-	return sKey.Render("l") + " full log · " + sKey.Render("ctrl+c") + " abort"
+	return sKey.Render("ctrl+c") + " abort"
 }
 
 // bandPercent returns the apply step progress as a fraction (0.0-1.0) for the
@@ -189,6 +189,15 @@ func (p *applyPage) startApply(state *WizardState) tea.Cmd {
 	cfg.SSHPublicKeyPath = state.SSHKeyPath
 	// The user already confirmed on the review page.
 	cfg.Yes = true
+
+	// Dev builds stamp BinaryVersion as "dev-<sha>". The installer's
+	// Validate guards against literal "dev" but not "dev-*", and there is
+	// no --chart/--chart-version escape hatch in the wizard. Clear
+	// ChartVersion so Validate does not derive a chart version from the
+	// dev stamp — the installer will use the latest published chart.
+	if strings.HasPrefix(cfg.BinaryVersion, "dev") {
+		cfg.ChartVersion = ""
+	}
 
 	// Reset for this run. A previous run's channel is closed by its
 	// runInstaller defer, and its steps carry terminal state — retry ('r')
@@ -345,6 +354,15 @@ func (p *applyPage) runInstaller(ctx context.Context, cfg installer.Config, ch c
 	// On failure, mark the first non-done step as failed so the HOLD
 	// view names the step that blocked progress.
 	if err != nil {
+		// ErrOnboardingPartial is a structured partial success: some steps
+		// completed, but manual action is needed for the rest. Do NOT mark
+		// remaining steps as failed — leave them pending so the done page
+		// shows accurate counts and guidance.
+		if errors.Is(err, installer.ErrOnboardingPartial) {
+			ch <- applyDoneMsg{err: err}
+			return
+		}
+
 		failStep := totalSteps - 1
 		for i := 0; i < totalSteps; i++ {
 			if !doneSet[i] {
@@ -466,9 +484,17 @@ func (p *applyPage) update(msg tea.Msg, state *WizardState) (page, tea.Cmd) {
 			return p, nil
 		}
 		if msg.err != nil {
-			p.holdState = true
-			p.holdError = msg.err.Error()
-			return p, nil
+			// ErrOnboardingPartial is a structured partial success: the
+			// deployment is up but manual steps remain (e.g. deploy key
+			// registration). Advance to the done page with accurate step
+			// counts instead of entering HOLD.
+			if errors.Is(msg.err, installer.ErrOnboardingPartial) {
+				// Fall through to ceremony check and done-page transition.
+			} else {
+				p.holdState = true
+				p.holdError = msg.err.Error()
+				return p, nil
+			}
 		}
 		// If the ceremony holds credentials that haven't been acknowledged,
 		// show the ceremony first.
@@ -526,9 +552,6 @@ func (p *applyPage) update(msg tea.Msg, state *WizardState) (page, tea.Cmd) {
 		}
 
 		switch msg.String() {
-		case "l":
-			p.showFullLog = !p.showFullLog
-			return p, nil
 		case "r":
 			if p.holdState {
 				// Retry: actually re-run the installer. The previous run's
@@ -598,9 +621,7 @@ func (p *applyPage) view(state *WizardState, width, height int) string {
 	}
 
 	if p.logTail != "" {
-		b.WriteString("\n  " + sMuted.Render(p.masker.mask(p.logTail)))
-		b.WriteString(strings.Repeat(" ", max(0, width-lipgloss.Width(p.logTail)-20)))
-		b.WriteString(sKey.Render("l") + " full log\n")
+		b.WriteString("\n  " + sMuted.Render(p.masker.mask(p.logTail)) + "\n")
 	}
 
 	return b.String()

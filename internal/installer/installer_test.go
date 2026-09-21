@@ -3804,8 +3804,9 @@ func TestFinishInstallNonInteractivePrintsManualSteps(t *testing.T) {
 	cfg := Config{}
 	_ = cfg.Validate()
 
-	if err := finishInstallTest(context.Background(), cfg, deps, &buf); err != nil {
-		t.Fatal(err)
+	err := finishInstallTest(context.Background(), cfg, deps, &buf)
+	if !errors.Is(err, ErrOnboardingPartial) {
+		t.Fatalf("non-interactive without onboarding config must return ErrOnboardingPartial, got %v", err)
 	}
 	output := buf.String()
 	for _, want := range []string{
@@ -3925,8 +3926,9 @@ func TestFinishInstallOnboardingSkipOnEmptyUpstream(t *testing.T) {
 	cfg := Config{}
 	_ = cfg.Validate()
 
-	if err := finishInstallTest(context.Background(), cfg, deps, &buf); err != nil {
-		t.Fatal(err)
+	err := finishInstallTest(context.Background(), cfg, deps, &buf)
+	if !errors.Is(err, ErrOnboardingPartial) {
+		t.Fatalf("empty upstream must return ErrOnboardingPartial, got %v", err)
 	}
 	output := buf.String()
 	if !strings.Contains(output, "No upstream given — skipping onboarding.") {
@@ -3950,8 +3952,9 @@ func TestFinishInstallOnboardingKeyRegistrationExhausted(t *testing.T) {
 	cfg := Config{}
 	_ = cfg.Validate()
 
-	if err := finishInstallTest(context.Background(), cfg, deps, &buf); err != nil {
-		t.Fatal(err)
+	err := finishInstallTest(context.Background(), cfg, deps, &buf)
+	if !errors.Is(err, ErrOnboardingPartial) {
+		t.Fatalf("exhausted key registration must return ErrOnboardingPartial, got %v", err)
 	}
 	// Registration only completes through a RERUN of upstream add (the
 	// incomplete bootstrap registers nothing), so every verification attempt
@@ -4034,8 +4037,9 @@ func TestFinishInstallOnboardingSurfacesUnexpectedProbeError(t *testing.T) {
 	cfg := Config{}
 	_ = cfg.Validate()
 
-	if err := finishInstallTest(context.Background(), cfg, deps, &buf); err != nil {
-		t.Fatal(err)
+	err := finishInstallTest(context.Background(), cfg, deps, &buf)
+	if !errors.Is(err, ErrOnboardingPartial) {
+		t.Fatalf("exhausted key registration with probe errors must return ErrOnboardingPartial, got %v", err)
 	}
 	output := buf.String()
 	// The borderless format separates the ⚠ symbol (ANSI-colorized) from the

@@ -111,6 +111,10 @@ func (p *uplinkPage) update(msg tea.Msg, state *WizardState) (page, tea.Cmd) {
 				p.errMsg = "identity is required"
 				return p, nil
 			}
+			if err := validateUplinkIdentityTUI(p.identity); err != nil {
+				p.errMsg = err.Error()
+				return p, nil
+			}
 			if len(p.sshKeys) == 0 {
 				p.errMsg = "no SSH public keys found in ~/.ssh"
 				return p, nil

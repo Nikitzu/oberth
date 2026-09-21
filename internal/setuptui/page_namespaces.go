@@ -33,7 +33,8 @@ func newNamespacesPage() *namespacesPage {
 	return &namespacesPage{
 		fields: [3]fieldState{
 			{label: "oberth", defaultVal: "oberth", description: "where oberth itself runs"},
-			{label: "pipelines", defaultVal: "oberth-pipelines", description: "where CI jobs run — kept apart from oberth itself"},
+			// defaultVal must match installer.DefaultArgoNamespace ("oberth-argo").
+			{label: "pipelines", defaultVal: "oberth-argo", description: "where CI jobs run — kept apart from oberth itself"},
 			{label: "openbao", defaultVal: "openbao", description: "where the secret store runs"},
 		},
 	}

@@ -9,6 +9,7 @@ import (
 	"os"
 	"strings"
 
+	"golang.org/x/crypto/ssh"
 	"k8s.io/client-go/tools/clientcmd"
 
 	"github.com/oberthci/oberth/internal/installer"
@@ -117,7 +118,8 @@ func runPlain(ctx context.Context, opts Options, input io.Reader, output io.Writ
 		return err
 	}
 	state.Config.Namespace = ns
-	argoNS, err := ask("Pipeline namespace", "oberth-pipelines", func(v string) error {
+	// Default must match installer.DefaultArgoNamespace ("oberth-argo").
+	argoNS, err := ask("Pipeline namespace", "oberth-argo", func(v string) error {
 		if err := validNamespace(v); err != nil {
 			return err
 		}
@@ -204,18 +206,12 @@ func runPlain(ctx context.Context, opts Options, input io.Reader, output io.Writ
 		state.StoreMode = "install-prod"
 	}
 
-	// Page 7: TLS.
+	// Page 7: TLS — self-signed is the only implemented mode (no --tls-cert/
+	// --tls-key in the installer). Informational only, like the TUI page.
 	step(7, "heat shield")
-	tlsMode, err := ask("TLS mode (self-signed/byo)", "self-signed", func(v string) error {
-		if v != "self-signed" && v != "byo" {
-			return fmt.Errorf("answer self-signed or byo")
-		}
-		return nil
-	})
-	if err != nil {
-		return err
-	}
-	state.TLSMode = tlsMode
+	wln("  TLS: self-signed certificate (ed25519) will be generated.")
+	wln("  Bring-your-own certificate support is coming soon.")
+	state.TLSMode = "self-signed"
 
 	// Page 8: Uplink.
 	step(8, "crew manifest")
@@ -227,11 +223,40 @@ func runPlain(ctx context.Context, opts Options, input io.Reader, output io.Writ
 	if host == "" {
 		host = "localhost"
 	}
-	identity, err := ask("Identity", user+"@"+host, nil)
+	identity, err := ask("Identity", user+"@"+host, func(v string) error {
+		return validateUplinkIdentityTUI(v)
+	})
 	if err != nil {
 		return err
 	}
 	state.UplinkIdentity = identity
+
+	// SSH public key path — required by hasOnboardingConfig() for the
+	// non-interactive onboarding path. Scan ~/.ssh for .pub files like the
+	// TUI does; default to ~/.ssh/id_ed25519.pub.
+	sshKeyDefault := "~/.ssh/id_ed25519.pub"
+	sshKey, err := ask("SSH public key", sshKeyDefault, func(v string) error {
+		expanded := v
+		if v == "~" || strings.HasPrefix(v, "~/") {
+			home, homeErr := os.UserHomeDir()
+			if homeErr != nil {
+				return fmt.Errorf("resolve home directory: %w", homeErr)
+			}
+			expanded = home + v[1:]
+		}
+		data, readErr := os.ReadFile(expanded) //nolint:gosec // G304: operator names their own key
+		if readErr != nil {
+			return fmt.Errorf("cannot read %s: %w", v, readErr)
+		}
+		if _, _, _, _, parseErr := ssh.ParseAuthorizedKey(data); parseErr != nil {
+			return fmt.Errorf("not a valid SSH public key: %w", parseErr)
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	state.SSHKeyPath = sshKey
 
 	// Page 9: Git (informational).
 	step(9, "comms check")
@@ -243,12 +268,14 @@ func runPlain(ctx context.Context, opts Options, input io.Reader, output io.Writ
 
 	// Page 10: Forge.
 	step(10, "ground station")
-	forge, err := ask("Forge (codeberg/github/forgejo/gitlab)", "codeberg", func(v string) error {
+	forge, err := ask("Forge (codeberg/github/gitlab)", "codeberg", func(v string) error {
 		switch v {
-		case "codeberg", "github", "forgejo", "gitlab":
+		case "codeberg", "github", "gitlab":
 			return nil
+		case "forgejo":
+			return fmt.Errorf("forgejo support is coming soon — choose codeberg, github, or gitlab")
 		}
-		return fmt.Errorf("forge must be codeberg, github, forgejo, or gitlab")
+		return fmt.Errorf("forge must be codeberg, github, or gitlab")
 	})
 	if err != nil {
 		return err
@@ -305,7 +332,10 @@ func runPlain(ctx context.Context, opts Options, input io.Reader, output io.Writ
 	if state.Config.BinaryVersion == "" {
 		state.Config.BinaryVersion = "dev"
 	}
-	state.Config.SecretStoreUndecided = !state.Config.InstallSecretStore && !state.Config.InstallSecretStoreDev
+	// The wizard has resolved the secret store choice — never re-prompt.
+	// When the user picked "connect existing", both InstallSecretStore flags
+	// are false, but the decision is made: SecretStoreUndecided must be false.
+	state.Config.SecretStoreUndecided = false
 	return installer.Execute(ctx, state.Config, installer.InstallDeps{
 		Output: output,
 		Input:  input,

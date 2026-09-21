@@ -89,13 +89,13 @@ func TestCanonicalNetworkPolicy(t *testing.T) {
 }
 
 func TestExecutionPageWritesInstallerVocabulary(t *testing.T) {
-	p := newExecutionPage() // default network policy display value is "strict"
+	p := newExecutionPage() // default network policy display value is "auto"
 	state := &WizardState{}
 	_, cmd := p.update(enterKey(), state)
 	if cmd == nil {
 		t.Fatal("expected pageCompleteMsg cmd from a valid execution page")
 	}
-	if state.Config.NetworkPolicy != "true" {
+	if state.Config.NetworkPolicy != "auto" {
 		t.Fatalf("NetworkPolicy = %q; the installer accepts only auto|true|false, display labels must never be written", state.Config.NetworkPolicy)
 	}
 }
@@ -471,36 +471,16 @@ func TestEscDismissesHelpOverlay(t *testing.T) {
 
 // --- Bug 2: hotkeys must not steal from text fields ---
 
-func TestStoreConnectHotkeysDoNotStealFromTextFields(t *testing.T) {
+func TestStoreConnectTextInput(t *testing.T) {
 	p := newStoreConnectPage()
 	state := &WizardState{}
 	p.init(state)
 
-	// Focus on address field (index 0) and type "v" — must append, not verify.
-	p.focus = 0
-	p.update(keyPress('v', "v"), state)
-	if !strings.Contains(p.fields[0].value, "v") {
-		t.Fatalf("'v' on address field must be text input, got %q", p.fields[0].value)
-	}
-	if p.verifying {
-		t.Fatal("'v' on address field must not trigger verify")
-	}
-
-	// Type "n" on address field — must append, not add path.
-	initialPaths := len(p.allowedPaths)
-	p.update(keyPress('n', "n"), state)
-	if !strings.Contains(p.fields[0].value, "n") {
-		t.Fatalf("'n' on address field must be text input, got %q", p.fields[0].value)
-	}
-	if len(p.allowedPaths) != initialPaths {
-		t.Fatal("'n' on address field must not add an allowed path")
-	}
-
-	// Focus on CA cert field (index 1) — same guard.
-	p.focus = 1
-	p.update(keyPress('v', "v"), state)
-	if !strings.Contains(p.fields[1].value, "v") {
-		t.Fatalf("'v' on CA cert field must be text input, got %q", p.fields[1].value)
+	// Type characters into the address field.
+	p.update(keyPress('h', "h"), state)
+	p.update(keyPress('t', "t"), state)
+	if p.address != "ht" {
+		t.Fatalf("typing on address field must append, got %q", p.address)
 	}
 }
 
@@ -577,34 +557,26 @@ func TestUplinkJKTypesIntoIdentityField(t *testing.T) {
 
 // --- Important-2: store-connect actions row ---
 
-func TestStoreConnectActionsRowVerify(t *testing.T) {
+func TestStoreConnectEnterValidatesAddress(t *testing.T) {
 	p := newStoreConnectPage()
 	state := &WizardState{}
 	p.init(state)
 
-	// Set a valid address so verify doesn't reject on validation.
-	p.fields[0].value = "https://openbao.internal:8200"
-
-	// Focus on the actions row (index 3) and press 'v'.
-	p.focus = 3
-	p.update(keyPress('v', "v"), state)
-	if !p.verifying {
-		t.Fatal("'v' on actions row (focus 3) must trigger verify")
+	// Empty address must be rejected.
+	p.update(enterKey(), state)
+	if p.errMsg == "" {
+		t.Fatal("enter with empty address must set an error")
 	}
-}
 
-func TestStoreConnectActionsRowAddPath(t *testing.T) {
-	p := newStoreConnectPage()
-	state := &WizardState{}
-	p.init(state)
-
-	initialPaths := len(p.allowedPaths)
-
-	// Focus on the actions row (index 3) and press 'n'.
-	p.focus = 3
-	p.update(keyPress('n', "n"), state)
-	if len(p.allowedPaths) != initialPaths+1 {
-		t.Fatalf("'n' on actions row must add a path, got %d (was %d)", len(p.allowedPaths), initialPaths)
+	// Valid address must proceed.
+	p.address = "https://openbao.internal:8200"
+	p.errMsg = ""
+	p.update(enterKey(), state)
+	if p.errMsg != "" {
+		t.Fatalf("enter with valid address must not error, got %q", p.errMsg)
+	}
+	if state.Config.ArgoVaultAddress != "https://openbao.internal:8200" {
+		t.Fatalf("enter must wire address to config, got %q", state.Config.ArgoVaultAddress)
 	}
 }
 
@@ -1153,22 +1125,8 @@ func TestArrowKeysMoveBetweenFieldsOnFieldPages(t *testing.T) {
 		t.Fatalf("execution: up must focus the previous field, got %d", ex.focus)
 	}
 
-	sc := newStoreConnectPage()
-	sc.init(state)
-	for i := 0; i < 3; i++ {
-		sc.update(downKey(), state)
-	}
-	if sc.focus != 3 {
-		t.Fatalf("store-connect: three downs must reach the actions row, got %d", sc.focus)
-	}
-	sc.update(downKey(), state)
-	if sc.focus != 0 {
-		t.Fatalf("store-connect: down past the actions row must wrap, got %d", sc.focus)
-	}
-	sc.update(upKey(), state)
-	if sc.focus != 3 {
-		t.Fatalf("store-connect: up from the first field must wrap to the actions row, got %d", sc.focus)
-	}
+	// store-connect is now a single-field page (address only) — no focus
+	// cycling to test.
 }
 
 func TestArrowKeysMoveBetweenSectionsOnForgePage(t *testing.T) {
@@ -1324,15 +1282,12 @@ func TestTLSPageHasNoProxyToggle(t *testing.T) {
 	if strings.Contains(stripAnsi(p.keys()), "proxy") {
 		t.Errorf("tls key line must not advertise a proxy toggle: %s", stripAnsi(p.keys()))
 	}
-	// left/right have nothing left to toggle.
-	before := p.tlsCursor
-	p.update(leftKey(), state)
-	p.update(rightKey(), state)
-	if p.tlsCursor != before {
-		t.Fatal("left/right must not change the certificate choice")
-	}
-	// The certificate never grows a proxy hostname.
+	// TLS page is now informational (self-signed only, no BYO radio).
+	// Enter must proceed without error.
 	_, _ = p.update(enterKey(), state)
+	if state.TLSMode != "self-signed" {
+		t.Fatalf("TLS mode must be self-signed, got %q", state.TLSMode)
+	}
 	for _, san := range state.Config.TLSExtraDNSNames {
 		if strings.Contains(san, "oberth.ci") {
 			t.Fatalf("no proxy hostname may be added to the certificate: %v", state.Config.TLSExtraDNSNames)

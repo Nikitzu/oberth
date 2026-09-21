@@ -164,7 +164,11 @@ func (p *clusterPage) view(_ *WizardState, width, _ int) string {
 		listContent.WriteString(line + "\n")
 	}
 
-	tally := sMuted.Render(fmt.Sprintf("  %d contexts", len(p.contexts)))
+	noun := "contexts"
+	if len(p.contexts) == 1 {
+		noun = "context"
+	}
+	tally := sMuted.Render(fmt.Sprintf("  %d %s", len(p.contexts), noun))
 	listContent.WriteString("\n" + tally)
 
 	boxWidth := min(60, width-20)

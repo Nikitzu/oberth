@@ -35,6 +35,13 @@ import (
 // exit without an error dump.
 var ErrInterrupted = errors.New("interrupted")
 
+// ErrOnboardingPartial is returned when the install completed partially:
+// the deployment is up but one or more onboarding steps require manual
+// action (e.g., deploying the deploy key at the forge). Callers should
+// NOT treat this as a full failure — the installer did what it could and
+// the remaining steps are documented in the output.
+var ErrOnboardingPartial = errors.New("onboarding partial: manual steps remain")
+
 const (
 	// oberthWebUIURL is where the chart's fixed HTTPS NodePort (30443)
 	// serves the web UI on a local cluster.
@@ -71,7 +78,8 @@ func FinishInstall(ctx context.Context, cfg Config, deps Deps, tw *tableWriter, 
 	configured, err := upstreamConfigured(ctx, cfg, deps)
 	if err != nil {
 		_, _ = fmt.Fprintf(deps.Output, "Could not determine the upstream state (%v); finish the setup manually:\n", err)
-		return PrintNextSteps(cfg, deps.Output)
+		_ = PrintNextSteps(cfg, deps.Output)
+		return ErrOnboardingPartial
 	}
 	if configured {
 		// An upstream already exists, so there is nothing to onboard. The
@@ -86,7 +94,8 @@ func FinishInstall(ctx context.Context, cfg Config, deps Deps, tw *tableWriter, 
 
 	if !isInteractive(deps) && !cfg.hasOnboardingConfig() {
 		_, _ = fmt.Fprintln(deps.Output, "The pod stays NotReady until an upstream is registered. Finish the setup manually:")
-		return PrintNextSteps(cfg, deps.Output)
+		_ = PrintNextSteps(cfg, deps.Output)
+		return ErrOnboardingPartial
 	}
 	return runOnboarding(ctx, cfg, deps, tw, creds)
 }
@@ -198,7 +207,8 @@ func runOnboarding(ctx context.Context, cfg Config, deps Deps, tw *tableWriter, 
 	}
 	if !ok {
 		_, _ = fmt.Fprintln(w, "No upstream given — skipping onboarding. Finish the setup manually:")
-		return PrintNextSteps(cfg, w)
+		_ = PrintNextSteps(cfg, w)
+		return ErrOnboardingPartial
 	}
 
 	// --- Deploy key ---
@@ -229,6 +239,7 @@ func runOnboarding(ctx context.Context, cfg Config, deps Deps, tw *tableWriter, 
 	// registers nothing), so each verification attempt must RERUN the add —
 	// exactly the rerun the pod-side flow instructs. Merely re-listing
 	// upstreams can never observe the registration.
+	keyPending := false
 	if registered {
 		tw.AppendRow("Key registration", hostnameFromURL(baseURL), "✓ accepted", false)
 	} else if !isInteractive(deps) {
@@ -236,6 +247,7 @@ func runOnboarding(ctx context.Context, cfg Config, deps Deps, tw *tableWriter, 
 		// and needs manual registration at the forge. Skip the
 		// verification loop — the operator registers it after setup.
 		tw.AppendRow("Key registration", hostnameFromURL(baseURL), "pending", false)
+		keyPending = true
 	} else {
 		forgeHost := hostnameFromURL(baseURL)
 		var lastAttemptErr error
@@ -268,7 +280,8 @@ func runOnboarding(ctx context.Context, cfg Config, deps Deps, tw *tableWriter, 
 				if lastAttemptErr != nil {
 					_, _ = fmt.Fprintf(w, "Last verification error: %s\n", terseInstallError(lastAttemptErr))
 				}
-				return PrintNextSteps(cfg, w)
+				_ = PrintNextSteps(cfg, w)
+				return ErrOnboardingPartial
 			}
 		}
 	}
@@ -281,7 +294,10 @@ func runOnboarding(ctx context.Context, cfg Config, deps Deps, tw *tableWriter, 
 			ns = DefaultNamespace
 		}
 		_, _ = fmt.Fprintf(w, "Uplink setup did not complete (%v).\nAdd one later with:\n\n    kubectl exec -i -n %s deploy/oberth -- oberth uplink add - you@host < ~/.ssh/id_ed25519.pub\n\n", uplinkErr, ns)
-		return nil
+		if deps.StepProgressSink != nil {
+			deps.StepProgressSink("mint uplink", "pending")
+		}
+		return ErrOnboardingPartial
 	}
 	tw.AppendRow("Uplink", identity, "✓ registered", false)
 	if deps.StepProgressSink != nil {
@@ -313,6 +329,25 @@ func runOnboarding(ctx context.Context, cfg Config, deps Deps, tw *tableWriter, 
 	// Release credentials after the table is fully closed — through the
 	// structured sink when one is wired (TUI), else the boxed flush.
 	emitCredentials(creds, deps, w, color)
+
+	// When the deploy key is pending (non-interactive: the forge has not
+	// accepted it yet), the server stays NotReady until the first upstream
+	// probe succeeds. Waiting 5 minutes for that here would block the
+	// wizard with no user action possible. Skip WaitForReady and return a
+	// partial-success sentinel so the done page shows what remains.
+	if keyPending {
+		if deps.StepProgressSink != nil {
+			deps.StepProgressSink("upstream discovery", "pending")
+			deps.StepProgressSink("audit genesis", "pending")
+		}
+		_, _ = fmt.Fprintf(w, "\nDeploy key not yet registered at %s.\n", hostnameFromURL(baseURL))
+		if deployPubKey != "" {
+			_, _ = fmt.Fprintf(w, "Install the deploy key, then the server will become ready.\n")
+		} else {
+			_, _ = fmt.Fprintf(w, "Retrieve the public key and install it at your forge, then the server will become ready.\n")
+		}
+		return ErrOnboardingPartial
+	}
 
 	_, _ = fmt.Fprintf(deps.Output, "\nWaiting for Oberth to become ready...\n")
 	if err := WaitForReady(ctx, cfg, deps); err != nil {

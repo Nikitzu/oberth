@@ -26,9 +26,11 @@ type execField struct {
 func newExecutionPage() *executionPage {
 	return &executionPage{
 		fields: [2]execField{
-			{label: "network policy", value: "strict", fieldType: "select",
-				options: []string{"strict", "auto", "off"}, optionIndex: 0,
-				description: "strict — firewall CI jobs' network egress · auto — where supported · off"},
+			// Default to "auto" to match installer.Config.NetworkPolicy default
+			// ("auto" → false on k3s due to kube-router DNAT incompatibility).
+			{label: "network policy", value: "auto", fieldType: "select",
+				options: []string{"auto", "strict", "off"}, optionIndex: 0,
+				description: "auto — where supported · strict — firewall CI jobs' network egress · off"},
 			{label: "external anchoring", value: "off", fieldType: "select",
 				options: []string{"off", "on"}, optionIndex: 0,
 				description: "off — contacts no external service · on — local Rekor log as audit witness"},
