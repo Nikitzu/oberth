@@ -155,6 +155,15 @@ func Run(ctx context.Context, opts Options, input io.Reader, output io.Writer) e
 
 	// Check if the wizard was aborted.
 	if isWizard && wiz.aborted {
+		// When aborting mid-apply, resources may have been partially
+		// created. Tell the user how to clean up.
+		if wiz.page >= pageApply {
+			ns := wiz.state.Config.Namespace
+			if ns == "" {
+				ns = installer.DefaultNamespace
+			}
+			_, _ = fmt.Fprintf(output, "Oberth resources may remain in namespace %s — run `helm uninstall oberth -n %s` to clean up.\n", ns, ns)
+		}
 		return installer.ErrInterrupted
 	}
 
@@ -371,6 +380,10 @@ func (w *wizard) advance() (*wizard, tea.Cmd) {
 						dp.greenCount++
 					}
 				}
+				// The deploy key is pending when the install completed
+				// partially — some steps remain because the forge has not
+				// accepted the key yet and the server stays NotReady.
+				dp.deployKeyPending = dp.greenCount > 0 && dp.greenCount < dp.totalSteps
 			}
 		}
 	}

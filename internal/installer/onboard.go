@@ -621,14 +621,43 @@ func registerUpstreamQuiet(ctx context.Context, cfg Config, deps Deps, name, bas
 		run = DefaultRunCommand
 	}
 	addArgs := []string{"upstream", "add", "--yes", "--no-wait", name, baseURL}
-	out, err := run(ctx, nil, "kubectl", kubectlOberthArgs(cfg, deps, false, addArgs...)...)
-	pubKey := extractDeployPublicKey(string(out))
-	if err != nil {
+
+	// The admin socket (/tmp/oberth-admin.sock) is bound just before the
+	// server prints "ready for bootstrap". A pod that is Running but not
+	// yet bootstrapped rejects exec commands with "connection refused".
+	// The command is idempotent, so retrying is safe. We retry only when
+	// the server produced no meaningful output (no public key) — once it
+	// responds with a key, any remaining error is a real classification
+	// (auth rejection, knownhosts mismatch) and must not be masked.
+	var out []byte
+	var err error
+	var pubKey string
+	for attempt := 0; attempt < 5; attempt++ {
+		if attempt > 0 {
+			select {
+			case <-ctx.Done():
+				return false, pubKey, ctx.Err()
+			case <-time.After(pollInterval(deps)):
+			}
+		}
+		out, err = run(ctx, nil, "kubectl", kubectlOberthArgs(cfg, deps, false, addArgs...)...)
+		pubKey = extractDeployPublicKey(string(out))
+		if err == nil {
+			break
+		}
 		if pubKey != "" && isExpectedRegistrationPending(string(out)+" "+err.Error()) {
 			// The bootstrap advertised the key and the forge rejected the
 			// authentication — the normal "key not registered yet" state.
 			return false, pubKey, nil
 		}
+		// Server responded with a key but a non-auth error (knownhosts
+		// mismatch, handshake EOF) — a real failure, not a startup race.
+		if pubKey != "" {
+			break
+		}
+		// No key in the output: the admin socket likely is not ready yet.
+	}
+	if err != nil {
 		return false, pubKey, fmt.Errorf("upstream add: %w%s", err, commandOutputSuffix(out))
 	}
 	configured, _ := upstreamConfigured(ctx, cfg, deps)

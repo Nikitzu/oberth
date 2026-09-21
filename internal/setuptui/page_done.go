@@ -9,13 +9,14 @@ import (
 )
 
 type donePage struct {
-	totalSteps     int
-	greenCount     int
-	fingerprint    string
-	sshFingerprint string
-	context        string
-	identity       string
-	reportSaved    bool
+	totalSteps       int
+	greenCount       int
+	fingerprint      string
+	sshFingerprint   string
+	context          string
+	identity         string
+	reportSaved      bool
+	deployKeyPending bool
 }
 
 func (p *donePage) title() string    { return "orbit" }
@@ -154,6 +155,14 @@ func (p *donePage) view(state *WizardState, width, _ int) string {
 		scanTarget = state.ClusterInfo.nodeIP
 	}
 	b.WriteString("      " + sInfo.Render("ssh-keyscan -p 30022 "+scanTarget) + "\n\n")
+
+	// Deploy key pending — the server stays NotReady until the key is
+	// registered at the forge. Show retrieval guidance before next steps.
+	if p.deployKeyPending {
+		b.WriteString("  " + sFail.Render("deploy key pending") + "    " +
+			sText.Render("register it at the forge, then the server will become ready") + "\n")
+		b.WriteString("    " + sInfo.Render("kubectl get secret -n "+ns+" oberth-upstream-key -o jsonpath='{.data.key\\.pub}' | base64 -d") + "\n\n")
+	}
 
 	// Next steps.
 	b.WriteString("  " + sMuted.Render("next") + "\n")

@@ -524,7 +524,7 @@ func (cfg *Config) Validate() error {
 			return errors.New("--accept-witness-genesis must be the exact audit chain head as <auditID>:<sha256hex>")
 		}
 	}
-	if cfg.ChartVersion == "" && cfg.BinaryVersion != "" && cfg.BinaryVersion != "dev" {
+	if cfg.ChartVersion == "" && cfg.BinaryVersion != "" && cfg.BinaryVersion != "dev" && !strings.HasPrefix(cfg.BinaryVersion, "dev-") {
 		cfg.ChartVersion = cfg.BinaryVersion
 	}
 	return nil
@@ -670,6 +670,7 @@ func Run(ctx context.Context, cfg Config, deps Deps) error {
 				return fmt.Errorf("set up dev secret store: %w", err)
 			}
 			stepDone("secretstore server")
+			stepDone("secretstore release") // No release leg in dev mode — mark done so the TUI step tracker resolves.
 		} else {
 			// Production setup captures credentials into the held pool
 			// instead of printing them immediately; they are displayed in a

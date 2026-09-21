@@ -996,6 +996,17 @@ func TestConfigValidateChartVersionNotFromDevBuild(t *testing.T) {
 	}
 }
 
+func TestConfigValidateChartVersionNotFromDevPrefixBuild(t *testing.T) {
+	t.Parallel()
+	cfg := Config{BinaryVersion: "dev-c9f5559b"}
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ChartVersion != "" {
+		t.Fatalf("ChartVersion = %q, want empty for dev-prefixed build", cfg.ChartVersion)
+	}
+}
+
 // --- Cluster detection ---
 
 func TestIsLocalServer(t *testing.T) {

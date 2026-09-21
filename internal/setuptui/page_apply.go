@@ -106,7 +106,7 @@ func (p *applyPage) keys() string {
 		return sKey.Render("r") + " reveal · " + sKey.Render("c") + " copy · " + sKey.Render("enter") + " acknowledge"
 	}
 	if p.holdState {
-		return sKey.Render("r") + " retry · " + sKey.Render(fmt.Sprintf("1..%d", len(reviewSectionPages))) + " revisit page · " + sKey.Render("l") + " full log · " + sKey.Render("ctrl+c") + " abort"
+		return sKey.Render("r") + " retry · " + sKey.Render(fmt.Sprintf("1..%d", len(reviewSectionPages))) + " revisit page · " + sKey.Render("ctrl+c") + " abort"
 	}
 	return sKey.Render("ctrl+c") + " abort"
 }
@@ -660,7 +660,6 @@ func (p *applyPage) viewHold(_ int) string {
 	}
 	holdContent += "\n\n" + sKey.Render("r") + " retry step · " +
 		sKey.Render("esc") + " back · " +
-		sKey.Render("l") + " full log · " +
 		sKey.Render("ctrl+c") + " abort"
 
 	gutter := sGutter.Render(holdContent)
