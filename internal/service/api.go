@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/oberthci/oberth/internal/checks"
 	"io"
 	"os"
 	"path/filepath"
@@ -494,6 +495,38 @@ func (service *API) Runs(ctx context.Context, _ api.Actor, filter api.RunFilter)
 // its recorded step results, and the owning repository. Unlike the MCP status
 // tool it resolves by run ID, never renews an issue lock, and has no other
 // side effects, so an idle dashboard cannot hold agent coordination state.
+// runChecks reads the checks a run's steps published. A file that is not a
+// readable check is skipped rather than failing the view: a run that finished
+// is still worth showing.
+func (service *API) runChecks(runID string) []checks.Check {
+	if service.artifacts == nil {
+		return nil
+	}
+	entries, err := service.artifacts.List(runID)
+	if err != nil {
+		return nil
+	}
+	var found []checks.Check
+	for _, entry := range entries {
+		if !checks.IsCheck(entry.Name) {
+			continue
+		}
+		if len(found) >= checks.MaxPerRun {
+			break
+		}
+		body, readErr := service.artifacts.ReadAll(runID, entry.Name)
+		if readErr != nil {
+			continue
+		}
+		check, parseErr := checks.Parse(entry.Name, body)
+		if parseErr != nil {
+			continue
+		}
+		found = append(found, check)
+	}
+	return found
+}
+
 func (service *API) Run(ctx context.Context, _ api.Actor, id string) (any, error) {
 	if service.history == nil {
 		return nil, fmt.Errorf("%w: run history", ErrUnavailable)
@@ -509,7 +542,7 @@ func (service *API) Run(ctx context.Context, _ api.Actor, id string) (any, error
 	if err != nil {
 		return nil, fmt.Errorf("load run steps: %w", err)
 	}
-	response := RunDetailResponse{Run: run, Steps: steps}
+	response := RunDetailResponse{Run: run, Steps: steps, Checks: service.runChecks(run.ID)}
 	if service.repositories != nil {
 		repository, repositoryErr := service.repositories.Repository(ctx, run.RepoID)
 		if repositoryErr != nil && !errors.Is(repositoryErr, store.ErrNotFound) {

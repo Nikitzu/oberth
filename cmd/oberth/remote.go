@@ -60,6 +60,13 @@ type remoteRunDetail struct {
 	Run        remoteRun
 	Steps      []remoteStep
 	Repository remoteRepository
+	Checks     []remoteCheck
+}
+
+type remoteCheck struct {
+	Name    string
+	Verdict string
+	Summary string
 }
 
 func remoteClient(ctx context.Context) (*client.Client, error) { return remoteClientFor(ctx, ".") }
@@ -297,6 +304,21 @@ func runRunDetail(ctx context.Context, arguments []string, output io.Writer) err
 		}
 		if _, err := fmt.Fprintf(output, "%s %-12s %-20s %-9s %s\n",
 			marker, step.Burn, step.Step, step.Status, span(step.StartedAt, step.FinishedAt)); err != nil {
+			return err
+		}
+	}
+	return printRunChecks(output, detail.Checks)
+}
+
+func printRunChecks(output io.Writer, list []remoteCheck) error {
+	if len(list) == 0 {
+		return nil
+	}
+	if _, err := fmt.Fprintln(output); err != nil {
+		return err
+	}
+	for _, check := range list {
+		if _, err := fmt.Fprintf(output, "  check %-20s %-9s %s\n", check.Name, check.Verdict, check.Summary); err != nil {
 			return err
 		}
 	}

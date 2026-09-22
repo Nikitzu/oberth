@@ -5,6 +5,7 @@ package service
 import (
 	"context"
 	"errors"
+	"github.com/oberthci/oberth/internal/checks"
 	"io"
 	"os"
 	"time"
@@ -438,6 +439,7 @@ type RunDetailResponse struct {
 	Repository model.Repository
 	Run        model.Run
 	Steps      []model.StepResult
+	Checks     []checks.Check
 }
 
 // MCPToolText keeps the MCP text block as the exact bounded log slice while
