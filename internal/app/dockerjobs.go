@@ -106,8 +106,8 @@ func (jobs *DockerJobs) SetFragments(loader FragmentLoader) {
 	jobs.fragments = loader
 }
 
-func (jobs *DockerJobs) inlineFragments(ctx context.Context, source []byte, repo string) ([]byte, error) {
-	flat, err := NewFragmentInliner(jobs.fragments).Inline(ctx, source)
+func (jobs *DockerJobs) inlineFragments(ctx context.Context, source []byte, repo, org string) ([]byte, error) {
+	flat, err := NewFragmentInliner(jobs.fragments).InlineForOrg(ctx, source, org)
 	if err != nil {
 		return nil, fmt.Errorf("app: resolve fragments for %s: %w", repo, err)
 	}
@@ -159,7 +159,7 @@ func (jobs *DockerJobs) create(ctx context.Context, request service.JobRequest, 
 	if err != nil {
 		return noPipelineError(err, trigger, request.Repository.Name)
 	}
-	source, err = jobs.inlineFragments(ctx, source, request.Repository.Name)
+	source, err = jobs.inlineFragments(ctx, source, request.Repository.Name, request.UpstreamOrg)
 	if err != nil {
 		return err
 	}

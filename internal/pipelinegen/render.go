@@ -1,6 +1,7 @@
 package pipelinegen
 
 import (
+	"github.com/oberthci/oberth/pkg/argoworkflow"
 	"strings"
 )
 
@@ -348,7 +349,9 @@ func environment(project Project) []variable {
 func fragmentSecretPaths(project Project) []string {
 	var paths []string
 	for _, fragment := range project.Fragments {
-		paths = append(paths, fragment.SecretPaths...)
+		for _, path := range fragment.SecretPaths {
+			paths = append(paths, strings.ReplaceAll(path, argoworkflow.OrgPlaceholder, project.Org))
+		}
 	}
 	return paths
 }

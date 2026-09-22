@@ -129,6 +129,10 @@ func NewFragmentInliner(loader FragmentLoader) *FragmentInliner {
 }
 
 func (inliner *FragmentInliner) Inline(ctx context.Context, source []byte) ([]byte, error) {
+	return inliner.InlineForOrg(ctx, source, "")
+}
+
+func (inliner *FragmentInliner) InlineForOrg(ctx context.Context, source []byte, org string) ([]byte, error) {
 	fragments, err := loadFragments(ctx, inliner.loader, source)
 	if err != nil {
 		return nil, err
@@ -140,7 +144,7 @@ func (inliner *FragmentInliner) Inline(ctx context.Context, source []byte) ([]by
 	if err != nil {
 		return nil, err
 	}
-	if _, err := argoworkflow.Resolve(workflow, fragments); err != nil {
+	if _, err := argoworkflow.ResolveForOrg(workflow, fragments, org); err != nil {
 		return nil, err
 	}
 	return yaml.Marshal(workflow)
