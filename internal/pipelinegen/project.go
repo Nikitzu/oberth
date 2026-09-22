@@ -547,6 +547,7 @@ type FragmentUse struct {
 	Steps       []string
 	Files       []string
 	SecretPaths []string
+	Before      string
 }
 
 var settingsEnvPattern = regexp.MustCompile(`\$\{env\.([A-Za-z_][A-Za-z0-9_]*)\}`)

@@ -327,6 +327,7 @@ func (board *onboarder) fragmentUse(ctx context.Context, ref string) (pipelinege
 		Steps       []string `json:"steps"`
 		Files       []string `json:"files"`
 		SecretPaths []string `json:"secret_paths"`
+		Before      string   `json:"before"`
 	}
 	query := map[string]string{"ref": strings.TrimSpace(ref)}
 	if err := board.api.Get(ctx, "/api/fragments", query, &view); err != nil {
@@ -335,7 +336,7 @@ func (board *onboarder) fragmentUse(ctx context.Context, ref string) (pipelinege
 	if len(view.Steps) == 0 {
 		return pipelinegen.FragmentUse{}, fmt.Errorf("--with %s names a fragment with no steps", ref)
 	}
-	return pipelinegen.FragmentUse{Ref: view.Ref, Steps: view.Steps, Files: view.Files, SecretPaths: view.SecretPaths}, nil
+	return pipelinegen.FragmentUse{Ref: view.Ref, Steps: view.Steps, Files: view.Files, SecretPaths: view.SecretPaths, Before: view.Before}, nil
 }
 
 func (board *onboarder) putPipeline(ctx context.Context, document string) error {

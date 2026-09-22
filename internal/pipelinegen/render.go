@@ -108,18 +108,26 @@ func render(project Project, steps []step, result Result) string {
 	out.WriteString("  # test suite running and report minutes after it knew the answer.\n")
 	out.WriteString("  - name: ci\n")
 	out.WriteString("    steps:\n")
+	writeFragmentSteps := func(fragments []FragmentUse) {
+		for _, fragment := range fragments {
+			for _, name := range fragment.Steps {
+				out.WriteString("    - - name: " + name + "\n")
+				out.WriteString("        templateRef:\n")
+				out.WriteString("          name: " + fragment.Ref + "\n")
+				out.WriteString("          template: " + name + "\n")
+			}
+		}
+	}
+	names := make([]string, 0, len(steps))
 	for _, one := range steps {
+		names = append(names, one.name)
+	}
+	for _, one := range steps {
+		writeFragmentSteps(fragmentsBefore(project.Fragments, one.name))
 		out.WriteString("    - - name: " + one.name + "\n")
 		out.WriteString("        template: " + one.name + "\n")
 	}
-	for _, fragment := range project.Fragments {
-		for _, name := range fragment.Steps {
-			out.WriteString("    - - name: " + name + "\n")
-			out.WriteString("        templateRef:\n")
-			out.WriteString("          name: " + fragment.Ref + "\n")
-			out.WriteString("          template: " + name + "\n")
-		}
-	}
+	writeFragmentSteps(fragmentsAtEnd(project.Fragments, names))
 	out.WriteString("\n")
 
 	for index, one := range steps {

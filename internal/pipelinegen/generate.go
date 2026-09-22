@@ -64,14 +64,51 @@ func Generate(project Project) Result {
 	}
 
 	result := Result{Complete: complete, SecretPath: secretPath}
+	names := make([]string, 0, len(steps))
 	for _, one := range steps {
-		result.Steps = append(result.Steps, one.name)
+		names = append(names, one.name)
 	}
-	for _, fragment := range project.Fragments {
-		result.Steps = append(result.Steps, fragment.Steps...)
-	}
+	result.Steps = composeSteps(names, project.Fragments)
 	result.YAML = render(project, steps, result)
 	return result
+}
+
+func fragmentsBefore(fragments []FragmentUse, name string) []FragmentUse {
+	var out []FragmentUse
+	for _, fragment := range fragments {
+		if fragment.Before == name {
+			out = append(out, fragment)
+		}
+	}
+	return out
+}
+
+func fragmentsAtEnd(fragments []FragmentUse, names []string) []FragmentUse {
+	known := make(map[string]bool, len(names))
+	for _, name := range names {
+		known[name] = true
+	}
+	var out []FragmentUse
+	for _, fragment := range fragments {
+		if fragment.Before == "" || !known[fragment.Before] {
+			out = append(out, fragment)
+		}
+	}
+	return out
+}
+
+func composeSteps(names []string, fragments []FragmentUse) []string {
+	var out []string
+	for _, name := range names {
+		for _, fragment := range fragmentsBefore(fragments, name) {
+			out = append(out, fragment.Steps...)
+		}
+		out = append(out, name)
+	}
+	for _, fragment := range fragmentsAtEnd(fragments, names) {
+		out = append(out, fragment.Steps...)
+	}
+	return out
 }
 
 func usesSecret(steps []step) bool {

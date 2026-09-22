@@ -510,6 +510,7 @@ type FragmentView struct {
 	Steps       []string `json:"steps"`
 	Files       []string `json:"files"`
 	SecretPaths []string `json:"secret_paths"`
+	Before      string   `json:"before,omitempty"`
 }
 
 func (service *API) FragmentShow(ctx context.Context, ref string) (any, error) {
@@ -554,6 +555,7 @@ func (service *API) FragmentShow(ctx context.Context, ref string) (any, error) {
 			view.Files = append(view.Files, trimmed)
 		}
 	}
+	view.Before = strings.TrimSpace(document.Annotations[argoworkflow.BeforeAnnotation])
 	for _, entry := range strings.Split(document.Annotations[argoworkflow.SecretPathsAnnotation], ",") {
 		if trimmed := strings.TrimSpace(entry); trimmed != "" {
 			view.SecretPaths = append(view.SecretPaths, trimmed)

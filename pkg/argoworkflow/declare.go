@@ -44,6 +44,13 @@ const (
 	// granted set can be compared; it cannot observe the actual read, because
 	// on this tier the value never passes through the server.
 	SecretPathsAnnotation = "oberth.ci/secret-paths"
+
+	// BeforeAnnotation names the consuming repository's step this fragment's
+	// steps run before. A fragment whose output a later step reads is useless
+	// appended at the end, which is where fragments land without it. An
+	// unknown name is ignored and the steps stay at the end: a fragment
+	// cannot know what its consumers call their steps.
+	BeforeAnnotation = "oberth.ci/before"
 )
 
 const maxDeclaredSecretPaths = 32
