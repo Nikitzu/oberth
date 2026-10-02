@@ -202,7 +202,7 @@ func parseServeOptions(arguments []string, output io.Writer) (serveOptions, erro
 	flags.StringVar(&options.upstreamTokenFile, "upstream-token-file", "",
 		"file holding a personal access token used to authenticate HTTPS upstreams (re-read on every use, so rotating the file needs no restart)")
 	flags.BoolVar(&options.testcontainers, "testcontainers", false,
-		"start a Docker socket proxy for runs that declare oberth.ci/testcontainers (docker engine)")
+		"offer Testcontainers to runs that declare oberth.ci/testcontainers: a socket proxy on the docker engine, kubedock on kube")
 	flags.BoolVar(&options.publishOnGreen, "publish-on-green", true,
 		"force-sync an ordinary green branch run to the upstream forge. Set false to keep the gate advisory: "+
 			"the run still goes green and is recorded, but nothing reaches the forge until it is published on request. "+
@@ -738,6 +738,7 @@ func serve(ctx context.Context, options serveOptions, logger *log.Logger) (resul
 			return err
 		}
 		built.SetPipelines(database, database)
+		built.SetTestcontainers(options.testcontainers)
 		argoJobs, ciJobs, releaseJobs = built, built, built
 		logger.Printf("argo execution engine: namespace=%s pipeline-sa=%s credentialed-sa=%s ci-secrets-sa=%s executor-sa=%s",
 			options.argoNamespace, options.argoPipelineAccount, options.argoCredentialedAccount,
@@ -1988,9 +1989,6 @@ func repoCacheQualifications(ctx context.Context, database *store.Store) (map[st
 }
 
 func testcontainersOffered(options serveOptions) *bool {
-	if options.engine != engineDocker {
-		return nil
-	}
 	offered := options.testcontainers
 	return &offered
 }

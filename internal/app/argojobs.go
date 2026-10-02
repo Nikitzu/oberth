@@ -63,6 +63,7 @@ type ArgoJobs struct {
 	artifactFailures  map[string]string
 	reconcilerHealthy ReconcilerHealthChecker
 	pipelines         pipelineResolver
+	testcontainers    bool
 
 	mu      sync.Mutex
 	intents map[string]argoIntent
@@ -111,6 +112,10 @@ var ErrSuperseded = errors.New("app: Workflow superseded during creation")
 // SetPipelines wires the server-held pipeline store. Without it the engine
 // resolves committed documents only, which is what a deployment that never
 // stored a pipeline has always done.
+func (jobs *ArgoJobs) SetTestcontainers(offered bool) { jobs.testcontainers = offered }
+
+func (jobs *ArgoJobs) Testcontainers() bool { return jobs.testcontainers }
+
 func (jobs *ArgoJobs) SetPipelines(held PipelineHolder, recorder PipelineRecorder) {
 	jobs.mu.Lock()
 	defer jobs.mu.Unlock()
@@ -296,12 +301,21 @@ func (jobs *ArgoJobs) create(ctx context.Context, request service.JobRequest, tr
 	if err != nil {
 		return fmt.Errorf("app: resolve file dependencies for %s: %w", request.Repository.Name, err)
 	}
+	workflow, err := argoworkflow.Decode(source)
+	if err != nil {
+		return err
+	}
+	declaresTestcontainers := argoworkflow.DeclaresTestcontainers(workflow)
+	if declaresTestcontainers && !jobs.testcontainers {
+		return errors.New("app: this pipeline needs Testcontainers and this server does not offer it (oberth install --testcontainers)")
+	}
 	submission := argojob.Request{
 		RunID: request.Run.ID, Name: request.JobName,
 		Repo: request.Repository.Name, UpstreamName: request.UpstreamName, UpstreamOrg: request.UpstreamOrg,
 		Ref: request.Run.Ref, SHA: testedSHA, Trigger: trigger, Source: source,
 		SourceDir: request.SourceDir, ApprovedSecrets: approvedSecrets,
 		Fragments: fragments, Files: files,
+		Testcontainers: declaresTestcontainers,
 	}
 	if preparer, ok := jobs.controller.(interface {
 		PrepareNonroot(context.Context, argojob.Request) (argojob.Request, error)

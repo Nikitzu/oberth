@@ -147,6 +147,9 @@ spec:
             default is true would publish behind the advisory gate's back.
             */}}
             - --publish-on-green={{ if kindIs "bool" .Values.publishOnGreen }}{{ .Values.publishOnGreen }}{{ else }}false{{ end }}
+            {{- if and .Values.kubedock .Values.kubedock.enabled }}
+            - --testcontainers
+            {{- end }}
             - --ci-cache-root={{ .Values.cache.ciRoot }}
             - --release-cache-root={{ .Values.cache.releaseRoot }}
             {{- if .Values.sshAdvertise }}

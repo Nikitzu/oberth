@@ -274,3 +274,48 @@ func (a *stubAuditor) AppendAuditAction(_ context.Context, spec model.AuditActio
 	}
 	return model.AuditAction{ID: 1}, nil
 }
+
+func declareTestcontainers(t *testing.T, fixture *raceFixture) {
+	t.Helper()
+	path := filepath.Join(fixture.sourceDir, ".oberth", "build.yaml")
+	source, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	source = []byte(strings.Replace(string(source), "oberth.ci/size: M", "oberth.ci/size: M\n    oberth.ci/testcontainers: \"true\"", 1))
+	if err := os.WriteFile(path, source, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestArgoTestcontainersPipelineIsRefusedWhenNotOffered(t *testing.T) {
+	fixture := newRaceFixture(t)
+	declareTestcontainers(t, fixture)
+	err := fixture.jobs.CreateCI(t.Context(), fixture.request("wf-tc-refused", "run-tc-refused"))
+	if err == nil || !strings.Contains(err.Error(), "this server does not offer it (oberth install --testcontainers)") {
+		t.Fatalf("expected a refusal naming the install flag, got %v", err)
+	}
+	if len(fixture.controller.created) != 0 {
+		t.Fatal("a refused pipeline reached the engine")
+	}
+}
+
+func TestArgoTestcontainersPipelineReachesTheEngineWhenOffered(t *testing.T) {
+	fixture := newRaceFixture(t)
+	declareTestcontainers(t, fixture)
+	var submitted argojob.Request
+	fixture.jobs.controller = &orderedNonrootController{argoControl: fixture.controller,
+		prepare: func(request argojob.Request) (argojob.Request, error) { return request, nil },
+		create: func(request argojob.Request) (string, error) {
+			submitted = request
+			return request.Name, nil
+		},
+	}
+	fixture.jobs.SetTestcontainers(true)
+	if err := fixture.jobs.CreateCI(t.Context(), fixture.request("wf-tc-offered", "run-tc-offered")); err != nil {
+		t.Fatalf("CreateCI: %v", err)
+	}
+	if !submitted.Testcontainers {
+		t.Fatal("the engine request did not carry Testcontainers")
+	}
+}

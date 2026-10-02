@@ -470,6 +470,8 @@ type Request struct {
 	// normalizeSourceVolume. This is identical on both paths, so what it gates
 	// needs no such exception.
 	Files map[argoworkflow.FileRef]argoworkflow.SeededFile
+
+	Testcontainers bool
 }
 
 // Build turns a repository document into the exact Workflow object Oberth will
@@ -610,6 +612,9 @@ func Build(config Config, request Request) (*wfv1.Workflow, error) {
 	applyServerSecurity(workflow)
 	injectServerVolumes(workflow, config, request, credentialed)
 	injectWorkspaceEnvironment(workflow)
+	if request.Testcontainers {
+		injectTestcontainersEnvironment(workflow)
+	}
 	injectRunEnvironment(workflow, config, request, credentialed)
 	if err := applyNonrootLeaves(workflow, config, request); err != nil {
 		return nil, err
@@ -1820,37 +1825,69 @@ func injectRunEnvironment(workflow *wfv1.Workflow, config Config, request Reques
 }
 
 func injectTemplateEnvironment(template *wfv1.Template, environment []corev1.EnvVar, depth int) {
+	mergeTemplateEnvironment(template, environment, overrideEnvironment, depth)
+}
+
+func mergeTemplateEnvironment(template *wfv1.Template, environment []corev1.EnvVar,
+	merge func(existing, injected []corev1.EnvVar) []corev1.EnvVar, depth int) {
 	if template == nil || depth > argoworkflow.MaxIdentityWalkDepth {
 		return
 	}
 	if template.Container != nil {
-		template.Container.Env = overrideEnvironment(template.Container.Env, environment)
+		template.Container.Env = merge(template.Container.Env, environment)
 	}
 	if template.Script != nil {
-		template.Script.Env = overrideEnvironment(template.Script.Env, environment)
+		template.Script.Env = merge(template.Script.Env, environment)
 	}
 	if template.ContainerSet != nil {
 		for index := range template.ContainerSet.Containers {
 			template.ContainerSet.Containers[index].Env =
-				overrideEnvironment(template.ContainerSet.Containers[index].Env, environment)
+				merge(template.ContainerSet.Containers[index].Env, environment)
 		}
 	}
 	for index := range template.InitContainers {
-		template.InitContainers[index].Env = overrideEnvironment(template.InitContainers[index].Env, environment)
+		template.InitContainers[index].Env = merge(template.InitContainers[index].Env, environment)
 	}
 	for index := range template.Sidecars {
-		template.Sidecars[index].Env = overrideEnvironment(template.Sidecars[index].Env, environment)
+		template.Sidecars[index].Env = merge(template.Sidecars[index].Env, environment)
 	}
 	for group := range template.Steps {
 		for step := range template.Steps[group].Steps {
-			injectTemplateEnvironment(template.Steps[group].Steps[step].Inline, environment, depth+1)
+			mergeTemplateEnvironment(template.Steps[group].Steps[step].Inline, environment, merge, depth+1)
 		}
 	}
 	if template.DAG != nil {
 		for task := range template.DAG.Tasks {
-			injectTemplateEnvironment(template.DAG.Tasks[task].Inline, environment, depth+1)
+			mergeTemplateEnvironment(template.DAG.Tasks[task].Inline, environment, merge, depth+1)
 		}
 	}
+}
+
+const TestcontainersDockerHost = "tcp://kubedock:2475"
+
+func injectTestcontainersEnvironment(workflow *wfv1.Workflow) {
+	environment := []corev1.EnvVar{
+		{Name: "DOCKER_HOST", Value: TestcontainersDockerHost},
+		{Name: "TESTCONTAINERS_RYUK_DISABLED", Value: "true"},
+		{Name: "TESTCONTAINERS_CHECKS_DISABLE", Value: "true"},
+	}
+	for index := range workflow.Spec.Templates {
+		mergeTemplateEnvironment(&workflow.Spec.Templates[index], environment, defaultEnvironment, 0)
+	}
+}
+
+func defaultEnvironment(existing []corev1.EnvVar, defaults []corev1.EnvVar) []corev1.EnvVar {
+	set := make(map[string]struct{}, len(existing))
+	for _, variable := range existing {
+		set[variable.Name] = struct{}{}
+	}
+	result := append([]corev1.EnvVar(nil), existing...)
+	for _, variable := range defaults {
+		if _, taken := set[variable.Name]; !taken {
+			result = append(result, variable)
+		}
+	}
+	return result
 }
 
 func overrideEnvironment(existing []corev1.EnvVar, injected []corev1.EnvVar) []corev1.EnvVar {
