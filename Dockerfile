@@ -29,8 +29,8 @@ RUN apk add --no-cache \
     # every other package here: when the repo supersedes 3.5.8-r0 these lines
     # fail the build loudly, which is the moment to re-pin or drop them in
     # favour of a rebuilt base image — never a silent drift.
-    libcrypto3=3.5.8-r0 \
-    libssl3=3.5.8-r0 \
+    libcrypto3=3.5.9-r0 \
+    libssl3=3.5.9-r0 \
     # CVE-2026-11352/-11586/-12064/-80256/-8286/-8458/-8925/-8927/-9547 (all
     # HIGH): libcurl arrives as git's transitive dependency; the alpine:3.23
     # base digest above still resolves 8.20.0-r0 while the fixed 8.22.0-r0
