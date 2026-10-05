@@ -100,3 +100,40 @@ test('the band shows the three newest runs', () => {
   const list = [1, 2, 3, 4, 5].map(n => ({ ref: `r${n}`, pushedAt: n }))
   expect(visible(list).map(one => one.ref)).toEqual(['r3', 'r4', 'r5'])
 })
+
+test('a run superseded by a newer one is followed to the newer run', async ($, on) => {
+  const clock = mock.clock(on, { now: pushedAt })
+  const first = { ...run('running'), ID: 'aaaaaaaaaaaa1111' }
+  let runs: object[] = [first]
+  const toasts: string[] = []
+  const prompts: string[] = []
+
+  on('session.start', async () => ({ cwd: '/' }))
+  on('command.register', async () => ({ value: { command: 'oberth-watch' } }))
+  on('tool.call', { tool: 'Bash' }, async () => ({ result: { stdout: '', stderr: '', interrupted: false } }) as never)
+  on('process.run', async () => ({ value: { exitCode: 0, stdout: JSON.stringify(runs), stderr: '' } }) as never)
+  on('ui.toast', async (_$, e) => {
+    toasts.push(e.text)
+    return { value: undefined }
+  })
+  on('prompt.submit', async (_$, e) => {
+    prompts.push(e.text)
+    return { text: e.text }
+  })
+
+  await $.session.start({ cwd: '/' } as never)
+  await $.tool.call({ tool: 'Bash', command: 'git push oberth HEAD:refs/heads/feat' } as never)
+  await clock.advance(20_000)
+
+  const second = { ...run('running'), ID: 'bbbbbbbbbbbb2222', QueuedAt: '2026-10-05T10:01:00Z' }
+  runs = [second, { ...first, Status: 'interrupted', SupersededBy: second.ID }]
+  await clock.advance(20_000)
+  expect(toasts).toEqual([])
+  expect(prompts).toEqual([])
+
+  runs = [{ ...run('failed', true), ID: second.ID }, { ...first, Status: 'interrupted', SupersededBy: second.ID }]
+  await clock.advance(20_000)
+  expect(toasts).toEqual(['oberth feat 123e34f: failed at test/unit'])
+  expect(prompts.length).toBe(1)
+  expect(prompts[0]).toContain('bbbbbbbbbbbb2222')
+})

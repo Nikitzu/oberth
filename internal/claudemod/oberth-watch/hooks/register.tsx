@@ -28,6 +28,7 @@ type Run = {
   FailedStep: string
   QueuedAt: string
   FinishedAt: string | null
+  SupersededBy?: string
 }
 
 const isActive = (status?: string) => status === undefined || status === 'queued' || status === 'running'
@@ -50,6 +51,15 @@ export function reconcile(list: Watched[], runs: Run[]): Watched[] {
         .filter(r => r.Ref === one.ref && !taken.has(r.ID) && Date.parse(r.QueuedAt) >= one.pushedAt - CLOCK_SKEW_MS)
         .sort((a, b) => Date.parse(a.QueuedAt) - Date.parse(b.QueuedAt))[0]
       if (run) taken.add(run.ID)
+    }
+    const seen = new Set<string>()
+    while (run?.Status === 'interrupted' && run.SupersededBy && !seen.has(run.ID)) {
+      seen.add(run.ID)
+      const successor: string = run.SupersededBy
+      const newer = runs.find(r => r.ID === successor)
+      if (!newer) return { ...one, runId: successor, status: 'queued', failedAt: undefined, finishedAt: undefined }
+      taken.add(newer.ID)
+      run = newer
     }
     if (!run) return one
     return {
