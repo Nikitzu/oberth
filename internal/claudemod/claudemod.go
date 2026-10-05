@@ -9,6 +9,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"golang.org/x/mod/semver"
 )
 
 //go:embed all:oberth-watch
@@ -82,6 +84,9 @@ func Write(dir, version string) error {
 }
 
 func Refresh(dir, version string) error {
+	if !semver.IsValid(version) {
+		return nil
+	}
 	if _, err := os.Stat(filepath.Join(dir, Plugin)); err != nil {
 		return nil
 	}

@@ -80,7 +80,7 @@ func TestInstallReportsAFailedRegistration(t *testing.T) {
 
 func TestRefreshLeavesAMachineWithoutTheModAlone(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "claude-mods")
-	if err := Refresh(dir, "v2"); err != nil {
+	if err := Refresh(dir, "v0.0.2"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(dir); !errors.Is(err, os.ErrNotExist) {
@@ -90,14 +90,14 @@ func TestRefreshLeavesAMachineWithoutTheModAlone(t *testing.T) {
 
 func TestRefreshRewritesAModFromAnotherVersion(t *testing.T) {
 	dir := t.TempDir()
-	if err := Write(dir, "v1"); err != nil {
+	if err := Write(dir, "v0.0.1"); err != nil {
 		t.Fatal(err)
 	}
 	stale := filepath.Join(dir, Plugin, "hooks", "stale.tsx")
 	if err := os.WriteFile(stale, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := Refresh(dir, "v2"); err != nil {
+	if err := Refresh(dir, "v0.0.2"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(stale); !errors.Is(err, os.ErrNotExist) {
@@ -106,24 +106,39 @@ func TestRefreshRewritesAModFromAnotherVersion(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(dir, Plugin, "hooks", "register.tsx")); err != nil {
 		t.Fatalf("the mod is missing after refresh: %v", err)
 	}
-	if got, _ := os.ReadFile(filepath.Join(dir, versionFile)); string(got) != "v2" {
-		t.Fatalf("version marker = %q, want v2", got)
+	if got, _ := os.ReadFile(filepath.Join(dir, versionFile)); string(got) != "v0.0.2" {
+		t.Fatalf("version marker = %q, want v0.0.2", got)
 	}
 }
 
 func TestRefreshLeavesTheSameVersionUntouched(t *testing.T) {
 	dir := t.TempDir()
-	if err := Write(dir, "v1"); err != nil {
+	if err := Write(dir, "v0.0.1"); err != nil {
 		t.Fatal(err)
 	}
 	kept := filepath.Join(dir, Plugin, "hooks", "kept.tsx")
 	if err := os.WriteFile(kept, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := Refresh(dir, "v1"); err != nil {
+	if err := Refresh(dir, "v0.0.1"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(kept); err != nil {
 		t.Fatalf("an up-to-date mod was rewritten: %v", err)
+	}
+}
+
+func TestRefreshIgnoresADevelopmentBuild(t *testing.T) {
+	dir := t.TempDir()
+	if err := Write(dir, "v0.13.31-poc49"); err != nil {
+		t.Fatal(err)
+	}
+	for _, version := range []string{"dev", "ldflags-test-v42.0.0", ""} {
+		if err := Refresh(dir, version); err != nil {
+			t.Fatal(err)
+		}
+		if got, _ := os.ReadFile(filepath.Join(dir, versionFile)); string(got) != "v0.13.31-poc49" {
+			t.Fatalf("version %q rewrote the mod: marker = %q", version, got)
+		}
 	}
 }

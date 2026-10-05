@@ -46,7 +46,9 @@ func TestVersionLdflagsInjection(t *testing.T) {
 		t.Fatalf("go build: %v\n%s", err, out)
 	}
 
-	out, err := exec.Command(binary, "version").CombinedOutput()
+	run := exec.Command(binary, "version")
+	run.Env = append(os.Environ(), "XDG_CONFIG_HOME="+t.TempDir())
+	out, err := run.CombinedOutput()
 	if err != nil {
 		t.Fatalf("oberth version: %v\n%s", err, out)
 	}
