@@ -39,6 +39,10 @@ annotation, which `oberth onboard` writes for Maven and Gradle projects that
 depend on it; a server installed without the flag refuses such a pipeline at
 admission and names the flag.
 
+With Claude Code installed, both engines also offer the oberth-watch mod
+(`--claude-mod=yes`): every Claude Code session shows the runs it pushed above
+the prompt and is told when each one finishes, so an agent does not poll.
+
 Open a new shell afterwards (or source `~/.config/oberth/env`), and the
 dashboard is at the address the install printed.
 

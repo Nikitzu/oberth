@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os/exec"
 	"runtime"
 	"strings"
 )
@@ -20,6 +21,11 @@ func engineArgumentPresent(arguments []string) bool {
 		}
 	}
 	return false
+}
+
+var claudeOnPath = func() bool {
+	_, err := exec.LookPath("claude")
+	return err == nil
 }
 
 func askInstallChoices(ctx context.Context, input io.Reader, output io.Writer) ([]string, bool, error) {
@@ -71,6 +77,13 @@ func askInstallChoices(ctx context.Context, input io.Reader, output io.Writer) (
 	if err != nil {
 		return nil, false, err
 	}
+	claudeMod := ""
+	if claudeOnPath() {
+		claudeMod, err = ask("Install the oberth-watch mod into Claude Code, for every session? (shows pushed runs above the prompt) [Y/n]: ", "y")
+		if err != nil {
+			return nil, false, err
+		}
+	}
 	arguments := []string{"--engine=docker", "--secretstore"}
 	if strings.HasPrefix(service, "y") {
 		arguments = append(arguments, "--service")
@@ -82,6 +95,12 @@ func askInstallChoices(ctx context.Context, input io.Reader, output io.Writer) (
 	}
 	if strings.HasPrefix(testcontainers, "y") {
 		arguments = append(arguments, "--testcontainers")
+	}
+	switch {
+	case strings.HasPrefix(claudeMod, "y"):
+		arguments = append(arguments, "--claude-mod=yes")
+	case claudeMod != "":
+		arguments = append(arguments, "--claude-mod=no")
 	}
 	fmt.Fprintln(output, "Next time, the same without questions: oberth install "+strings.Join(arguments, " "))
 	fmt.Fprintln(output)

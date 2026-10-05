@@ -209,6 +209,7 @@ func runClientAccessOffer(ctx context.Context, cfg Config, deps Deps, tw *tableW
 			// The file exists now, so the only remaining step is the one the
 			// install used to leave as a printed instruction.
 			wireShellProfile(ctx, cfg, deps, tw, path)
+			offerClaudeMod(ctx, cfg, deps, tw, root)
 		}
 		// The env file serves a shell that knows to source it. The name on
 		// PATH is what makes every documented `oberth ...` command work, for a

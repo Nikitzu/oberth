@@ -1,0 +1,1 @@
+{ "name": "oberth-watch", "version": "0.1.0", "description": "Watches Oberth runs pushed from this session: band above the prompt, toast and a note to Claude when a run finishes", "types": "./types/index.d.ts" }

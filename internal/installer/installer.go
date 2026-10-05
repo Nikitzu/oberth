@@ -221,6 +221,8 @@ type Config struct {
 	// not told to edit a file the caller never mentioned does not edit it.
 	ShellProfile string
 
+	ClaudeMod string
+
 	// SecretStore selects the release secret store without a prompt:
 	// "production", "dev" or "none". Empty means undecided, which asks when
 	// there is a terminal and installs a production store when there is not:
@@ -543,6 +545,12 @@ func (cfg *Config) Validate() error {
 		cfg.ShellProfile = strings.ToLower(strings.TrimSpace(cfg.ShellProfile))
 	default:
 		return fmt.Errorf("--shell-profile %q is not yes or no", cfg.ShellProfile)
+	}
+	switch strings.ToLower(strings.TrimSpace(cfg.ClaudeMod)) {
+	case "", "yes", "no":
+		cfg.ClaudeMod = strings.ToLower(strings.TrimSpace(cfg.ClaudeMod))
+	default:
+		return fmt.Errorf("--claude-mod %q is not yes or no", cfg.ClaudeMod)
 	}
 	if !cfg.Dev {
 		cfg.Dev = true

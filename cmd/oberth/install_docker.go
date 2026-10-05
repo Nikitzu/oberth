@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/oberthci/oberth/internal/claudemod"
 	"github.com/oberthci/oberth/internal/installer"
 	"github.com/oberthci/oberth/internal/localbao"
 	"github.com/oberthci/oberth/internal/localinstall"
@@ -57,6 +58,7 @@ func runInstallDocker(ctx context.Context, arguments []string, output io.Writer)
 	secretStore := flags.Bool("secretstore", false, "also run `secretstore init --engine=docker`, so credentialed pipelines work from the first push")
 	testcontainers := flags.Bool("testcontainers", false, "start a Docker socket proxy for pipelines that declare oberth.ci/testcontainers (Java backends with Testcontainers)")
 	publishOnGreen := flags.Bool("publish-on-green", false, "publish a green run to the upstream automatically")
+	claudeMod := flags.String("claude-mod", "", "install the oberth-watch Claude Code mod for every session: yes or no; empty prints how")
 	helperSource := flags.String("helper-source", "", "oberth source directory a development build compiles the credentialed-step helper from; a release needs none")
 	var releaseSecretPaths stringList
 	flags.Var(&releaseSecretPaths, "secretstore-path",
@@ -72,6 +74,11 @@ func runInstallDocker(ctx context.Context, arguments []string, output io.Writer)
 	}
 	if flags.NArg() != 0 {
 		return fmt.Errorf("%w: install accepts flags only, no positional arguments", errUsage)
+	}
+	switch *claudeMod {
+	case "", "yes", "no":
+	default:
+		return fmt.Errorf("%w: --claude-mod %q is not yes or no", errUsage, *claudeMod)
 	}
 	if *httpsPort == *sshPort {
 		return fmt.Errorf("%w: --https-port and --ssh-port must differ", errUsage)
@@ -180,6 +187,11 @@ func runInstallDocker(ctx context.Context, arguments []string, output io.Writer)
 	}
 	if err := writeClientAccess(ctx, output, baseURL, layout, token, minted, *shellProfile); err != nil {
 		return err
+	}
+	if root, err := installer.ClientConfigRoot(); err == nil {
+		installClaudeModLocally(ctx, output, *claudeMod, root, exec.LookPath, func(ctx context.Context, name string, args ...string) ([]byte, error) {
+			return exec.CommandContext(ctx, name, args...).CombinedOutput() // #nosec G204 -- fixed claude plugin arguments.
+		})
 	}
 	_, err = io.WriteString(output, localinstall.PushBanner(baseURL, "127.0.0.1", *sshPort, layout.ClientKey, nil))
 	if err != nil {
@@ -524,4 +536,27 @@ func appendShellProfileLine(output io.Writer, profile, line string) error {
 	}
 	say(output, "profile    %s now sources the client environment", installer.DisplayPath(expanded))
 	return nil
+}
+
+func installClaudeModLocally(ctx context.Context, output io.Writer, choice, root string,
+	lookPath func(string) (string, error), run claudemod.Runner) {
+	if choice == "no" {
+		return
+	}
+	if _, err := lookPath("claude"); err != nil {
+		if choice == "yes" {
+			say(output, "mod        claude is not on PATH; install Claude Code and re-run with --claude-mod=yes")
+		}
+		return
+	}
+	if choice == "" {
+		say(output, "mod        re-run with --claude-mod=yes to show Oberth runs inside Claude Code")
+		return
+	}
+	dir := filepath.Join(root, "claude-mods")
+	if err := claudemod.Install(ctx, dir, run); err != nil {
+		say(output, "mod        not installed: %v", err)
+		return
+	}
+	say(output, "mod        %s installed for every Claude Code session, %s", claudemod.Plugin, installer.DisplayPath(dir))
 }

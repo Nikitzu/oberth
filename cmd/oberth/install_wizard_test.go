@@ -7,7 +7,15 @@ import (
 	"testing"
 )
 
+func withClaude(t *testing.T, present bool) {
+	t.Helper()
+	previous := claudeOnPath
+	claudeOnPath = func() bool { return present }
+	t.Cleanup(func() { claudeOnPath = previous })
+}
+
 func TestInstallWizardDefaultsToDockerWithAServiceAndTheShellLine(t *testing.T) {
+	withClaude(t, false)
 	var out bytes.Buffer
 	arguments, docker, err := askInstallChoices(context.Background(), strings.NewReader("\n\n\n\n"), &out)
 	if err != nil {
@@ -26,6 +34,7 @@ func TestInstallWizardDefaultsToDockerWithAServiceAndTheShellLine(t *testing.T) 
 }
 
 func TestInstallWizardHonoursNoOnBothFollowUps(t *testing.T) {
+	withClaude(t, false)
 	var out bytes.Buffer
 	arguments, _, err := askInstallChoices(context.Background(), strings.NewReader("1\nn\nno\nn\n"), &out)
 	if err != nil {
@@ -37,6 +46,7 @@ func TestInstallWizardHonoursNoOnBothFollowUps(t *testing.T) {
 }
 
 func TestInstallWizardOffersTestcontainersOnYes(t *testing.T) {
+	withClaude(t, false)
 	var out bytes.Buffer
 	arguments, _, err := askInstallChoices(context.Background(), strings.NewReader("1\n\n\ny\n"), &out)
 	if err != nil {
@@ -62,5 +72,22 @@ func TestInstallWizardKubeLeavesTheClusterPathAlone(t *testing.T) {
 	}
 	if !engineArgumentPresent([]string{"--engine", "docker"}) || engineArgumentPresent([]string{"--install-secretstore"}) {
 		t.Fatal("engineArgumentPresent misread the flags")
+	}
+}
+
+func TestInstallWizardOffersTheClaudeModWhenClaudeIsInstalled(t *testing.T) {
+	withClaude(t, true)
+	for input, want := range map[string]string{
+		"\n\n\n\n\n":   "--engine=docker --secretstore --service --shell-profile=yes --claude-mod=yes",
+		"1\n\n\n\nn\n": "--engine=docker --secretstore --service --shell-profile=yes --claude-mod=no",
+	} {
+		var out bytes.Buffer
+		arguments, _, err := askInstallChoices(context.Background(), strings.NewReader(input), &out)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := strings.Join(arguments, " "); got != want {
+			t.Fatalf("input %q: arguments = %q, want %q", input, got, want)
+		}
 	}
 }

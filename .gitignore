@@ -11,6 +11,7 @@ website/.wrangler/
 
 # Loose binary artifacts
 oberth-*
+!/internal/claudemod/oberth-watch/
 *.tar.gz
 
 .brainstorm/
