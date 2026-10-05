@@ -1,6 +1,6 @@
 import { expect, mock, test } from 'claude-code/testing'
 
-import { pushedRef } from './register'
+import { pushedRef, visible } from './register'
 
 const pushedAt = Date.parse('2026-10-05T10:00:00Z')
 
@@ -23,6 +23,10 @@ test('pushedRef reads the destination branch of a push to oberth', () => {
   expect(pushedRef('git push oberth HEAD:refs/tags/v1')).toBe('v1')
   expect(pushedRef('git push oberth HEAD')).toBeUndefined()
   expect(pushedRef('git push origin HEAD:refs/heads/x')).toBeUndefined()
+  expect(pushedRef('git push oberth :refs/heads/x')).toBeUndefined()
+  expect(pushedRef('cd /repo && git push oberth HEAD:refs/heads/a')).toBe('a')
+  expect(pushedRef(`python3 - <<'EOF'\nx = 'git push oberth HEAD:refs/heads/lost'\nEOF`)).toBeUndefined()
+  expect(pushedRef(`echo "git push oberth HEAD:refs/heads/b"`)).toBeUndefined()
 })
 
 test('a pushed run that fails raises a toast and one prompt', async ($, on) => {
@@ -44,7 +48,7 @@ test('a pushed run that fails raises a toast and one prompt', async ($, on) => {
     return { text: e.text }
   })
 
-  await $.session.start({} as never)
+  await $.session.start({ cwd: '/' } as never)
   await $.tool.call({ tool: 'Bash', command: 'git push oberth HEAD:refs/heads/feat' } as never)
 
   await clock.advance(20_000)
@@ -58,4 +62,41 @@ test('a pushed run that fails raises a toast and one prompt', async ($, on) => {
 
   await clock.advance(20_000)
   expect(prompts.length).toBe(1)
+})
+
+test('a push that never gets a run leaves the band after five minutes', async ($, on) => {
+  const clock = mock.clock(on, { now: pushedAt })
+  const toasts: string[] = []
+  const prompts: string[] = []
+
+  on('session.start', async () => ({ cwd: '/' }))
+  on('command.register', async () => ({ value: { command: 'oberth-watch' } }))
+  on('tool.call', { tool: 'Bash' }, async () => ({ result: { stdout: '', stderr: '', interrupted: false } }) as never)
+  on('process.run', async () => ({ value: { exitCode: 0, stdout: '[]', stderr: '' } }) as never)
+  on('ui.toast', async (_$, e) => {
+    toasts.push(e.text)
+    return { value: undefined }
+  })
+  on('prompt.submit', async (_$, e) => {
+    prompts.push(e.text)
+    return { text: e.text }
+  })
+
+  await $.session.start({ cwd: '/' } as never)
+  await $.tool.call({ tool: 'Bash', command: 'git push oberth HEAD:refs/heads/lost' } as never)
+
+  await clock.advance(4 * 60_000)
+  expect(toasts).toEqual([])
+
+  await clock.advance(2 * 60_000)
+  expect(toasts).toEqual(['oberth lost: no run appeared'])
+  expect(prompts).toEqual([])
+
+  await clock.advance(5 * 60_000)
+  expect(toasts.length).toBe(1)
+})
+
+test('the band shows the three newest runs', () => {
+  const list = [1, 2, 3, 4, 5].map(n => ({ ref: `r${n}`, pushedAt: n }))
+  expect(visible(list).map(one => one.ref)).toEqual(['r3', 'r4', 'r5'])
 })

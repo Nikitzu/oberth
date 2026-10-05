@@ -9,6 +9,8 @@ const isReachable = atom({ plugin: 'oberth-watch', key: 'isReachable' } as const
 const POLL_MS = 20_000
 const CLOCK_SKEW_MS = 15_000
 const FINISHED_LINGER_MS = 10 * 60_000
+const BAND_ROWS = 3
+const UNMATCHED_EXPIRY_MS = 5 * 60_000
 
 const OBERTH = [
   '/bin/sh',
@@ -31,9 +33,13 @@ type Run = {
 const isActive = (status?: string) => status === undefined || status === 'queued' || status === 'running'
 
 export function pushedRef(command: string): string | undefined {
-  const destination = command.match(/git\s+push\s+(?:-\S+\s+)*oberth\s+\+?\S*:(\S+)/)?.[1]
+  const destination = command.match(
+    /(?:^|[\s;&|(])git\s+push\s+(?:-\S+\s+)*oberth\s+\+?[\w./@^~-]+:([\w./-]+)(?=$|[\s;&|)])/,
+  )?.[1]
   return destination?.replace(/^refs\/(heads|tags)\//, '') || undefined
 }
+
+export const visible = (list: Watched[]) => list.slice(-BAND_ROWS)
 
 export function reconcile(list: Watched[], runs: Run[]): Watched[] {
   const taken = new Set(list.map(one => one.runId).filter(Boolean))
@@ -79,8 +85,14 @@ async function poll($: EngineInterface) {
     if (!runs) return
 
     const now = await $.clock.now()
-    const after = reconcile(before, runs).filter(
-      one => isActive(one.status) || now - (one.finishedAt ?? now) < FINISHED_LINGER_MS,
+    const reconciled = reconcile(before, runs)
+    for (const one of reconciled) {
+      if (!one.runId && now - one.pushedAt >= UNMATCHED_EXPIRY_MS) $.ui.toast(`oberth ${one.ref}: no run appeared`)
+    }
+    const after = reconciled.filter(one =>
+      one.runId
+        ? isActive(one.status) || now - (one.finishedAt ?? now) < FINISHED_LINGER_MS
+        : now - one.pushedAt < UNMATCHED_EXPIRY_MS,
     )
     await update($, watched, () => after)
 
@@ -150,7 +162,7 @@ export const register: Register = on => {
     return (
       <Box flexDirection="column">
         {await next(e)}
-        {list.map(one => {
+        {visible(list).map(one => {
           const { glyph, color } = mark(one.status)
           return (
             <Text>
