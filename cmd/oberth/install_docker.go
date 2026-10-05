@@ -554,7 +554,7 @@ func installClaudeModLocally(ctx context.Context, output io.Writer, choice, root
 		return
 	}
 	dir := filepath.Join(root, "claude-mods")
-	if err := claudemod.Install(ctx, dir, run); err != nil {
+	if err := claudemod.Install(ctx, dir, version, run); err != nil {
 		say(output, "mod        not installed: %v", err)
 		return
 	}

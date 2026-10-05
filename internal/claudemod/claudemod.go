@@ -3,6 +3,7 @@ package claudemod
 import (
 	"context"
 	"embed"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -16,6 +17,8 @@ var files embed.FS
 const (
 	Marketplace = "oberth"
 	Plugin      = "oberth-watch"
+
+	versionFile = ".oberth-version"
 )
 
 const marketplaceJSON = `{
@@ -34,21 +37,23 @@ const marketplaceJSON = `{
 
 type Runner func(ctx context.Context, name string, args ...string) ([]byte, error)
 
-func Write(dir string) error {
-	if err := os.RemoveAll(filepath.Join(dir, Plugin)); err != nil {
-		return err
-	}
+func Write(dir, version string) error {
 	if err := os.MkdirAll(filepath.Join(dir, ".claude-plugin"), 0o700); err != nil {
 		return err
 	}
 	if err := os.WriteFile(filepath.Join(dir, ".claude-plugin", "marketplace.json"), []byte(marketplaceJSON), 0o600); err != nil {
 		return err
 	}
-	return fs.WalkDir(files, Plugin, func(path string, entry fs.DirEntry, err error) error {
+	staged, err := os.MkdirTemp(dir, "."+Plugin+"-")
+	if err != nil {
+		return err
+	}
+	defer func() { _ = os.RemoveAll(staged) }()
+	err = fs.WalkDir(files, Plugin, func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
-		target := filepath.Join(dir, filepath.FromSlash(path))
+		target := filepath.Join(staged, filepath.FromSlash(strings.TrimPrefix(path, Plugin)))
 		if entry.IsDir() {
 			return os.MkdirAll(target, 0o700)
 		}
@@ -61,10 +66,33 @@ func Write(dir string) error {
 		}
 		return os.WriteFile(target, body, 0o600)
 	})
+	if err != nil {
+		return err
+	}
+	live := filepath.Join(dir, Plugin)
+	retired := staged + ".old"
+	if err := os.Rename(live, retired); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	if err := os.Rename(staged, live); err != nil {
+		return err
+	}
+	_ = os.RemoveAll(retired)
+	return os.WriteFile(filepath.Join(dir, versionFile), []byte(version), 0o600)
 }
 
-func Install(ctx context.Context, dir string, run Runner) error {
-	if err := Write(dir); err != nil {
+func Refresh(dir, version string) error {
+	if _, err := os.Stat(filepath.Join(dir, Plugin)); err != nil {
+		return nil
+	}
+	if current, err := os.ReadFile(filepath.Join(dir, versionFile)); err == nil && string(current) == version { // #nosec G304 -- the mod's own version marker under the client configuration directory.
+		return nil
+	}
+	return Write(dir, version)
+}
+
+func Install(ctx context.Context, dir, version string, run Runner) error {
+	if err := Write(dir, version); err != nil {
 		return fmt.Errorf("write %s: %w", dir, err)
 	}
 	if out, err := run(ctx, "claude", "plugin", "marketplace", "add", dir, "--scope", "user"); err != nil {

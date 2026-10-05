@@ -7,9 +7,11 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 
 	"github.com/oberthci/oberth/internal/app"
+	"github.com/oberthci/oberth/internal/claudemod"
 	"github.com/oberthci/oberth/internal/installer"
 )
 
@@ -33,6 +35,9 @@ var (
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+	if root, err := installer.ClientConfigRoot(); err == nil {
+		_ = claudemod.Refresh(filepath.Join(root, "claude-mods"), version)
+	}
 	if err := runCLI(ctx, os.Args[1:], os.Stdin, os.Stdout); err != nil {
 		// Ctrl+C during interactive prompts: exit silently with the Unix
 		// convention (128 + SIGINT signal number 2 = 130).

@@ -35,7 +35,7 @@ func offerClaudeMod(ctx context.Context, cfg Config, deps Deps, tw *tableWriter,
 		run = DefaultRunCommand
 	}
 	dir := filepath.Join(root, "claude-mods")
-	err := claudemod.Install(ctx, dir, func(ctx context.Context, name string, args ...string) ([]byte, error) {
+	err := claudemod.Install(ctx, dir, cfg.BinaryVersion, func(ctx context.Context, name string, args ...string) ([]byte, error) {
 		return run(ctx, nil, name, args...)
 	})
 	if err != nil {

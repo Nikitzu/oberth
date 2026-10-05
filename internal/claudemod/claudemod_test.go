@@ -15,7 +15,7 @@ func TestWriteLaysOutTheMarketplace(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(dir, Plugin, "stale"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := Write(dir); err != nil {
+	if err := Write(dir, "v1"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -53,7 +53,7 @@ func TestInstallRegistersTheMarketplaceThenThePlugin(t *testing.T) {
 		calls = append(calls, name+" "+strings.Join(args, " "))
 		return nil, nil
 	}
-	if err := Install(context.Background(), dir, run); err != nil {
+	if err := Install(context.Background(), dir, "v1", run); err != nil {
 		t.Fatal(err)
 	}
 	want := []string{
@@ -72,8 +72,58 @@ func TestInstallReportsAFailedRegistration(t *testing.T) {
 		}
 		return nil, nil
 	}
-	err := Install(context.Background(), t.TempDir(), run)
+	err := Install(context.Background(), t.TempDir(), "v1", run)
 	if err == nil || !strings.Contains(err.Error(), "plugin not found") {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestRefreshLeavesAMachineWithoutTheModAlone(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "claude-mods")
+	if err := Refresh(dir, "v2"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(dir); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("refresh created the mod on a machine that never installed it: %v", err)
+	}
+}
+
+func TestRefreshRewritesAModFromAnotherVersion(t *testing.T) {
+	dir := t.TempDir()
+	if err := Write(dir, "v1"); err != nil {
+		t.Fatal(err)
+	}
+	stale := filepath.Join(dir, Plugin, "hooks", "stale.tsx")
+	if err := os.WriteFile(stale, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := Refresh(dir, "v2"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(stale); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the previous version's file survived: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, Plugin, "hooks", "register.tsx")); err != nil {
+		t.Fatalf("the mod is missing after refresh: %v", err)
+	}
+	if got, _ := os.ReadFile(filepath.Join(dir, versionFile)); string(got) != "v2" {
+		t.Fatalf("version marker = %q, want v2", got)
+	}
+}
+
+func TestRefreshLeavesTheSameVersionUntouched(t *testing.T) {
+	dir := t.TempDir()
+	if err := Write(dir, "v1"); err != nil {
+		t.Fatal(err)
+	}
+	kept := filepath.Join(dir, Plugin, "hooks", "kept.tsx")
+	if err := os.WriteFile(kept, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := Refresh(dir, "v1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(kept); err != nil {
+		t.Fatalf("an up-to-date mod was rewritten: %v", err)
 	}
 }
