@@ -41,7 +41,12 @@ a stored document wins only when the commit carries none.
 
 ## Watching a run
 
-Use `oberth wait`, or the MCP `wait` tool. Never hand-roll a polling loop over
+Where the oberth-watch Claude Code mod is installed (`oberth install
+--claude-mod=yes`), an interactive Claude Code session needs nothing: the mod
+sees the push, shows the run above the prompt and submits one prompt with the
+verdict when it finishes. Do not also start `oberth wait` there, or every run
+reports twice. In `claude -p`, the VS Code panel, a subagent or any other
+client, use `oberth wait`, or the MCP `wait` tool. Never hand-roll a polling loop over
 `oberth runs`; every one written so far has had a matching bug and reported
 late. On red, `oberth run <id>` names the burn and step, then read that step's
 log with a pattern. The oberth-triage skill covers the filters.
